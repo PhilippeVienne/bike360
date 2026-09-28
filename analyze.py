@@ -25,6 +25,7 @@ DEFAULT_DCIM = "/run/media/philippe/Insta360 X5/DCIM"
 SYNC_SEARCH_S = 120      # plage de recherche du décalage horloge caméra ↔ GPS
 SYNC_MIN_DURATION = 300  # en dessous, corrélation peu fiable : décalage du jour
 GPS_MAX_GAP_S = 5        # au-delà, pas de position valide
+KNOTS_TO_KMH = 1.852
 
 
 def _smooth(x, n):
@@ -53,7 +54,7 @@ def creation_utc(path):
     return datetime.fromisoformat(out.replace("Z", "+00:00")).timestamp()
 
 
-CACHE_VERSION = 4          # à incrémenter quand le calcul change (invalide le cache)
+CACHE_VERSION = 5          # à incrémenter quand le calcul change (invalide le cache)
 
 
 def imu_profile(session):
@@ -141,7 +142,8 @@ def load_positions(day_utc):
     t = np.array([datetime.fromisoformat(p["fixtime"].replace("Z", "+00:00")).timestamp() for p in pos])
     order = np.argsort(t)
     col = lambda k: np.array([float(p.get(k) or 0) for p in pos])[order]
-    return {"t": t[order], "lat": col("latitude"), "lon": col("longitude"), "speed": col("speed"),
+    # GeoRide renvoie la vitesse en nœuds (vérifié contre la vitesse déduite des positions : ×1,83)
+    return {"t": t[order], "lat": col("latitude"), "lon": col("longitude"), "speed": col("speed") * KNOTS_TO_KMH,
             "alt": col("altitude"), "heading": np.degrees(np.unwrap(np.radians(col("angle"))))}
 
 

@@ -84,7 +84,7 @@ def _tracker_id(arg):
 
 
 def fetch_positions(start, end, tracker=None):
-    """Positions GeoRide entre deux dates ISO (fixtime UTC, speed en km/h)."""
+    """Positions GeoRide entre deux dates ISO (fixtime UTC ; attention, speed est en nœuds)."""
     return _call("GET", f"/tracker/{_tracker_id(tracker)}/trips/positions", {"from": start, "to": end})
 
 
