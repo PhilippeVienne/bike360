@@ -426,11 +426,17 @@ new ResizeObserver(() => {
 async function loadSettings() {
   const cfg = await api("GET", "/api/settings");
   st.masks = cfg.masks || [];
+  st.telemetry = cfg.telemetry || {};
+  document.querySelectorAll("[data-tel]").forEach((cb) => (cb.checked = !!st.telemetry[cb.dataset.tel]));
   updateMaskUI();
 }
+document.querySelectorAll("[data-tel]").forEach((cb) => cb.addEventListener("change", () => {
+  st.telemetry = { ...st.telemetry, [cb.dataset.tel]: cb.checked };
+  api("PUT", "/api/settings", { telemetry: st.telemetry }).catch(console.error);
+}));
 function saveSettings() {
   updateMaskUI();
-  api("PUT", "/api/settings", { masks: st.masks }).catch(console.error);
+  api("PUT", "/api/settings", { masks: st.masks, telemetry: st.telemetry }).catch(console.error);
 }
 function updateMaskUI() {
   $("#mask-edit").classList.toggle("active", st.maskEdit);
@@ -1030,7 +1036,7 @@ async function pollExport() {
   const j = await api("GET", `/api/export/${st.s.id}`);
   const el = $("#export-status");
   const running = j.state === "running";
-  $("#export-preview").disabled = $("#export-final").disabled = running;
+  $("#export-preview").disabled = $("#export-final").disabled = $("#hl-start").disabled = running;
   if (running) {
     el.innerHTML = `<progress value="${j.progress}" max="1"></progress> ${j.quality} · ${j.message}
                     <button id="export-cancel">annuler</button>`;
@@ -1054,6 +1060,27 @@ async function startExport(quality) {
 }
 $("#export-preview").addEventListener("click", () => startExport("preview"));
 $("#export-final").addEventListener("click", () => startExport("final"));
+
+// résumé hyperlapse : toute la session, vitesse variable selon l'intérêt
+async function hyperlapseInfo() {
+  if (!st.s) return;
+  const r = await api("POST", `/api/hyperlapse/${st.s.id}`, { duration: +$("#hl-duration").value, preview: true });
+  $("#hl-info").textContent = r.output_s < +$("#hl-duration").value - 1
+    ? `session courte : ${Math.round(r.output_s)} s au plus`
+    : `accéléré de ×${r.slowest_x} (moments forts) à ×${r.fastest_x} (arrêts)`;
+}
+$("#hl-menu").addEventListener("toggle", (e) => { if (e.target.open) hyperlapseInfo(); });
+$("#hl-duration").addEventListener("change", hyperlapseInfo);
+$("#hl-start").addEventListener("click", async () => {
+  const v = st.view.raw ? { yaw: 0, pitch: -10, fov: 100, roll: 0 } : st.view;
+  try {
+    await api("POST", `/api/hyperlapse/${st.s.id}`, {
+      duration: +$("#hl-duration").value, yaw: v.yaw, pitch: v.pitch, roll: v.roll ?? 0, fov: v.fov,
+      horizon: st.view.horizon, height: +$("#export-height").value, crf: +$("#export-crf").value });
+  } catch (err) { $("#export-status").textContent = "⚠ export déjà en cours"; return; }
+  $("#hl-menu").open = false;
+  pollExport();
+});
 
 // ------------------------------------------------------------------ commandes
 

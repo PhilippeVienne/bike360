@@ -20,7 +20,9 @@ import numpy as np
 import analyze
 import geometry
 import horizon
+import hyperlapse
 import insta360
+import telemetry
 
 ROOT = Path(__file__).resolve().parent
 UI = ROOT / "ui"
@@ -107,7 +109,8 @@ def selections_path(sid):
 
 
 def get_settings():
-    return json.loads(SETTINGS.read_text()) if SETTINGS.exists() else {"masks": []}
+    cfg = json.loads(SETTINGS.read_text()) if SETTINGS.exists() else {}
+    return {"masks": cfg.get("masks", []), "telemetry": {**telemetry.DEFAULTS, **cfg.get("telemetry", {})}}
 
 
 def get_selections(sid):
@@ -293,7 +296,8 @@ def run_export(sid, quality, opts):
         out_h = q["height"]
         out_w = out_h * 16 // 9
         clips = get_selections(sid)
-        masks = get_settings().get("masks", [])
+        settings = get_settings()
+        masks, tel_opts = settings["masks"], settings["telemetry"]
         sizes = {}
         if not clips:
             raise ValueError("aucun clip sélectionné")
@@ -329,6 +333,14 @@ def run_export(sid, quality, opts):
                 if src not in sizes:
                     sizes[src] = source_size(src, q["source"])
                 export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, sizes[src], out_w, out_h, out, report)
+            if tel_opts["enabled"] and result.get("gps_coverage", 0) > 0.3:
+                job["message"] = f"clip {i + 1}/{len(clips)} : télémétrie"
+                seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
+                with_tel = out.with_name(out.stem + "_tel.mp4")
+                if telemetry.overlay(out, with_tel, result, clip, seg_offset + ss, dur, out_w, out_h, tel_opts,
+                                     first_part=abs(seg_offset + ss - clip["start"]) < 0.5,
+                                     encoder_args=encoder_args(q), workdir=out_dir / f"tel_{n:03d}"):
+                    with_tel.replace(out)
             done += dur
             files.append(out)
         job["message"] = "assemblage"
@@ -338,6 +350,90 @@ def run_export(sid, quality, opts):
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
                         "-c", "copy", "-movflags", "+faststart", str(final)], check=True)
         job.update(state="done", progress=1.0, message=f"terminé ({job['engine']})", output=final.name)
+    except Exception as e:
+        traceback.print_exc()
+        job.update(state="error", message=str(e))
+    finally:
+        job.pop("proc", None)
+
+
+def run_hyperlapse(sid, opts):
+    """Résumé hyperlapse : toute la session en `duration` secondes, vitesse selon l'intérêt.
+
+    Une vue fixe (celle de l'aperçu) + l'horizon choisi ; le moteur GPU ne décode que
+    le nécessaire (saut aux images clés dans les portions rapides). Pas de son.
+    """
+    job = state["jobs"][sid]
+    try:
+        if not gpu_engine_available():
+            raise ValueError("le résumé hyperlapse demande le moteur GPU (render/ + NVENC)")
+        session, result = state["sessions"][sid]
+        q = {**QUALITY["final"], "height": opts["height"], "crf": opts["crf"]}
+        out_h = q["height"]
+        out_w = out_h * 16 // 9
+        settings = get_settings()
+        masks, tel_opts = settings["masks"], settings["telemetry"]
+        view = {"start": 0.0, "end": result["duration"], **opts["view"]}
+        full = state["horizon"].get(sid, {})
+        horizon_data = full.get("data") if full.get("status") == "done" else None
+        if geometry.clip_horizon_mode(view) == "auto" and horizon_data is None:
+            view["horizon"] = "fixe"  # analyse pas encore prête : on reste sur le support
+        taus = hyperlapse.frame_times(result, opts["duration"])
+        out_dir = EXPORTS / sid / f"hyperlapse_{out_h}p"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        job["engine"] = "GPU"
+        files, done = [], 0
+        for n, (seg, info) in enumerate(zip(session.segments, result["segments"])):
+            src = seg.insv
+            sel = taus[(taus >= info["offset"]) & (taus < info["offset"] + info["duration"] - 0.1)]
+            if not len(sel) or not src:
+                continue
+            fps = source_fps(src)
+            samples, first = np.unique(np.round((sel - info["offset"]) * float(fps)).astype(int), return_index=True)
+            part_taus = sel[first]
+            matrices, fovs = [], []
+            for t in part_taus:
+                v = geometry.clip_view_at(view, t)
+                m = geometry.view_matrix(v["yaw"], v["pitch"], level_matrix_at(view, result, horizon_data, t), v["roll"])
+                matrices.append([float(x) for x in m.flatten()])
+                fovs.append(float(v["fov"]))
+            out = out_dir / f"part_{n:03d}.mp4"
+            h264, spec = out.with_suffix(".h264"), out.with_suffix(".json")
+            spec.write_text(json.dumps({
+                "source": src, "start": 0.0, "duration": 0.0, "width": out_w, "height": out_h,
+                "fov": fovs[0], "fovs": fovs, "cq": int(q["crf"]), "samples": [int(x) for x in samples],
+                "masks": [[m_["x"], m_["y"], m_["w"], m_["h"]] for m_ in masks],
+                "matrices": matrices, "output": str(h264),
+            }))
+            job["message"] = f"fichier {n + 1}/{len(session.segments)} (GPU)"
+
+            def progress(line, base=done):
+                if line.startswith("frame="):
+                    job["progress"] = min(1.0, (base + int(line[6:])) / len(taus))
+            run_part_process(job, [str(RENDER_BIN), str(spec)], progress)
+            run_part_process(job, ["ffmpeg", "-v", "error", "-y", "-framerate", str(fps), "-i", str(h264),
+                                   "-c:v", "copy", "-movflags", "+faststart", str(out)], lambda _: None)
+            h264.unlink(missing_ok=True)
+            if tel_opts["enabled"] and result.get("gps_coverage", 0) > 0.3:
+                job["message"] = f"fichier {n + 1}/{len(session.segments)} : télémétrie"
+                out_t = np.arange(len(part_taus)) / float(fps)
+                with_tel = out.with_name(out.stem + "_tel.mp4")
+                if telemetry.overlay(out, with_tel, result, view, float(part_taus[0]), len(part_taus) / float(fps),
+                                     out_w, out_h, tel_opts, first_part=not files, encoder_args=encoder_args(q),
+                                     workdir=out_dir / f"tel_{n:03d}",
+                                     time_map=lambda t, ot=out_t, pt=part_taus: np.interp(t, ot, pt)):
+                    with_tel.replace(out)
+            done += len(sel)
+            files.append(out)
+        if not files:
+            raise ValueError("aucune image sélectionnée")
+        job["message"] = "assemblage"
+        listing = out_dir / "concat.txt"
+        listing.write_text("".join(f"file '{f.name}'\n" for f in files))
+        final = EXPORTS / f"{sid}_hyperlapse_{out_h}p.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+                        "-c", "copy", "-movflags", "+faststart", str(final)], check=True)
+        job.update(state="done", progress=1.0, message="résumé terminé (GPU)", output=final.name)
     except Exception as e:
         traceback.print_exc()
         job.update(state="error", message=str(e))
@@ -442,9 +538,13 @@ class Handler(BaseHTTPRequestHandler):
         parts = self.path.strip("/").split("/")
         if parts == ["api", "settings"]:
             cfg = self._body()
-            masks = [{k: min(1.0, max(0.0, float(m[k]))) for k in ("x", "y", "w", "h")} for m in cfg.get("masks", [])]
+            current = get_settings()
+            masks = [{k: min(1.0, max(0.0, float(m[k]))) for k in ("x", "y", "w", "h")}
+                     for m in cfg.get("masks", current["masks"])]
+            tel = {k: bool(v) for k, v in {**current["telemetry"], **cfg.get("telemetry", {})}.items()
+                   if k in telemetry.DEFAULTS}
             analyze.DATA.mkdir(exist_ok=True)
-            SETTINGS.write_text(json.dumps({"masks": masks[:8]}, indent=1))
+            SETTINGS.write_text(json.dumps({"masks": masks[:8], "telemetry": tel}, indent=1))
             return self._json({"ok": True})
         if parts[:2] == ["api", "selections"] and len(parts) == 3 and parts[2] in state["sessions"]:
             clips = self._body()
@@ -493,6 +593,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "export déjà en cours"}, 409)
             state["jobs"][sid] = {"state": "running", "progress": 0.0, "quality": quality, "message": "démarrage"}
             threading.Thread(target=run_export, args=(sid, quality, opts), daemon=True).start()
+            return self._json({"ok": True})
+        if parts[:2] == ["api", "hyperlapse"]:
+            body = self._body() or {}
+            duration = max(30.0, min(900.0, float(body.get("duration", 180))))
+            if body.get("preview"):
+                _, r = state["sessions"][sid]
+                return self._json(hyperlapse.summary(r, duration))
+            if state["jobs"].get(sid, {}).get("state") == "running":
+                return self._json({"error": "export déjà en cours"}, 409)
+            height = int(body.get("height", 1080))
+            view = {k: float(body.get(k, d)) for k, d in (("yaw", 0), ("pitch", 0), ("roll", 0), ("fov", 100))}
+            view["horizon"] = body.get("horizon") if body.get("horizon") in ("auto", "fixe", "aucun") else "fixe"
+            opts = {"duration": duration, "height": height if height in HEIGHTS else 1080, "view": view,
+                    "crf": max(14, min(28, int(body.get("crf", QUALITY["final"]["crf"]))))}
+            state["jobs"][sid] = {"state": "running", "progress": 0.0, "quality": "hyperlapse", "message": "démarrage"}
+            threading.Thread(target=run_hyperlapse, args=(sid, opts), daemon=True).start()
             return self._json({"ok": True})
         self.send_error(404)
 

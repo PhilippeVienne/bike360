@@ -26,6 +26,23 @@
     <select id="export-crf" title="Qualité d'encodage : plus haute = fichier plus lourd">
       <option value="22">Standard</option><option value="20" selected>Haute</option><option value="17">Maximale</option>
     </select>
+    <details class="tel-menu"><summary title="Incrustations de télémétrie dans les exports">Incrustations</summary>
+      <div class="tel-box">
+        <label><input type="checkbox" data-tel="enabled"> <strong>télémétrie</strong></label>
+        <label><input type="checkbox" data-tel="speed"> vitesse</label>
+        <label><input type="checkbox" data-tel="map"> mini-carte</label>
+        <label><input type="checkbox" data-tel="altitude"> altitude + profil</label>
+        <label><input type="checkbox" data-tel="place"> lieu au début des clips</label>
+      </div></details>
+    <details class="tel-menu" id="hl-menu"><summary title="Toute la balade en quelques minutes, vitesse selon l'intérêt">Résumé</summary>
+      <div class="tel-box">
+        <label>durée <select id="hl-duration">
+          <option value="60">1 min</option><option value="120">2 min</option><option value="180" selected>3 min</option><option value="300">5 min</option>
+        </select></label>
+        <span id="hl-info" class="hl-info"></span>
+        <span class="hl-info">cadrage et horizon de l'aperçu · résolution/qualité de l'export final · sans son</span>
+        <button id="hl-start" class="primary">Créer le résumé</button>
+      </div></details>
     <button id="export-final" class="primary" title="Rendu depuis les .insv pleine résolution">Export final</button>
     <span id="export-status"></span>
   </div>

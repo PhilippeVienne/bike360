@@ -107,3 +107,9 @@ button.danger { color: #ff7875; }
 #ed-keylist select { font-size: 11px; padding: 1px 4px; }
 #ed-keylist button { padding: 0 5px; font-size: 11px; }
 #gl.rotating { cursor: alias; }
+.tel-menu { position: relative; }
+.tel-menu summary { cursor: pointer; list-style: none; border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; }
+.tel-menu[open] summary { border-color: var(--accent); }
+.tel-box { position: absolute; right: 0; top: 110%; z-index: 1000; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; white-space: nowrap; }
+.hl-info { font-size: 12px; opacity: 0.75; white-space: normal; max-width: 220px; }

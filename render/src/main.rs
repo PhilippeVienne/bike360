@@ -39,6 +39,10 @@ struct Job {
     /// Champ horizontal par image (points clés) ; à défaut, `fov` pour toutes.
     #[serde(default)]
     fovs: Vec<f32>,
+    /// Mode « sélection » (hyperlapse) : indices d'échantillons à rendre, croissants ; les
+    /// matrices/champs correspondent à cette liste. Vide = plage continue start..start+duration.
+    #[serde(default)]
+    samples: Vec<usize>,
     /// Qualité NVENC (≈ CRF x264, plus bas = meilleur).
     cq: u8,
     /// Zones floutées (x, y, w, h) dans l'image côte à côte du .lrv (0..1).
@@ -120,8 +124,15 @@ fn render(path: &str) -> Result<()> {
     }
     let (ta, tb) = (vids[0], vids[1]);
     let fd = m.tracks[ta].frame_duration();
-    let first_out = m.tracks[ta].sample_at(job.start);
-    let last_out = m.tracks[ta].sample_at(job.start + job.duration).min(m.tracks[ta].samples.len());
+    let n_samples = m.tracks[ta].samples.len().min(m.tracks[tb].samples.len());
+    let (first_out, last_out) = if job.samples.is_empty() {
+        (m.tracks[ta].sample_at(job.start), m.tracks[ta].sample_at(job.start + job.duration).min(n_samples))
+    } else {
+        (job.samples[0], (job.samples[job.samples.len() - 1] + 1).min(n_samples))
+    };
+    // index de sortie de chaque échantillon voulu (mode sélection)
+    let wanted: HashMap<usize, usize> = job.samples.iter().enumerate().map(|(i, &s)| (s, i)).collect();
+    let expected = if job.samples.is_empty() { last_out - first_out } else { job.samples.len() };
     let first_dec = m.tracks[ta].keyframe_before(first_out).min(m.tracks[tb].keyframe_before(first_out));
     let (in_w, in_h) = (m.tracks[ta].width as usize, m.tracks[ta].height as usize);
 
@@ -219,6 +230,8 @@ fn render(path: &str) -> Result<()> {
     let mut next = first_dec as i64;
     let (mut raw, mut au) = (Vec::new(), Vec::new());
     let mut encoded = 0usize;
+    let mut skipped = 0usize;
+    const STALL_FRAMES: usize = 12;
     let stdout = std::io::stdout();
 
     let mut render = |fa: &nvdec::Frame, fb: &nvdec::Frame, idx: usize, out: &mut BufWriter<File>| -> Result<()> {
@@ -250,16 +263,37 @@ fn render(path: &str) -> Result<()> {
                      next: &mut i64,
                      out: &mut BufWriter<File>|
      -> Result<()> {
+        // les images antérieures à `next` (livrées après un saut) sont rendues au pool
         while let Some(f) = dec_a.pop() {
-            ready_a.insert(f.pts, f);
+            if f.pts < *next { dec_a.recycle(f) } else { ready_a.insert(f.pts, f); }
         }
         while let Some(f) = dec_b.pop() {
-            ready_b.insert(f.pts, f);
+            if f.pts < *next { dec_b.recycle(f) } else { ready_b.insert(f.pts, f); }
         }
-        while ready_a.contains_key(next) && ready_b.contains_key(next) {
+        loop {
+            if !(ready_a.contains_key(next) && ready_b.contains_key(next)) {
+                // Image jamais livrée par un décodeur (RASL écartée après un saut…) : sans
+                // cela `next` resterait bloqué et les images s'accumuleraient sans fin.
+                if ready_a.len().max(ready_b.len()) <= STALL_FRAMES {
+                    break;
+                }
+                for (ready, dec) in [(&mut *ready_a, &mut *dec_a), (&mut *ready_b, &mut *dec_b)] {
+                    if let Some(f) = ready.remove(next) {
+                        dec.recycle(f);
+                    }
+                }
+                skipped += 1;
+                *next += 1;
+                continue;
+            }
             let (fa, fb) = (ready_a.remove(next).unwrap(), ready_b.remove(next).unwrap());
-            if *next >= first_out as i64 && (*next as usize) < last_out {
-                render(&fa, &fb, *next as usize - first_out, out)?;
+            let idx = if wanted.is_empty() {
+                (*next >= first_out as i64 && (*next as usize) < last_out).then(|| *next as usize - first_out)
+            } else {
+                wanted.get(&(*next as usize)).copied()
+            };
+            if let Some(idx) = idx {
+                render(&fa, &fb, idx, out)?;
                 encoded += 1;
                 writeln!(stdout.lock(), "frame={encoded}")?;
             }
@@ -270,7 +304,33 @@ fn render(path: &str) -> Result<()> {
         Ok(())
     };
 
-    for k in first_dec..last_out {
+    // En mode sélection, on saute directement à l'image clé précédant la prochaine image
+    // voulue quand elle est loin (hyperlapse très accéléré) : on ne décode que le nécessaire.
+    const JUMP_MIN: usize = 90;
+    let mut wi = 0usize;
+    let mut k = first_dec;
+    while k < last_out {
+        if !job.samples.is_empty() {
+            while wi < job.samples.len() && job.samples[wi] < k {
+                wi += 1;
+            }
+            if let Some(&target) = job.samples.get(wi) {
+                let kf = m.tracks[ta].keyframe_before(target).min(m.tracks[tb].keyframe_before(target));
+                if target > k + JUMP_MIN && kf > k {
+                    k = kf;
+                    next = kf as i64;
+                    // images décodées devenues inutiles : rendues au pool
+                    for key in ready_a.keys().copied().filter(|p| *p < next).collect::<Vec<_>>() {
+                        let f = ready_a.remove(&key).unwrap();
+                        dec_a.recycle(f);
+                    }
+                    for key in ready_b.keys().copied().filter(|p| *p < next).collect::<Vec<_>>() {
+                        let f = ready_b.remove(&key).unwrap();
+                        dec_b.recycle(f);
+                    }
+                }
+            }
+        }
         for (ti, dec) in [(ta, &mut dec_a), (tb, &mut dec_b)] {
             let s = m.tracks[ti].samples[k];
             m.read_sample(&s, &mut raw)?;
@@ -285,6 +345,7 @@ fn render(path: &str) -> Result<()> {
             dec.feed(&au, k as i64)?;
         }
         drain(&mut dec_a, &mut dec_b, &mut ready_a, &mut ready_b, &mut next, &mut out)?;
+        k += 1;
     }
     dec_a.feed(&[], 0)?;
     dec_b.feed(&[], 0)?;
@@ -303,6 +364,6 @@ fn render(path: &str) -> Result<()> {
             let _ = cu::cuMemFree_v2(masks_buf);
         }
     }
-    eprintln!("{encoded} images encodées ({} attendues)", last_out - first_out);
+    eprintln!("{encoded} images encodées ({expected} attendues, {skipped} manquantes sautées)");
     Ok(())
 }
