@@ -29,6 +29,7 @@ UI = ROOT / "ui"
 SELECTIONS = analyze.DATA / "selections"
 EXPORTS = ROOT / "exports"
 SETTINGS = analyze.DATA / "settings.json"
+SOURCES = analyze.DATA / "sources.json"  # dossiers de vidéos ajoutés depuis l'interface
 RENDER_BIN = ROOT / "render" / "target" / "release" / "insta-render"
 
 # Objectifs X5 : ~195° utiles par fisheye. Dans ffmpeg v360 (dfisheye), yaw 0 = moitié
@@ -50,7 +51,7 @@ FORMATS = {
 }
 HYPERLAPSE_MBPS_1080 = 12  # plafond du résumé : en accéléré chaque image change, le débit exploserait (~30 Mb/s)
 
-state = {"dcim": None, "sessions": {}, "jobs": {}, "nvenc": None, "horizon": {}}
+state = {"dcim": None, "sessions": {}, "jobs": {}, "nvenc": None, "horizon": {}, "scan": {"state": "idle"}}
 horizon_queue = []
 HORIZON_WORKERS = 3  # calculs d'horizon simultanés : une demande urgente n'attend pas la fin d'une longue session
 horizon_cv = threading.Condition()
@@ -121,10 +122,42 @@ def output_fov(fov, w, h):
 lock = threading.Lock()
 
 
+def source_folders():
+    """Dossier de la ligne de commande (carte SD) puis dossiers ajoutés depuis l'interface."""
+    extra = json.loads(SOURCES.read_text()) if SOURCES.exists() else []
+    return list(dict.fromkeys([state["dcim"], *extra]))
+
+
 def load_sessions():
-    results = analyze.analyze_all(state["dcim"])
-    by_id = {s.id: s for s in insta360.scan(state["dcim"])}
-    state["sessions"] = {sid: (by_id[sid], r) for sid, r in results.items()}
+    """Analyse les sessions de tous les dossiers présents (analyses en cache réutilisées).
+
+    Une session présente dans deux dossiers (carte + copie) n'est prise qu'une fois : la
+    première trouvée, dans l'ordre de source_folders().
+    """
+    by_id, origin = {}, {}
+    for folder in source_folders():
+        if not Path(folder).is_dir():
+            continue
+        for s in insta360.scan(folder):
+            if s.id not in by_id:
+                by_id[s.id], origin[s.id] = s, folder
+    results = analyze.analyze_sessions(list(by_id.values()))
+    state["sessions"] = {sid: (by_id[sid], {**r, "folder": origin[sid]}) for sid, r in results.items()}
+
+
+def rescan():
+    state["scan"] = {"state": "running", "message": "analyse des dossiers…"}
+    try:
+        before = set(state["sessions"])
+        with lock:
+            load_sessions()
+        new = sorted(set(state["sessions"]) - before)
+        for sid in new:
+            request_horizon(sid)
+        state["scan"] = {"state": "done", "message": f"{len(new)} nouvelle(s) session(s)", "new": new}
+    except Exception as e:
+        traceback.print_exc()
+        state["scan"] = {"state": "error", "message": str(e)}
 
 
 def selections_path(sid):
@@ -272,7 +305,10 @@ def export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, ma
                for t, m, f in part_targets(clip, result, horizon_data, seg_offset, ss, dur, 1 / float(source_fps(src)))]
     cmdfile = out.with_suffix(".cmd")
     angles = level_commands(targets, cmdfile, out_w, out_h)
-    graph = v360_filter({**clip, "fov": targets[0][2]}, out_w, out_h, q["source"], masks, size, angles, cmdfile)
+    # cadrage immobile (horizon fixe, sans point clé) : aucune commande, et sendcmd refuse un fichier vide
+    has_cmds = bool(cmdfile.read_text().strip())
+    graph = v360_filter({**clip, "fov": targets[0][2]}, out_w, out_h, q["source"], masks, size, angles,
+                        cmdfile if has_cmds else None)
     cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", src,
            "-filter_complex", graph, "-map", "[v]", "-map", "0:a:0?", *encoder_args(q),
            "-c:a", "aac", "-b:a", q.get("audio", "160k"), "-ar", "48000", "-ac", "2",
@@ -312,43 +348,45 @@ def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks
     h264.unlink(missing_ok=True)
 
 
-def run_export(sid, quality, opts):
-    job = state["jobs"][sid]
+def run_export(key, sids, quality, opts):
+    """Exporte les clips d'une session, ou de plusieurs (montage) dans l'ordre chronologique."""
+    job = state["jobs"][key]
     try:
-        session, result = state["sessions"][sid]
         q = {**QUALITY[quality], **opts, **FORMATS.get(opts.get("format", "standard"), {})}
         out_w, out_h = output_size(q)
         name = f"{quality}_{out_h}p" if q.get("format", "standard") == "standard" else q["format"]
-        clips = get_selections(sid)
+        sids = sorted(sids, key=lambda x: state["sessions"][x][1]["utc_t0"])
+        clips = [(sid, c) for sid in sids for c in get_selections(sid)]
         settings = get_settings()
         masks, tel_opts = settings["masks"], settings["telemetry"]
         sizes = {}
         if not clips:
             raise ValueError("aucun clip sélectionné")
-        total_s = sum(c["end"] - c["start"] for c in clips)
+        total_s = sum(c["end"] - c["start"] for _, c in clips)
         if q.get("format") == "vertical" and total_s > 90:
             job["warning"] = f"{int(total_s // 60)} min {int(total_s % 60):02d} : long pour un Reel (90 s) ou un Short (60 s)"
         gpu = q["source"] == "insv" and gpu_engine_available()
-        # Horizon : analyse complète si déjà prête, sinon seulement les portions des clips.
-        full = state["horizon"].get(sid, {})
-        full_data = full.get("data") if full.get("status") == "done" else None
         job["engine"] = "GPU" if gpu else "ffmpeg"
-        out_dir = EXPORTS / sid / name
+        out_dir = EXPORTS / key / name
         out_dir.mkdir(parents=True, exist_ok=True)
-        todo = [(i, c, p) for i, c in enumerate(clips) for p in clip_parts(session, result, c)]
-        total = sum(p[2] for _, _, p in todo)
+        todo = [(i, sid, c, p) for i, (sid, c) in enumerate(clips)
+                for p in clip_parts(state["sessions"][sid][0], state["sessions"][sid][1], c)]
+        total = sum(p[2] for *_, p in todo)
         done, files = 0.0, []
         clip_horizon = {}
-        for n, (i, clip, (seg, ss, dur)) in enumerate(todo):
-            horizon_data = full_data
-            if geometry.clip_horizon_mode(clip) == "auto" and full_data is None:
+        for n, (i, sid, clip, (seg, ss, dur)) in enumerate(todo):
+            session, result = state["sessions"][sid]
+            # Horizon : analyse complète si déjà prête, sinon seulement les portions des clips.
+            full = state["horizon"].get(sid, {})
+            horizon_data = full.get("data") if full.get("status") == "done" else None
+            if geometry.clip_horizon_mode(clip) == "auto" and horizon_data is None:
                 if i not in clip_horizon:
                     job["message"] = f"horizon du clip {i + 1}/{len(clips)}"
                     clip_horizon[i] = horizon.compute_range(session, result, clip["start"] - 3, clip["end"] + 3)
                 horizon_data = clip_horizon[i]
             src = seg.insv if q["source"] == "insv" else seg.lrv
             if not src:
-                raise ValueError(f"fichier {q['source']} manquant pour le segment {seg.index}")
+                raise ValueError(f"fichier {q['source']} manquant pour le segment {seg.index} de {sid}")
             out = out_dir / f"part_{n:03d}.mp4"
             job["message"] = f"clip {i + 1}/{len(clips)} ({job['engine']})"
 
@@ -373,7 +411,8 @@ def run_export(sid, quality, opts):
         job["message"] = "assemblage"
         listing = out_dir / "concat.txt"
         listing.write_text("".join(f"file '{f.name}'\n" for f in files))
-        final = EXPORTS / f"{sid}_{name}.mp4"
+        prefix = f"montage_{sids[0][4:12]}_{len(sids)}sessions" if key == "montage" else key
+        final = EXPORTS / f"{prefix}_{name}.mp4"
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
                         "-c", "copy", "-movflags", "+faststart", str(final)], check=True)
         job.update(state="done", progress=1.0, message=f"terminé ({job['engine']})", output=final.name)
@@ -532,6 +571,43 @@ class Handler(BaseHTTPRequestHandler):
                     return self._file(Path(seg.lrv), "video/mp4")
         self.send_error(404)
 
+    def _sources(self, body):
+        """Ajoute ou retire un dossier de vidéos, puis relance l'analyse en arrière-plan."""
+        if state["scan"].get("state") == "running":
+            return self._json({"error": "analyse déjà en cours"}, 409)
+        extra = json.loads(SOURCES.read_text()) if SOURCES.exists() else []
+        if body.get("add"):
+            folder = Path(str(body["add"])).expanduser()
+            if not folder.is_dir():
+                return self._json({"error": f"dossier introuvable : {folder}"}, 400)
+            folder = str(folder.resolve())
+            if not insta360.scan(folder):
+                return self._json({"error": "aucune vidéo Insta360 (.insv/.lrv) dans ce dossier"}, 400)
+            if folder not in extra and folder != state["dcim"]:
+                extra.append(folder)
+        elif body.get("remove"):
+            extra = [f for f in extra if f != body["remove"]]
+        analyze.DATA.mkdir(exist_ok=True)
+        SOURCES.write_text(json.dumps(extra, indent=1))
+        threading.Thread(target=rescan, daemon=True).start()
+        return self._json({"ok": True})
+
+    def _montage(self, body):
+        """Montage : les clips de plusieurs sessions dans un seul export."""
+        sids = [x for x in body.get("sids", []) if x in state["sessions"]]
+        if not sids:
+            return self._json({"error": "aucune session choisie"}, 400)
+        quality = body.get("quality", "final")
+        if quality not in QUALITY:
+            return self.send_error(400)
+        if state["jobs"].get("montage", {}).get("state") == "running":
+            return self._json({"error": "montage déjà en cours"}, 409)
+        opts = export_opts(body, quality)
+        state["jobs"]["montage"] = {"state": "running", "progress": 0.0, "quality": quality, "message": "démarrage",
+                                    "format": opts.get("format", "standard"), "sids": sids}
+        threading.Thread(target=run_export, args=("montage", sids, quality, opts), daemon=True).start()
+        return self._json({"ok": True})
+
     def do_GET(self):
         path = self.path.split("?")[0]
         parts = path.strip("/").split("/")
@@ -547,8 +623,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json([{
                 "id": r["id"], "date": r["date"], "time": r["time"], "duration": r["duration"],
                 "gps_coverage": r["gps_coverage"], "candidates": len(r["candidates"]),
-                "clips": len(get_selections(sid)),
+                "clips": len(get_selections(sid)), "clips_s": round(sum(c["end"] - c["start"] for c in get_selections(sid)), 1),
+                "folder": r.get("folder"),
             } for sid, (_, r) in sorted(state["sessions"].items())])
+        if path == "/api/sources":
+            return self._json({"scan": state["scan"], "folders": [
+                {"path": f, "present": Path(f).is_dir(), "removable": f != state["dcim"],
+                 "sessions": sum(1 for _, r in state["sessions"].values() if r.get("folder") == f)}
+                for f in source_folders()]})
         if parts[:2] == ["api", "session"] and len(parts) == 3 and parts[2] in state["sessions"]:
             _, r = state["sessions"][parts[2]]
             return self._json({**r, "selections": get_selections(parts[2])})
@@ -586,6 +668,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parts = self.path.strip("/").split("/")
+        if parts == ["api", "sources"]:
+            return self._sources(self._body() or {})
+        if parts == ["api", "montage"]:
+            return self._montage(self._body() or {})
+        if parts == ["api", "export", "montage"] and (self._body() or {}).get("cancel"):
+            job = state["jobs"].get("montage", {})
+            job["cancelled"] = True
+            if job.get("proc"):
+                job["proc"].terminate()
+            return self._json({"ok": True})
         if len(parts) != 3 or parts[2] not in state["sessions"]:
             return self.send_error(404)
         sid = parts[2]
@@ -601,7 +693,7 @@ class Handler(BaseHTTPRequestHandler):
                 session, _ = state["sessions"][sid]
                 refs = [(r["utc_t0"], r["offset_s"]) for s2, (_, r) in state["sessions"].items()
                         if s2 != sid and r["offset_source"] in ("manuel", "corrélation")]
-                r = analyze.analyze(session, ov, refs)
+                r = {**analyze.analyze(session, ov, refs), "folder": state["sessions"][sid][1].get("folder")}
                 state["sessions"][sid] = (session, r)
             return self._json({**r, "selections": get_selections(sid)})
         if parts[:2] == ["api", "export"]:
@@ -615,17 +707,12 @@ class Handler(BaseHTTPRequestHandler):
             quality = body.get("quality", "preview")
             if quality not in QUALITY:
                 return self.send_error(400)
-            opts = {}
-            if quality == "final":
-                if int(body.get("height", 1080)) in HEIGHTS:
-                    opts["height"] = int(body.get("height", 1080))
-                opts["crf"] = max(14, min(28, int(body.get("crf", QUALITY["final"]["crf"]))))
-                opts["format"] = body.get("format") if body.get("format") in FORMATS else "standard"
+            opts = export_opts(body, quality)
             if state["jobs"].get(sid, {}).get("state") == "running":
                 return self._json({"error": "export déjà en cours"}, 409)
             state["jobs"][sid] = {"state": "running", "progress": 0.0, "quality": quality, "message": "démarrage",
                                   "format": opts.get("format", "standard")}
-            threading.Thread(target=run_export, args=(sid, quality, opts), daemon=True).start()
+            threading.Thread(target=run_export, args=(sid, [sid], quality, opts), daemon=True).start()
             return self._json({"ok": True})
         if parts[:2] == ["api", "hyperlapse"]:
             body = self._body() or {}
@@ -645,6 +732,17 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=run_hyperlapse, args=(sid, opts), daemon=True).start()
             return self._json({"ok": True})
         self.send_error(404)
+
+
+def export_opts(body, quality):
+    """Options d'export validées (qualité finale : résolution, qualité, destination)."""
+    opts = {}
+    if quality == "final":
+        if int(body.get("height", 1080)) in HEIGHTS:
+            opts["height"] = int(body.get("height", 1080))
+        opts["crf"] = max(14, min(28, int(body.get("crf", QUALITY["final"]["crf"]))))
+        opts["format"] = body.get("format") if body.get("format") in FORMATS else "standard"
+    return opts
 
 
 def main():

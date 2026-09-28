@@ -193,3 +193,19 @@ kbd {
   font-size: 12px; padding: 2px 8px; border-radius: 6px; background: rgba(0,0,0,.6); color: #fff;
 }
 #export-status .warn { color: var(--accent); }
+
+/* dossiers et montage */
+#src-menu .menu-box { left: 0; min-width: 360px; }
+.src-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; }
+.src-list li { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; font-size: 12px; }
+.src-list .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.src-list .absent { color: var(--play); }
+.src-list button { padding: 0 6px; font-size: 11px; }
+.src-add { display: flex; gap: 4px; }
+.src-add input { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 8px; font: inherit; }
+#mt-menu .menu-box { min-width: 320px; }
+.mt-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.warn { color: var(--accent); }
+header { position: relative; z-index: 2000; }  /* menus au-dessus des contrôles Leaflet (z-index 1000) */
+.menu-box a { color: var(--accent); word-break: break-all; }

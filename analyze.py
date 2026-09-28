@@ -258,8 +258,11 @@ def analyze(session, overrides, refs, force=False):
 
 
 def analyze_all(dcim, force=False):
+    return analyze_sessions(insta360.scan(dcim), force)
+
+
+def analyze_sessions(sessions, force=False):
     overrides = json.loads(OVERRIDES.read_text()) if OVERRIDES.exists() else {}
-    sessions = insta360.scan(dcim)
     # Les longues sessions d'abord : leur décalage sert de référence aux clips courts.
     sessions.sort(key=lambda s: -sum(Path(x.lrv).stat().st_size for x in s.segments))
     refs, results = [], {}

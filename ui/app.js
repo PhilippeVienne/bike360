@@ -1227,22 +1227,133 @@ function frame(ts) {
   requestAnimationFrame(frame);
 }
 
+// ------------------------------------------------------------------ sessions, dossiers, montage
+const dayLabel = (d) => new Date(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}T12:00`)
+  .toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+
+async function refreshSessions() {
+  st.sessions = await api("GET", "/api/sessions");
+  const sel = $("#session"), current = sel.value;
+  sel.innerHTML = "";
+  const days = {};
+  st.sessions.forEach((s) => {
+    const g = days[s.date] ??= Object.assign(document.createElement("optgroup"), { label: dayLabel(s.date) });
+    const o = document.createElement("option");
+    o.value = s.id;
+    o.textContent = `${s.time.slice(0, 2)}:${s.time.slice(2, 4)} · ${fmt(s.duration)}` +
+      (s.gps_coverage > 0.5 ? " · GPS" : "") + (s.clips ? ` · ${s.clips} clip(s)` : "");
+    g.appendChild(o);
+  });
+  Object.keys(days).sort().forEach((d) => sel.appendChild(days[d]));
+  if (current) sel.value = current;
+  renderMontage();
+  return st.sessions;
+}
+
+async function refreshSources() {
+  const r = await api("GET", "/api/sources");
+  const ul = $("#src-list");
+  ul.innerHTML = "";
+  r.folders.forEach((f) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="${f.present ? "muted" : "absent"}" title="${f.present ? "présent" : "absent (carte retirée ?)"}">${f.present ? "●" : "○"}</span>
+      <span class="path" title="${f.path}"><bdi dir="ltr">${f.path}</bdi></span>
+      <span>${f.sessions} session(s) ${f.removable ? `<button data-rm="${f.path}" title="Retirer ce dossier">✕</button>` : ""}</span>`;
+    ul.appendChild(li);
+  });
+  const sc = r.scan;
+  $("#src-status").textContent = sc.state === "running" ? "⏳ " + sc.message : sc.state === "error" ? "⚠ " + sc.message
+    : sc.state === "done" ? "✓ " + sc.message : "Tous les sous-dossiers sont parcourus ; les vidéos déjà analysées ne sont pas recalculées.";
+  if (sc.state === "running") setTimeout(async () => { if ((await refreshSources()).scan.state !== "running") refreshSessions(); }, 2000);
+  return r;
+}
+$("#src-menu").addEventListener("toggle", (e) => { if (e.target.open) refreshSources(); });
+$("#src-list").addEventListener("click", async (e) => {
+  const rm = e.target.dataset.rm;
+  if (!rm) return;
+  await api("POST", "/api/sources", { remove: rm });
+  refreshSources();
+});
+$("#src-add").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const path = $("#src-path").value.trim();
+  if (!path) return;
+  const r = await fetch("/api/sources", { method: "POST", headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ add: path }) }).then((x) => x.json());
+  if (r.error) { $("#src-status").textContent = "⚠ " + r.error; return; }
+  $("#src-path").value = "";
+  refreshSources();
+});
+
+// montage : sessions ayant des clips, cochées par défaut celles du jour affiché
+st.montage = new Set();
+function renderMontage() {
+  const ul = $("#mt-list");
+  const withClips = (st.sessions || []).filter((s) => s.clips);
+  ul.innerHTML = withClips.length ? "" : "<li class='muted'>Aucune session n'a de clips.</li>";
+  withClips.forEach((s) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<input type="checkbox" data-sid="${s.id}" ${st.montage.has(s.id) ? "checked" : ""}>
+      <span>${s.date.slice(6)}/${s.date.slice(4, 6)} ${s.time.slice(0, 2)}:${s.time.slice(2, 4)}</span>
+      <span class="muted">${s.clips} clip(s) · ${fmt(s.clips_s)}</span>`;
+    ul.appendChild(li);
+  });
+  const chosen = withClips.filter((s) => st.montage.has(s.id));
+  const total = chosen.reduce((a, s) => a + s.clips_s, 0);
+  $("#mt-total").textContent = chosen.length ? `${chosen.length} session(s) · ${chosen.reduce((a, s) => a + s.clips, 0)} clips · ${fmt(total)}` : "Coche les sessions à enchaîner.";
+  $("#mt-start").disabled = $("#mt-preview").disabled = !chosen.length;
+}
+$("#mt-menu").addEventListener("toggle", async (e) => {
+  if (!e.target.open) return;
+  if (!st.montage.size && st.s) st.sessions.filter((s) => s.clips && s.date === st.s.date).forEach((s) => st.montage.add(s.id));
+  await refreshSessions();
+  pollMontage();
+});
+$("#mt-list").addEventListener("change", (e) => {
+  const sid = e.target.dataset.sid;
+  if (!sid) return;
+  e.target.checked ? st.montage.add(sid) : st.montage.delete(sid);
+  renderMontage();
+});
+async function startMontage(quality) {
+  clearTimeout(saveTimer);
+  await api("PUT", `/api/selections/${st.s.id}`, st.clips);   // la session affichée est à jour
+  const r = await fetch("/api/montage", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sids: [...st.montage], quality, format: $("#export-format").value,
+                           height: +$("#export-height").value, crf: +$("#export-crf").value }) }).then((x) => x.json());
+  if (r.error) { $("#mt-status").textContent = "⚠ " + r.error; return; }
+  pollMontage();
+}
+$("#mt-start").addEventListener("click", () => startMontage("final"));
+$("#mt-preview").addEventListener("click", () => startMontage("preview"));
+let montageTimer = null;
+async function pollMontage() {
+  clearTimeout(montageTimer);
+  const j = await api("GET", "/api/export/montage");
+  const el = $("#mt-status");
+  if (j.state === "running") {
+    el.innerHTML = `<progress value="${j.progress}" max="1"></progress> ${Math.round(j.progress * 100)} % · ${j.message}
+      <button id="mt-cancel">annuler</button>`;
+    $("#mt-cancel").onclick = () => api("POST", "/api/export/montage", { cancel: true });
+    $("#mt-badge").textContent = `${Math.round(j.progress * 100)} %`;
+    montageTimer = setTimeout(pollMontage, 1000);
+  } else {
+    $("#mt-badge").textContent = j.state === "done" ? "✓" : j.state === "error" ? "⚠" : "";
+    el.innerHTML = j.state === "done" ? `✓ <a href="/exports/${encodeURIComponent(j.output)}" target="_blank">${j.output}</a>`
+      : j.state === "error" ? "⚠ " + j.message.slice(0, 200) : "";
+    if (j.warning) el.insertAdjacentHTML("beforeend", ` <span class="warn">⚠ ${j.warning}</span>`);
+  }
+}
+
 (async function init() {
   setRate(1);
   setView({});
   await loadSettings();
-  const sessions = await api("GET", "/api/sessions");
-  const sel = $("#session");
-  sessions.forEach((s) => {
-    const o = document.createElement("option");
-    o.value = s.id;
-    o.textContent = `${s.date.slice(6)}/${s.date.slice(4, 6)} ${s.time.slice(0, 2)}:${s.time.slice(2, 4)} · ${fmt(s.duration)}` +
-      (s.gps_coverage > 0.5 ? " · GPS" : "") + (s.clips ? ` · ${s.clips} clip(s)` : "");
-    sel.appendChild(o);
-  });
+  const sessions = await refreshSessions();
   const wanted = location.hash.slice(1);
   const first = sessions.find((s) => s.id === wanted) || sessions.reduce((a, b) => (b.duration > a.duration ? b : a));
-  sel.value = first.id;
+  $("#session").value = first.id;
   await loadSession(first.id);
+  pollMontage();
   requestAnimationFrame(frame);
 })();

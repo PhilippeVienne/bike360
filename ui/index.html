@@ -11,6 +11,18 @@
 <header>
   <div class="brand" title="Tri et montage des balades Insta360">◉ Tri 360</div>
   <select id="session" title="Session"></select>
+  <details class="menu" id="src-menu">
+    <summary title="Dossiers de vidéos analysés (carte SD, copies sur disque…)">Dossiers</summary>
+    <div class="menu-box">
+      <div class="menu-title">Dossiers de vidéos</div>
+      <ul id="src-list" class="src-list"></ul>
+      <form id="src-add" class="src-add">
+        <input id="src-path" type="text" placeholder="/chemin/vers/dossier" spellcheck="false" autocomplete="off">
+        <button type="submit" class="primary">Ajouter</button>
+      </form>
+      <span id="src-status" class="hint">Tous les sous-dossiers sont parcourus ; les vidéos déjà analysées ne sont pas recalculées.</span>
+    </div>
+  </details>
   <details class="menu" id="sync-menu">
     <summary title="Décalage horloge caméra ↔ GPS GeoRide"><span class="dot" id="sync-dot"></span>GPS <span id="sync-badge" class="muted">–</span></summary>
     <div class="menu-box">
@@ -51,6 +63,15 @@
           <label><input type="checkbox" data-tel="place"> lieu au début des clips</label>
         </div></details>
     </div>
+    <details class="menu" id="mt-menu"><summary title="Enchaîner les clips de plusieurs sessions dans un seul export">Montage <span id="mt-badge" class="muted"></span></summary>
+      <div class="menu-box">
+        <div class="menu-title">Montage de plusieurs sessions</div>
+        <ul id="mt-list" class="src-list"></ul>
+        <span id="mt-total" class="hint"></span>
+        <span class="hint">Clips dans l'ordre chronologique, avec la destination, la résolution et la qualité choisies.</span>
+        <div class="mt-actions"><button id="mt-preview">Aperçu 720p</button><button id="mt-start" class="primary">Exporter le montage</button></div>
+        <span id="mt-status" class="hint"></span>
+      </div></details>
     <details class="menu" id="hl-menu"><summary title="Toute la balade en quelques minutes, vitesse selon l'intérêt">⏩ Résumé</summary>
       <div class="menu-box">
         <div class="menu-title">Résumé hyperlapse</div>
