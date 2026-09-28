@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Serveur local de l'outil de tri : UI, streaming des proxys .lrv, sélections, export ffmpeg.
 
-Usage : python3 server.py [DCIM] [--port 8360]
+Usage : python3 server.py [DCIM] [--port 8360] [--host 127.0.0.1]
 """
 import argparse
 import json
@@ -39,6 +39,7 @@ QUALITY = {
     "final": {"source": "insv", "height": 1080, "crf": 20, "preset": "medium"},
 }
 HEIGHTS = (720, 1080, 1440, 2160)
+HYPERLAPSE_MBPS_1080 = 12  # plafond du résumé : en accéléré chaque image change, le débit exploserait (~30 Mb/s)
 
 state = {"dcim": None, "sessions": {}, "jobs": {}, "nvenc": None, "horizon": {}}
 horizon_queue = []
@@ -402,6 +403,7 @@ def run_hyperlapse(sid, opts):
             spec.write_text(json.dumps({
                 "source": src, "start": 0.0, "duration": 0.0, "width": out_w, "height": out_h,
                 "fov": fovs[0], "fovs": fovs, "cq": int(q["crf"]), "samples": [int(x) for x in samples],
+                "max_bitrate": int(HYPERLAPSE_MBPS_1080 * 1e6 * out_w * out_h / (1920 * 1080)),
                 "masks": [[m_["x"], m_["y"], m_["w"], m_["h"]] for m_ in masks],
                 "matrices": matrices, "output": str(h264),
             }))
@@ -617,6 +619,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("dcim", nargs="?", default=analyze.DEFAULT_DCIM)
     p.add_argument("--port", type=int, default=8360)
+    p.add_argument("--host", default="127.0.0.1",
+                   help="adresse d'écoute (ex. l'IP Wi-Fi pour un téléphone ; pas d'authentification)")
     a = p.parse_args()
     state["dcim"] = a.dcim
     nvenc_available()
@@ -626,8 +630,8 @@ def main():
         threading.Thread(target=horizon_worker, daemon=True).start()
     for sid, (_, r) in sorted(state["sessions"].items(), key=lambda kv: -kv[1][1]["duration"]):
         request_horizon(sid)
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
-    print(f"→ http://127.0.0.1:{a.port}/")
+    srv = ThreadingHTTPServer((a.host, a.port), Handler)
+    print(f"→ http://{a.host}:{a.port}/")
     srv.serve_forever()
 
 

@@ -87,6 +87,18 @@ video.addEventListener("loadedmetadata", () => {
   st.pendingSeek = null;
   applyRate();
 });
+// état de la vidéo affiché sur la scène (chargement lent depuis la carte SD, erreur…)
+function stageMsg(html, error) {
+  const el = $("#stage-msg");
+  el.hidden = !html;
+  el.classList.toggle("error", !!error);
+  if (html) el.innerHTML = html;
+}
+video.addEventListener("loadstart", () => stageMsg('<span><span class="spin"></span>Chargement de la vidéo…</span>'));
+video.addEventListener("waiting", () => { if (video.readyState < 3) stageMsg('<span><span class="spin"></span>Lecture en attente de données…</span>'); });
+for (const ev of ["loadeddata", "canplay", "playing", "seeked"]) video.addEventListener(ev, () => stageMsg(null));
+video.addEventListener("error", () => stageMsg(`Vidéo illisible (${video.error?.message || "code " + video.error?.code}).<br>
+  La carte SD est-elle toujours montée ?`, true));
 video.addEventListener("ended", () => {
   if (st.seg < st.s.segments.length - 1) seek(st.s.segments[st.seg + 1].offset + 0.01, true);
 });
@@ -493,7 +505,7 @@ function drawTimeline() {
   const step = Math.max(1, Math.floor((i1 - i0) / (w - LABEL_W)));
   let y = 16 + KEY_LANE;                                           // ligne des points clés en haut
   const k = (h - 18 - KEY_LANE) / TRACKS.reduce((s, tr) => s + tr[2], 0);  // pistes à l'échelle du canvas
-  tctx.font = "11px system-ui"; tctx.textBaseline = "middle";
+  tctx.font = "12px system-ui"; tctx.textBaseline = "middle";
 
   // graduations horaires
   const span = st.tl.v1 - st.tl.v0;
@@ -541,7 +553,7 @@ function drawTimeline() {
     tctx.fillStyle = sel ? "rgba(62,207,142,.30)" : "rgba(62,207,142,.15)";
     tctx.fillRect(x0, 12, x1 - x0, bottom - 12);
     tctx.fillStyle = css("--clip"); tctx.fillRect(x0, 12, x1 - x0, 3);
-    if (x1 - x0 > 14) { tctx.font = "bold 11px system-ui"; tctx.fillText(k + 1, x0 + 4, 22); tctx.font = "11px system-ui"; }
+    if (x1 - x0 > 14) { tctx.font = "bold 12px system-ui"; tctx.fillText(k + 1, x0 + 4, 22); tctx.font = "12px system-ui"; }
     if (sel) for (const x of [x0, x1]) {
       tctx.fillRect(x - 2, 12, 4, bottom - 12);
       tctx.fillRect(x - 5, bottom / 2 - 10, 10, 20);
@@ -877,6 +889,13 @@ function renderClips() {
   });
   const total = st.clips.reduce((s, c) => s + c.end - c.start, 0);
   $("#clips-total").textContent = st.clips.length ? `${st.clips.length} · ${fmt(total)}` : "aucun";
+  if (!st.clips.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.innerHTML = `Aucun clip pour l'instant.<br>Pendant la lecture : <kbd>I</kbd> puis <kbd>O</kbd> pour poser début et fin,
+      ou <kbd>C</kbd> pour un clip de 15 s. <kbd>N</kbd> saute au prochain moment fort (ambre sur la frise).`;
+    ol.appendChild(li);
+  }
   renderEditor();
   updateBulk();
   renderStats();
@@ -1015,6 +1034,11 @@ function showOffset() {
   const s = st.s;
   $("#offset").textContent = `${s.offset_s >= 0 ? "+" : ""}${s.offset_s.toFixed(1)} s (${s.offset_source}` +
     (s.corr ? `, r=${s.corr.toFixed(2)}` : "") + `) · GPS ${Math.round(s.gps_coverage * 100)} %`;
+  const cov = Math.round(s.gps_coverage * 100);
+  $("#sync-badge").textContent = cov < 5 ? "absent" : `${s.offset_s >= 0 ? "+" : ""}${s.offset_s.toFixed(1)} s · ${cov} %`;
+  const sure = s.offset_source === "manuel" || (s.offset_source === "corrélation" && (s.corr ?? 0) > 0.5);
+  $("#sync-dot").className = "dot " + (cov < 30 ? "bad" : sure ? "ok" : "warn");
+  $("#sync-dot").title = cov < 30 ? "peu ou pas de GPS" : sure ? "synchronisation fiable" : "synchronisation estimée : à vérifier";
 }
 
 async function setOffset(value) {
@@ -1038,7 +1062,8 @@ async function pollExport() {
   const running = j.state === "running";
   $("#export-preview").disabled = $("#export-final").disabled = $("#hl-start").disabled = running;
   if (running) {
-    el.innerHTML = `<progress value="${j.progress}" max="1"></progress> ${j.quality} · ${j.message}
+    const kind = { preview: "Aperçu", final: "Export", hyperlapse: "Résumé" }[j.quality] || j.quality;
+    el.innerHTML = `<progress value="${j.progress}" max="1"></progress> ${kind} ${Math.round(j.progress * 100)} % · ${j.message}
                     <button id="export-cancel">annuler</button>`;
     $("#export-cancel").onclick = () => api("POST", `/api/export/${st.s.id}`, { cancel: true });
     pollTimer = setTimeout(pollExport, 1000);
@@ -1098,6 +1123,17 @@ $("#horizon-mode").addEventListener("change", (e) => setView({ horizon: e.target
 $("#view-raw").addEventListener("click", () => setView({ raw: !st.view.raw }));
 $("#session").addEventListener("change", (e) => loadSession(e.target.value));
 
+// menus déroulants : un seul ouvert, fermés au clic ailleurs ou sur Échap
+document.addEventListener("click", (e) => {
+  document.querySelectorAll("details.menu[open]").forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+});
+document.querySelectorAll("details.menu").forEach((d) => d.addEventListener("toggle", () => {
+  if (d.open) document.querySelectorAll("details.menu[open]").forEach((o) => { if (o !== d) o.open = false; });
+}));
+const helpDlg = $("#help");
+$("#help-open").addEventListener("click", () => helpDlg.showModal());
+helpDlg.addEventListener("click", (e) => { if (e.target === helpDlg || e.target.closest("[data-close]")) helpDlg.close(); });
+
 function jumpKey(dir) {
   const c = st.clips[st.sel] || activeClip(now());
   if (!c) return;
@@ -1116,7 +1152,10 @@ function jumpCandidate(dir) {
 }
 
 document.addEventListener("keydown", (e) => {
-  if (!st.s || e.target.tagName === "SELECT" || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "?" && !helpDlg.open) { helpDlg.showModal(); e.preventDefault(); return; }
+  if (e.key === "Escape") document.querySelectorAll("details.menu[open]").forEach((d) => (d.open = false));
+  if (!st.s || helpDlg.open || e.target.tagName === "SELECT" || e.target.tagName === "INPUT" && e.target.type !== "checkbox" && e.target.type !== "range"
+      || e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
   const big = e.shiftKey ? 30 : 5;
   const actions = {

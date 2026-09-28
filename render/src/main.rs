@@ -45,6 +45,9 @@ struct Job {
     samples: Vec<usize>,
     /// Qualité NVENC (≈ CRF x264, plus bas = meilleur).
     cq: u8,
+    /// Plafond de débit (bit/s), pour les contenus très mobiles (hyperlapse) ; 0 = qualité seule.
+    #[serde(default)]
+    max_bitrate: u32,
     /// Zones floutées (x, y, w, h) dans l'image côte à côte du .lrv (0..1).
     #[serde(default)]
     masks: Vec<[f32; 4]>,
@@ -161,9 +164,16 @@ fn render(path: &str) -> Result<()> {
     cfg.gopLength = gop;
     cfg.frameIntervalP = 1; // pas d'images B : mode synchrone simple
     cfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_MODE::NV_ENC_PARAMS_RC_VBR;
-    cfg.rcParams.averageBitRate = 0;
-    cfg.rcParams.maxBitRate = 80_000_000;
     cfg.rcParams.targetQuality = job.cq;
+    if job.max_bitrate > 0 {
+        // qualité visée, mais débit plafonné (tampon VBV d'une seconde)
+        cfg.rcParams.averageBitRate = job.max_bitrate / 3 * 2;
+        cfg.rcParams.maxBitRate = job.max_bitrate;
+        cfg.rcParams.vbvBufferSize = job.max_bitrate;
+    } else {
+        cfg.rcParams.averageBitRate = 0;
+        cfg.rcParams.maxBitRate = 80_000_000;
+    }
     unsafe {
         let h264 = &mut cfg.encodeCodecConfig.h264Config;
         h264.idrPeriod = gop;

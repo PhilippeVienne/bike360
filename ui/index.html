@@ -9,42 +9,53 @@
 </head>
 <body>
 <header>
+  <div class="brand" title="Tri et montage des balades Insta360">◉ Tri 360</div>
   <select id="session" title="Session"></select>
-  <div class="sync" title="Décalage horloge caméra ↔ GPS GeoRide">
-    Sync GPS
-    <button data-off="-10">−10</button><button data-off="-1">−1</button>
-    <span id="offset">–</span>
-    <button data-off="1">+1</button><button data-off="10">+10</button>
-    <button id="offset-auto" title="Revenir au calcul automatique">auto</button>
-  </div>
+  <details class="menu" id="sync-menu">
+    <summary title="Décalage horloge caméra ↔ GPS GeoRide"><span class="dot" id="sync-dot"></span>GPS <span id="sync-badge" class="muted">–</span></summary>
+    <div class="menu-box">
+      <div class="menu-title">Synchronisation caméra ↔ GeoRide</div>
+      <div id="offset" class="offset">–</div>
+      <div class="sync">
+        <button data-off="-10">−10 s</button><button data-off="-1">−1 s</button>
+        <button data-off="1">+1 s</button><button data-off="10">+10 s</button>
+      </div>
+      <button id="offset-auto" title="Revenir au calcul automatique">Recalculer automatiquement</button>
+      <span class="hint">Ajuste si la courbe de vitesse ne colle pas aux vibrations de la vidéo.</span>
+    </div>
+  </details>
   <div class="spacer"></div>
   <div class="export">
-    <button id="export-preview" title="Rendu rapide depuis les proxys .lrv (720p)">Aperçu 720p</button>
-    <select id="export-height" title="Résolution de l'export final (depuis les .insv)">
-      <option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option>
-    </select>
-    <select id="export-crf" title="Qualité d'encodage : plus haute = fichier plus lourd">
-      <option value="22">Standard</option><option value="20" selected>Haute</option><option value="17">Maximale</option>
-    </select>
-    <details class="tel-menu"><summary title="Incrustations de télémétrie dans les exports">Incrustations</summary>
-      <div class="tel-box">
-        <label><input type="checkbox" data-tel="enabled"> <strong>télémétrie</strong></label>
-        <label><input type="checkbox" data-tel="speed"> vitesse</label>
-        <label><input type="checkbox" data-tel="map"> mini-carte</label>
-        <label><input type="checkbox" data-tel="altitude"> altitude + profil</label>
-        <label><input type="checkbox" data-tel="place"> lieu au début des clips</label>
-      </div></details>
-    <details class="tel-menu" id="hl-menu"><summary title="Toute la balade en quelques minutes, vitesse selon l'intérêt">Résumé</summary>
-      <div class="tel-box">
+    <span id="export-status"></span>
+    <button id="export-preview" title="Rendu rapide des clips depuis les proxys .lrv (720p)">Aperçu 720p</button>
+    <div class="seg">
+      <select id="export-height" title="Résolution de l'export final (depuis les .insv)">
+        <option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option>
+      </select>
+      <select id="export-crf" title="Qualité d'encodage : plus haute = fichier plus lourd">
+        <option value="22">Standard</option><option value="20" selected>Haute</option><option value="17">Maximale</option>
+      </select>
+      <details class="menu"><summary title="Incrustations de télémétrie dans les exports">Incrustations</summary>
+        <div class="menu-box">
+          <div class="menu-title">Incrustations</div>
+          <label><input type="checkbox" data-tel="enabled"> <strong>télémétrie</strong></label>
+          <label><input type="checkbox" data-tel="speed"> vitesse</label>
+          <label><input type="checkbox" data-tel="map"> mini-carte</label>
+          <label><input type="checkbox" data-tel="altitude"> altitude + profil</label>
+          <label><input type="checkbox" data-tel="place"> lieu au début des clips</label>
+        </div></details>
+    </div>
+    <details class="menu" id="hl-menu"><summary title="Toute la balade en quelques minutes, vitesse selon l'intérêt">⏩ Résumé</summary>
+      <div class="menu-box">
+        <div class="menu-title">Résumé hyperlapse</div>
         <label>durée <select id="hl-duration">
           <option value="60">1 min</option><option value="120">2 min</option><option value="180" selected>3 min</option><option value="300">5 min</option>
         </select></label>
-        <span id="hl-info" class="hl-info"></span>
-        <span class="hl-info">cadrage et horizon de l'aperçu · résolution/qualité de l'export final · sans son</span>
+        <span id="hl-info" class="hint"></span>
+        <span class="hint">Cadrage et horizon de l'aperçu, résolution et qualité de l'export final, sans son.</span>
         <button id="hl-start" class="primary">Créer le résumé</button>
       </div></details>
-    <button id="export-final" class="primary" title="Rendu depuis les .insv pleine résolution">Export final</button>
-    <span id="export-status"></span>
+    <button id="export-final" class="primary" title="Rendu des clips depuis les .insv pleine résolution">Exporter les clips</button>
   </div>
 </header>
 
@@ -53,33 +64,45 @@
     <div class="stage">
       <canvas id="gl"></canvas>
       <div id="hud"></div>
+      <div id="viewinfo"></div>
+      <div id="stage-msg" hidden></div>
     </div>
     <div class="controls">
-      <button id="key-prev" title="Point clé précédent (,)">◀◆</button>
-      <button id="play" title="Lecture / pause (Espace)">▶</button>
-      <button id="key-next" title="Point clé suivant (.)">◆▶</button>
-      <button id="key-add" title="Mémoriser le cadrage à la tête de lecture (K)">◆＋</button>
-      <span id="clock">--:--:--</span>
-      <span id="tpos" class="muted">0:00 / 0:00</span>
-      <div class="rates" id="rates"></div>
-      <label title="Accélère automatiquement (16×) les passages à faible score (M)"><input type="checkbox" id="skim"> survol</label>
-      <div class="marks">
+      <div class="group">
+        <button id="play" class="play" title="Lecture / pause (Espace)">▶</button>
+        <div class="time"><span id="clock">--:--:--</span><span id="tpos" class="muted">0:00 / 0:00</span></div>
+        <div class="rates" id="rates" title="Vitesse de lecture (1–5)"></div>
+        <label class="toggle" title="Accélère automatiquement (16×) les passages à faible score (M)"><input type="checkbox" id="skim"> survol</label>
+      </div>
+      <div class="group marks">
+        <span class="glabel">Clip</span>
         <button id="mark-in" title="Poser le début du clip (I)">⟦ Début</button>
         <button id="mark-out" title="Poser la fin et créer le clip (O)">Fin ⟧</button>
-        <button id="quick-clip" title="Clip de 15 s autour de la tête de lecture (C)">＋ Clip 15 s</button>
+        <button id="quick-clip" title="Clip de 15 s autour de la tête de lecture (C)">＋ 15 s</button>
         <span id="mark-hint" class="muted"></span>
       </div>
+      <div class="group">
+        <span class="glabel">Points</span>
+        <button id="key-prev" title="Point clé précédent (,)">◀</button>
+        <button id="key-add" title="Mémoriser le cadrage à la tête de lecture (K)">◆ ＋</button>
+        <button id="key-next" title="Point clé suivant (.)">▶</button>
+      </div>
       <div class="spacer"></div>
-      <label title="Horizon de la vue libre (H pour changer) : auto = mesuré sur l'image, fixe = inclinaison du support">horizon
-        <select id="horizon-mode"><option value="fixe">fixe</option><option value="auto">auto</option><option value="aucun">aucun</option></select></label>
-      <button id="view-front" title="Vue avant (F)">Avant</button>
-      <button id="view-rider" title="Vue pilote (R)">Pilote</button>
-      <button id="view-raw" title="Double fisheye brut (V)">Brut</button>
-      <button id="mask-edit" title="Tracer des zones à flouter (compteur…) sur l'image brute">Masquer…</button>
-      <button id="mask-clear" title="Supprimer toutes les zones floutées">✕ masques</button>
-      <label title="Rotation de l'image autour de l'axe de visée">rotation
-        <input type="range" id="view-roll" min="-45" max="45" step="0.5" value="0"></label>
-      <span id="viewinfo" class="muted"></span>
+      <div class="group">
+        <span class="glabel">Vue</span>
+        <button id="view-front" title="Vue avant (F)">Avant</button>
+        <button id="view-rider" title="Vue pilote (R)">Pilote</button>
+        <button id="view-raw" title="Double fisheye brut (V)">Brut</button>
+        <select id="horizon-mode" title="Horizon de la vue libre (H) : fixe = inclinaison du support, auto = mesuré sur l'image">
+          <option value="fixe">horizon fixe</option><option value="auto">horizon auto</option><option value="aucun">sans horizon</option></select>
+        <label class="roll" title="Rotation de l'image autour de l'axe de visée (Ctrl+glisser sur l'image)">↻
+          <input type="range" id="view-roll" min="-45" max="45" step="0.5" value="0"></label>
+      </div>
+      <div class="group">
+        <button id="mask-edit" title="Tracer des zones à flouter (compteur…) sur l'image brute">Masquer…</button>
+        <button id="mask-clear" title="Supprimer toutes les zones floutées">✕ masques</button>
+        <button id="help-open" class="icon" title="Raccourcis clavier (?)">?</button>
+      </div>
     </div>
   </section>
 
@@ -132,13 +155,27 @@
 
 <footer>
   <canvas id="timeline"></canvas>
-  <div class="help muted small">
-    Espace lecture · ←/→ ±5 s (Maj ±30 s) · 1–5 vitesse · N/P candidat · I/O début/fin · C clip 15 s ·
-    [ ] bords du clip sélectionné · K point clé · , . point précédent/suivant · Ctrl+glisser la vidéo = rotation · L boucle · Suppr supprimer · H horizon · F/R/V vues ·
-    timeline : glisser les bords d'un clip, molette = zoom, 0 = tout
-  </div>
 </footer>
 
+<dialog id="help">
+  <div class="help-head"><strong>Raccourcis</strong><div class="spacer"></div><button data-close>✕</button></div>
+  <div class="help-grid">
+    <section><h4>Lecture</h4>
+      <p><kbd>Espace</kbd> lecture / pause</p><p><kbd>←</kbd> <kbd>→</kbd> ±5 s · <kbd>Maj</kbd> ±30 s</p>
+      <p><kbd>1</kbd>…<kbd>5</kbd> vitesse</p><p><kbd>M</kbd> survol des passages calmes</p>
+      <p><kbd>N</kbd> / <kbd>P</kbd> moment fort suivant / précédent</p></section>
+    <section><h4>Clips</h4>
+      <p><kbd>I</kbd> début · <kbd>O</kbd> fin et création</p><p><kbd>C</kbd> clip de 15 s</p>
+      <p><kbd>[</kbd> <kbd>]</kbd> bords du clip sélectionné</p><p><kbd>L</kbd> boucle · <kbd>Suppr</kbd> supprimer</p></section>
+    <section><h4>Cadrage</h4>
+      <p>glisser l'image : orienter · molette : champ</p><p><kbd>Ctrl</kbd>+glisser : rotation</p>
+      <p><kbd>K</kbd> point clé · <kbd>,</kbd> <kbd>.</kbd> précédent / suivant</p>
+      <p><kbd>F</kbd> avant · <kbd>R</kbd> pilote · <kbd>V</kbd> brut · <kbd>H</kbd> horizon</p></section>
+    <section><h4>Frise</h4>
+      <p>glisser les bords d'un clip pour l'ajuster</p><p>glisser un ◆ pour déplacer un point clé</p>
+      <p>molette : zoom · <kbd>0</kbd> : tout afficher</p></section>
+  </div>
+</dialog>
 <video id="video" playsinline crossorigin="anonymous" preload="auto"></video>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="/ui/app.js"></script>
