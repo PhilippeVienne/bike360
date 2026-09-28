@@ -1,0 +1,5 @@
+# Données personnelles (positions GPS, sélections) et rendus
+data/
+exports/
+__pycache__/
+render/target/

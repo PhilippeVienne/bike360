@@ -1,0 +1,12 @@
+[package]
+name = "insta-render"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+cudarc = { version = "0.16", features = ["cuda-version-from-build-system"] }
+mp4 = "0.14"
+nvidia-video-codec-sdk = "0.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"

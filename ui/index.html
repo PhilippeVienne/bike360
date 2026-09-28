@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tri balade 360</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header>
+  <select id="session" title="Session"></select>
+  <div class="sync" title="Décalage horloge caméra ↔ GPS GeoRide">
+    Sync GPS
+    <button data-off="-10">−10</button><button data-off="-1">−1</button>
+    <span id="offset">–</span>
+    <button data-off="1">+1</button><button data-off="10">+10</button>
+    <button id="offset-auto" title="Revenir au calcul automatique">auto</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="export">
+    <button id="export-preview" title="Rendu rapide depuis les proxys .lrv (720p)">Aperçu 720p</button>
+    <select id="export-height" title="Résolution de l'export final (depuis les .insv)">
+      <option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option>
+    </select>
+    <select id="export-crf" title="Qualité d'encodage : plus haute = fichier plus lourd">
+      <option value="22">Standard</option><option value="20" selected>Haute</option><option value="17">Maximale</option>
+    </select>
+    <button id="export-final" class="primary" title="Rendu depuis les .insv pleine résolution">Export final</button>
+    <span id="export-status"></span>
+  </div>
+</header>
+
+<main>
+  <section class="viewer">
+    <div class="stage">
+      <canvas id="gl"></canvas>
+      <div id="hud"></div>
+    </div>
+    <div class="controls">
+      <button id="key-prev" title="Point clé précédent (,)">◀◆</button>
+      <button id="play" title="Lecture / pause (Espace)">▶</button>
+      <button id="key-next" title="Point clé suivant (.)">◆▶</button>
+      <button id="key-add" title="Mémoriser le cadrage à la tête de lecture (K)">◆＋</button>
+      <span id="clock">--:--:--</span>
+      <span id="tpos" class="muted">0:00 / 0:00</span>
+      <div class="rates" id="rates"></div>
+      <label title="Accélère automatiquement (16×) les passages à faible score (M)"><input type="checkbox" id="skim"> survol</label>
+      <div class="marks">
+        <button id="mark-in" title="Poser le début du clip (I)">⟦ Début</button>
+        <button id="mark-out" title="Poser la fin et créer le clip (O)">Fin ⟧</button>
+        <button id="quick-clip" title="Clip de 15 s autour de la tête de lecture (C)">＋ Clip 15 s</button>
+        <span id="mark-hint" class="muted"></span>
+      </div>
+      <div class="spacer"></div>
+      <label title="Horizon de la vue libre (H pour changer) : auto = mesuré sur l'image, fixe = inclinaison du support">horizon
+        <select id="horizon-mode"><option value="fixe">fixe</option><option value="auto">auto</option><option value="aucun">aucun</option></select></label>
+      <button id="view-front" title="Vue avant (F)">Avant</button>
+      <button id="view-rider" title="Vue pilote (R)">Pilote</button>
+      <button id="view-raw" title="Double fisheye brut (V)">Brut</button>
+      <button id="mask-edit" title="Tracer des zones à flouter (compteur…) sur l'image brute">Masquer…</button>
+      <button id="mask-clear" title="Supprimer toutes les zones floutées">✕ masques</button>
+      <label title="Rotation de l'image autour de l'axe de visée">rotation
+        <input type="range" id="view-roll" min="-45" max="45" step="0.5" value="0"></label>
+      <span id="viewinfo" class="muted"></span>
+    </div>
+  </section>
+
+  <aside>
+    <div class="panel-top">
+      <div class="tabs"><button data-tab="map" class="active">Carte</button><button data-tab="stats">Stats</button></div>
+      <div id="map"></div>
+      <div id="stats" hidden></div>
+    </div>
+    <div class="clips">
+      <div class="clips-head">
+        <label title="Tout cocher / décocher"><input type="checkbox" id="check-all"></label>
+        <strong>Clips</strong> <span id="clips-total" class="muted"></span>
+        <div class="spacer"></div>
+        <button id="delete-checked" class="danger" disabled>Supprimer</button>
+      </div>
+      <div id="clip-editor" hidden>
+        <div class="ed-head"><strong id="ed-title"></strong><div class="spacer"></div>
+          <button data-a="close" title="Fermer l'éditeur">✕</button></div>
+        <div class="ed-row"><span class="ed-label">Début</span>
+          <button data-edge="start" data-d="-1">−1 s</button><button data-edge="start" data-d="-0.1">−0,1</button>
+          <span id="ed-start" class="ed-time"></span>
+          <button data-edge="start" data-d="0.1">+0,1</button><button data-edge="start" data-d="1">+1 s</button>
+          <button data-edge="start" data-d="here" title="Début = tête de lecture ([)">⤓ ici</button></div>
+        <div class="ed-row"><span class="ed-label">Fin</span>
+          <button data-edge="end" data-d="-1">−1 s</button><button data-edge="end" data-d="-0.1">−0,1</button>
+          <span id="ed-end" class="ed-time"></span>
+          <button data-edge="end" data-d="0.1">+0,1</button><button data-edge="end" data-d="1">+1 s</button>
+          <button data-edge="end" data-d="here" title="Fin = tête de lecture (])">⤓ ici</button></div>
+        <div class="ed-row"><span class="ed-label">Cadrage</span><span id="ed-view" class="muted"></span>
+          <div class="spacer"></div><button data-a="view" title="Remplacer par la vue affichée">Vue actuelle</button></div>
+        <div class="ed-row"><span class="ed-label">Horizon</span>
+          <select id="ed-horizon" title="auto = mesuré sur l'image (bien en forêt/ville), fixe = inclinaison du support">
+            <option value="fixe">fixe (support)</option><option value="auto">auto (image)</option><option value="aucun">aucun</option></select></div>
+        <div class="ed-row"><span class="ed-label">Points</span>
+          <button data-a="add-key" class="primary" title="Mémoriser le cadrage affiché à la tête de lecture (K)">◆ Point clé</button>
+          <label title="Enregistre un point clé à chaque changement de vue dans le clip"><input type="checkbox" id="auto-key"> Auto</label>
+          <div class="spacer"></div>
+          <button data-a="clear-keys" title="Supprimer tous les points clés du clip">✕ tous</button></div>
+        <ol id="ed-keylist"></ol>
+        <div class="ed-row"><div class="spacer"></div>
+          <button data-a="play">▶ Lire</button><button data-a="goto-end" title="Voir les 3 dernières secondes">Fin ▶</button>
+          <button data-a="loop" id="ed-loop" title="Lecture en boucle (L)">⟲ Boucle</button>
+          <button data-a="del" class="danger" title="Supprimer le clip (Suppr)">Supprimer</button></div>
+      </div>
+      <ol id="clips"></ol>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <canvas id="timeline"></canvas>
+  <div class="help muted small">
+    Espace lecture · ←/→ ±5 s (Maj ±30 s) · 1–5 vitesse · N/P candidat · I/O début/fin · C clip 15 s ·
+    [ ] bords du clip sélectionné · K point clé · , . point précédent/suivant · Ctrl+glisser la vidéo = rotation · L boucle · Suppr supprimer · H horizon · F/R/V vues ·
+    timeline : glisser les bords d'un clip, molette = zoom, 0 = tout
+  </div>
+</footer>
+
+<video id="video" playsinline crossorigin="anonymous" preload="auto"></video>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="/ui/app.js"></script>
+</body>
+</html>
