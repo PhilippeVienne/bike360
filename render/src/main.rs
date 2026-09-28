@@ -326,7 +326,10 @@ fn render(path: &str) -> Result<()> {
             }
             if let Some(&target) = job.samples.get(wi) {
                 let kf = m.tracks[ta].keyframe_before(target).min(m.tracks[tb].keyframe_before(target));
-                if target > k + JUMP_MIN && kf > k {
+                // on attend que la précédente image voulue soit sortie du décodeur (latence de
+                // quelques images) : sinon le saut la jetterait avec les images inutiles
+                let prev_done = wi == 0 || next > job.samples[wi - 1] as i64;
+                if target > k + JUMP_MIN && kf > k && prev_done {
                     k = kf;
                     next = kf as i64;
                     // images décodées devenues inutiles : rendues au pool
