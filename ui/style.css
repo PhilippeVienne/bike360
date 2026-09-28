@@ -181,3 +181,15 @@ kbd {
 .help-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 4px 24px; }
 .help-grid h4 { margin: 10px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); }
 .help-grid p { margin: 3px 0; }
+
+/* cadre de la destination (carré, vertical) sur l'aperçu 16:9 */
+#frame-guide {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none;
+  border: 1px dashed rgba(255,255,255,.7); box-shadow: 0 0 0 100vmax rgba(0,0,0,.45);
+}
+#frame-guide[hidden] { display: none; }
+#frame-guide span {
+  position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); white-space: nowrap;
+  font-size: 12px; padding: 2px 8px; border-radius: 6px; background: rgba(0,0,0,.6); color: #fff;
+}
+#export-status .warn { color: var(--accent); }

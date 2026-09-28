@@ -29,6 +29,12 @@
     <span id="export-status"></span>
     <button id="export-preview" title="Rendu rapide des clips depuis les proxys .lrv (720p)">Aperçu 720p</button>
     <div class="seg">
+      <select id="export-format" title="Destination : format d'image et réglages d'encodage">
+        <option value="standard">YouTube / 16:9</option>
+        <option value="vertical">Reels · TikTok · Shorts 9:16</option>
+        <option value="carre">Instagram carré 1:1</option>
+        <option value="leger">Message (léger)</option>
+      </select>
       <select id="export-height" title="Résolution de l'export final (depuis les .insv)">
         <option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option>
       </select>
@@ -65,6 +71,7 @@
       <canvas id="gl"></canvas>
       <div id="hud"></div>
       <div id="viewinfo"></div>
+      <div id="frame-guide" hidden><span></span></div>
       <div id="stage-msg" hidden></div>
     </div>
     <div class="controls">

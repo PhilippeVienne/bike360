@@ -39,6 +39,15 @@ QUALITY = {
     "final": {"source": "insv", "height": 1080, "crf": 20, "preset": "medium"},
 }
 HEIGHTS = (720, 1080, 1440, 2160)
+# Destinations de l'export final. Hors 16:9, taille fixe ; le champ du clip (horizontal en 16:9)
+# devient la hauteur de champ du 16:9 en largeur : le carré est un recadrage central, le
+# vertical garde la largeur du carré et gagne du champ en haut et en bas.
+FORMATS = {
+    "standard": {"label": "YouTube / standard 16:9"},
+    "vertical": {"label": "Reels / TikTok / Shorts 9:16", "size": (1080, 1920), "max_bitrate": 16_000_000},
+    "carre": {"label": "Instagram carré 1:1", "size": (1080, 1080), "max_bitrate": 12_000_000},
+    "leger": {"label": "Message (léger, 720p)", "size": (1280, 720), "max_bitrate": 1_400_000, "audio": "96k"},
+}
 HYPERLAPSE_MBPS_1080 = 12  # plafond du résumé : en accéléré chaque image change, le débit exploserait (~30 Mb/s)
 
 state = {"dcim": None, "sessions": {}, "jobs": {}, "nvenc": None, "horizon": {}}
@@ -91,11 +100,24 @@ def nvenc_available():
 
 
 def encoder_args(q):
+    cap = q.get("max_bitrate")
+    rate = ["-maxrate", str(cap), "-bufsize", str(cap)] if cap else []
     if nvenc_available():
         # -cq ≈ -crf de x264 ; p5 = bon compromis qualité/vitesse
         return ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr",
-                "-cq", str(q["crf"]), "-b:v", "0", "-pix_fmt", "yuv420p"]
-    return ["-c:v", "libx264", "-preset", q["preset"], "-crf", str(q["crf"])]
+                "-cq", str(q["crf"]), "-b:v", "0", *rate, "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", q["preset"], "-crf", str(q["crf"]), *rate]
+
+
+def output_size(q):
+    """(largeur, hauteur) de sortie selon la destination (16:9 à la hauteur choisie par défaut)."""
+    size = FORMATS.get(q.get("format", "standard"), {}).get("size")
+    return size or (q["height"] * 16 // 9, q["height"])
+
+
+def output_fov(fov, w, h):
+    """Champ horizontal de sortie pour un champ de clip défini en 16:9 (voir FORMATS)."""
+    return fov if w * 9 >= h * 16 - 1 else v_fov_of(fov, 16, 9)
 lock = threading.Lock()
 
 
@@ -246,13 +268,14 @@ def run_part_process(job, cmd, on_progress):
 
 def export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, size, out_w, out_h, out, report):
     seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
-    targets = part_targets(clip, result, horizon_data, seg_offset, ss, dur, 1 / float(source_fps(src)))
+    targets = [(t, m, output_fov(f, out_w, out_h))
+               for t, m, f in part_targets(clip, result, horizon_data, seg_offset, ss, dur, 1 / float(source_fps(src)))]
     cmdfile = out.with_suffix(".cmd")
     angles = level_commands(targets, cmdfile, out_w, out_h)
     graph = v360_filter({**clip, "fov": targets[0][2]}, out_w, out_h, q["source"], masks, size, angles, cmdfile)
     cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", src,
            "-filter_complex", graph, "-map", "[v]", "-map", "0:a:0?", *encoder_args(q),
-           "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+           "-c:a", "aac", "-b:a", q.get("audio", "160k"), "-ar", "48000", "-ac", "2",
            "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(out)]
 
     def progress(line):
@@ -268,12 +291,12 @@ def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks
     seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
     targets = part_targets(clip, result, horizon_data, seg_offset, ss, dur, fd)
     matrices = [[float(v) for v in m.flatten()] for _, m, _ in targets]
-    fovs = [float(f) for _, _, f in targets]
+    fovs = [float(output_fov(f, out_w, out_h)) for _, _, f in targets]
     h264 = out.with_suffix(".h264")
     spec = out.with_suffix(".json")
     spec.write_text(json.dumps({
         "source": src, "start": ss, "duration": dur, "width": out_w, "height": out_h,
-        "fov": fovs[0], "fovs": fovs, "cq": int(q["crf"]),
+        "fov": fovs[0], "fovs": fovs, "cq": int(q["crf"]), "max_bitrate": int(q.get("max_bitrate", 0)),
         "masks": [[m["x"], m["y"], m["w"], m["h"]] for m in masks],
         "matrices": matrices, "output": str(h264),
     }))
@@ -284,7 +307,7 @@ def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks
     run_part_process(job, [str(RENDER_BIN), str(spec)], progress)
     run_part_process(job, ["ffmpeg", "-v", "error", "-y", "-framerate", str(fps), "-i", str(h264),
                            "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", src, "-map", "0:v", "-map", "1:a:0?",
-                           "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+                           "-c:v", "copy", "-c:a", "aac", "-b:a", q.get("audio", "160k"), "-ar", "48000", "-ac", "2",
                            "-movflags", "+faststart", str(out)], lambda _: None)
     h264.unlink(missing_ok=True)
 
@@ -293,21 +316,24 @@ def run_export(sid, quality, opts):
     job = state["jobs"][sid]
     try:
         session, result = state["sessions"][sid]
-        q = {**QUALITY[quality], **opts}
-        out_h = q["height"]
-        out_w = out_h * 16 // 9
+        q = {**QUALITY[quality], **opts, **FORMATS.get(opts.get("format", "standard"), {})}
+        out_w, out_h = output_size(q)
+        name = f"{quality}_{out_h}p" if q.get("format", "standard") == "standard" else q["format"]
         clips = get_selections(sid)
         settings = get_settings()
         masks, tel_opts = settings["masks"], settings["telemetry"]
         sizes = {}
         if not clips:
             raise ValueError("aucun clip sélectionné")
+        total_s = sum(c["end"] - c["start"] for c in clips)
+        if q.get("format") == "vertical" and total_s > 90:
+            job["warning"] = f"{int(total_s // 60)} min {int(total_s % 60):02d} : long pour un Reel (90 s) ou un Short (60 s)"
         gpu = q["source"] == "insv" and gpu_engine_available()
         # Horizon : analyse complète si déjà prête, sinon seulement les portions des clips.
         full = state["horizon"].get(sid, {})
         full_data = full.get("data") if full.get("status") == "done" else None
         job["engine"] = "GPU" if gpu else "ffmpeg"
-        out_dir = EXPORTS / sid / f"{quality}_{out_h}p"
+        out_dir = EXPORTS / sid / name
         out_dir.mkdir(parents=True, exist_ok=True)
         todo = [(i, c, p) for i, c in enumerate(clips) for p in clip_parts(session, result, c)]
         total = sum(p[2] for _, _, p in todo)
@@ -347,7 +373,7 @@ def run_export(sid, quality, opts):
         job["message"] = "assemblage"
         listing = out_dir / "concat.txt"
         listing.write_text("".join(f"file '{f.name}'\n" for f in files))
-        final = EXPORTS / f"{sid}_{quality}_{out_h}p.mp4"
+        final = EXPORTS / f"{sid}_{name}.mp4"
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
                         "-c", "copy", "-movflags", "+faststart", str(final)], check=True)
         job.update(state="done", progress=1.0, message=f"terminé ({job['engine']})", output=final.name)
@@ -369,9 +395,12 @@ def run_hyperlapse(sid, opts):
         if not gpu_engine_available():
             raise ValueError("le résumé hyperlapse demande le moteur GPU (render/ + NVENC)")
         session, result = state["sessions"][sid]
-        q = {**QUALITY["final"], "height": opts["height"], "crf": opts["crf"]}
-        out_h = q["height"]
-        out_w = out_h * 16 // 9
+        q = {**QUALITY["final"], "height": opts["height"], "crf": opts["crf"], "format": opts["format"],
+             **FORMATS[opts["format"]]}
+        out_w, out_h = output_size(q)
+        name = f"hyperlapse_{out_h}p" if opts["format"] == "standard" else f"hyperlapse_{opts['format']}"
+        cap = int(HYPERLAPSE_MBPS_1080 * 1e6 * out_w * out_h / (1920 * 1080))
+        cap = min(cap, q.get("max_bitrate", cap))
         settings = get_settings()
         masks, tel_opts = settings["masks"], settings["telemetry"]
         view = {"start": 0.0, "end": result["duration"], **opts["view"]}
@@ -380,7 +409,7 @@ def run_hyperlapse(sid, opts):
         if geometry.clip_horizon_mode(view) == "auto" and horizon_data is None:
             view["horizon"] = "fixe"  # analyse pas encore prête : on reste sur le support
         taus = hyperlapse.frame_times(result, opts["duration"])
-        out_dir = EXPORTS / sid / f"hyperlapse_{out_h}p"
+        out_dir = EXPORTS / sid / name
         out_dir.mkdir(parents=True, exist_ok=True)
         job["engine"] = "GPU"
         files, done = [], 0
@@ -397,13 +426,13 @@ def run_hyperlapse(sid, opts):
                 v = geometry.clip_view_at(view, t)
                 m = geometry.view_matrix(v["yaw"], v["pitch"], level_matrix_at(view, result, horizon_data, t), v["roll"])
                 matrices.append([float(x) for x in m.flatten()])
-                fovs.append(float(v["fov"]))
+                fovs.append(float(output_fov(v["fov"], out_w, out_h)))
             out = out_dir / f"part_{n:03d}.mp4"
             h264, spec = out.with_suffix(".h264"), out.with_suffix(".json")
             spec.write_text(json.dumps({
                 "source": src, "start": 0.0, "duration": 0.0, "width": out_w, "height": out_h,
                 "fov": fovs[0], "fovs": fovs, "cq": int(q["crf"]), "samples": [int(x) for x in samples],
-                "max_bitrate": int(HYPERLAPSE_MBPS_1080 * 1e6 * out_w * out_h / (1920 * 1080)),
+                "max_bitrate": cap,
                 "masks": [[m_["x"], m_["y"], m_["w"], m_["h"]] for m_ in masks],
                 "matrices": matrices, "output": str(h264),
             }))
@@ -432,7 +461,7 @@ def run_hyperlapse(sid, opts):
         job["message"] = "assemblage"
         listing = out_dir / "concat.txt"
         listing.write_text("".join(f"file '{f.name}'\n" for f in files))
-        final = EXPORTS / f"{sid}_hyperlapse_{out_h}p.mp4"
+        final = EXPORTS / f"{sid}_{name}.mp4"
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
                         "-c", "copy", "-movflags", "+faststart", str(final)], check=True)
         job.update(state="done", progress=1.0, message="résumé terminé (GPU)", output=final.name)
@@ -591,9 +620,11 @@ class Handler(BaseHTTPRequestHandler):
                 if int(body.get("height", 1080)) in HEIGHTS:
                     opts["height"] = int(body.get("height", 1080))
                 opts["crf"] = max(14, min(28, int(body.get("crf", QUALITY["final"]["crf"]))))
+                opts["format"] = body.get("format") if body.get("format") in FORMATS else "standard"
             if state["jobs"].get(sid, {}).get("state") == "running":
                 return self._json({"error": "export déjà en cours"}, 409)
-            state["jobs"][sid] = {"state": "running", "progress": 0.0, "quality": quality, "message": "démarrage"}
+            state["jobs"][sid] = {"state": "running", "progress": 0.0, "quality": quality, "message": "démarrage",
+                                  "format": opts.get("format", "standard")}
             threading.Thread(target=run_export, args=(sid, quality, opts), daemon=True).start()
             return self._json({"ok": True})
         if parts[:2] == ["api", "hyperlapse"]:
@@ -608,6 +639,7 @@ class Handler(BaseHTTPRequestHandler):
             view = {k: float(body.get(k, d)) for k, d in (("yaw", 0), ("pitch", 0), ("roll", 0), ("fov", 100))}
             view["horizon"] = body.get("horizon") if body.get("horizon") in ("auto", "fixe", "aucun") else "fixe"
             opts = {"duration": duration, "height": height if height in HEIGHTS else 1080, "view": view,
+                    "format": body.get("format") if body.get("format") in FORMATS else "standard",
                     "crf": max(14, min(28, int(body.get("crf", QUALITY["final"]["crf"]))))}
             state["jobs"][sid] = {"state": "running", "progress": 0.0, "quality": "hyperlapse", "message": "démarrage"}
             threading.Thread(target=run_hyperlapse, args=(sid, opts), daemon=True).start()

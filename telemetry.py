@@ -120,7 +120,11 @@ def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_ar
     if lat is None or speed is None:
         return False
     workdir.mkdir(parents=True, exist_ok=True)
-    m = int(0.03 * H)
+    U = min(W, H)                 # tailles relatives au petit côté (16:9, 1:1 ou 9:16)
+    m = int(0.03 * U)
+    # vertical (Reels, TikTok, Shorts) : l'interface de l'appli recouvre le haut et le bas
+    top = int(0.09 * H) if H > W else m
+    bottom = int(0.16 * H) if H > W else m
     inputs, chain, cmds = [], [], {}
     label = "0:v"
 
@@ -135,7 +139,7 @@ def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_ar
     at = lambda arr, t: float(np.interp(t, np.arange(len(arr)), arr))
 
     # --- mini-carte + profil d'altitude (haut droite)
-    S = int(0.26 * H)
+    S = int(0.26 * U)
     if opts["map"]:
         lat0 = math.radians(np.nanmean(lat))
         X, Y = np.radians(lon) * math.cos(lat0), np.radians(lat)
@@ -145,14 +149,14 @@ def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_ar
                            S - pad - (Y[i] - Y.min() + (span - np.ptp(Y)) / 2) / span * (S - 2 * pad))
         panel = _rounded_panel(S, S, S * 0.08)
         step = max(1, len(lat) // 800)
-        _stroke(panel, [to_px(i) for i in range(0, len(lat), step)], max(2, H * 0.004), (200, 200, 200), 0.85)
+        _stroke(panel, [to_px(i) for i in range(0, len(lat), step)], max(2, U * 0.004), (200, 200, 200), 0.85)
         a, b = int(clip["start"]), int(min(len(lat) - 1, clip["end"]))
-        _stroke(panel, [to_px(i) for i in range(a, b + 1)], max(3, H * 0.008), ACCENT)
-        mx, my = W - m - S, m
+        _stroke(panel, [to_px(i) for i in range(a, b + 1)], max(3, U * 0.008), ACCENT)
+        mx, my = W - m - S, top
         tag = add_image(panel, "map")
         chain.append(f"[{label}][{tag}]overlay={mx}:{my}[m1]")
         label = "m1"
-        D = max(8, int(H * 0.024)) // 2 * 2
+        D = max(8, int(U * 0.024)) // 2 * 2
         dot = add_image(_dot(D), "dot")
         x0, y0 = to_px(int(t0))
         chain.append(f"[{label}][{dot}]overlay@dot={mx + x0 - D / 2:.1f}:{my + y0 - D / 2:.1f}[m2]")
@@ -162,22 +166,22 @@ def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_ar
         cmds["dot"] = [(None, mx + np.interp(t, idx, PX[:, 0]) - D / 2, my + np.interp(t, idx, PX[:, 1]) - D / 2)
                        for t in times]
     if opts["altitude"] and alt is not None:
-        PH = int(0.08 * H)
-        py = m + (S + int(0.012 * H) if opts["map"] else 0)
+        PH = int(0.08 * U)
+        py = top + (S + int(0.012 * U) if opts["map"] else 0)
         px_ = W - m - S
         prof = _rounded_panel(S, PH, PH * 0.2)
         lo, hi = np.nanmin(alt), np.nanmax(alt)
         n = len(alt)
         pts = [(S * 0.04 + i / (n - 1) * S * 0.92, PH * 0.85 - (alt[i] - lo) / max(hi - lo, 1) * PH * 0.55)
                for i in range(0, n, max(1, n // 400))]
-        _stroke(prof, pts, max(2, H * 0.003), (220, 220, 220), 0.9)
+        _stroke(prof, pts, max(2, U * 0.003), (220, 220, 220), 0.9)
         a, b = int(clip["start"]), int(min(n - 1, clip["end"]))
         _stroke(prof, [(S * 0.04 + i / (n - 1) * S * 0.92, PH * 0.85 - (alt[i] - lo) / max(hi - lo, 1) * PH * 0.55)
-                       for i in range(a, b + 1, max(1, (b - a) // 100))], max(3, H * 0.005), ACCENT)
+                       for i in range(a, b + 1, max(1, (b - a) // 100))], max(3, U * 0.005), ACCENT)
         tag = add_image(prof, "profile")
         chain.append(f"[{label}][{tag}]overlay={px_}:{py}[p1]")
         label = "p1"
-        cur = _canvas(max(2, int(H * 0.003)), PH)
+        cur = _canvas(max(2, int(U * 0.003)), PH)
         cur[..., :3] = 255
         cur[..., 3] = 230
         ctag = add_image(cur, "cursor")
@@ -193,9 +197,9 @@ def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_ar
 
     # --- vitesse (bas gauche)
     if opts["speed"]:
-        BW, BH = int(0.22 * H), int(0.13 * H)
+        BW, BH = int(0.22 * U), int(0.13 * U)
         tag = add_image(_rounded_panel(BW, BH, BH * 0.18), "speed")
-        bx, by = m, H - m - BH
+        bx, by = m, H - bottom - BH
         chain.append(f"[{label}][{tag}]overlay={bx}:{by}[s1]")
         fs = int(BH * 0.62)
         chain.append(f"[s1]drawtext@spd=fontfile={FONT_BOLD}:text='{int(round(at(speed, t0)))}':fontsize={fs}"
@@ -210,9 +214,9 @@ def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_ar
         place = place_at(result, clip["start"])
         if place:
             fade = "if(lt(t,0.6),t/0.6,if(lt(t,3.4),1,max(0,(4-t)/0.6)))"
-            chain.append(f"[{label}]drawtext=fontfile={FONT_BOLD}:text='{_escape(place)}':fontsize={int(0.05 * H)}"
+            chain.append(f"[{label}]drawtext=fontfile={FONT_BOLD}:text='{_escape(place)}':fontsize={int(0.05 * U)}"
                          f":fontcolor=white:alpha='{fade}':shadowcolor=black@0.6:shadowx=2:shadowy=2"
-                         f":x={m}:y={m}:enable='lt(t,4)'[l1]")
+                         f":x={m}:y={top}:enable='lt(t,4)'[l1]")
             label = "l1"
 
     if not chain:
