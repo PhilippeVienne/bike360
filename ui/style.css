@@ -253,3 +253,7 @@ header { position: relative; z-index: 2000; }  /* menus au-dessus des contrôles
 .mt-map img { width: 100%; aspect-ratio: 1; display: block; border-radius: 8px; background: var(--panel); }
 .mt-map figcaption { position: absolute; right: 6px; bottom: 5px; font-size: 9px; color: #333;
   background: rgba(255,255,255,.7); padding: 0 4px; border-radius: 3px; }
+/* colonnes fixes : panneau Projet masqué (☰) = colonne à 0 px, sans décaler la vue et la carte */
+#project { grid-column: 1; }
+.viewer { grid-column: 2; }
+main > aside { grid-column: 3; }
