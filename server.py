@@ -255,6 +255,32 @@ def montage_items(proj=None, with_excluded=False):
     return [(sid, clips[(sid, cid)]) for sid, cid in order + rest if (sid, cid) not in excluded]
 
 
+def minimap(sid, clip_id, size=320):
+    """Aperçu PNG de la mini-carte d'export : tracés des sessions du montage, clip en couleur."""
+    from PIL import Image
+    sids = list(dict.fromkeys([sid, *(x for x, _ in montage_items())]))
+    clip = next((c for c in get_selections(sid) if c["id"] == clip_id), {"start": 0, "end": -1})
+    tag = "|".join([*sids, sid, str(clip_id), str(clip["start"]), str(clip["end"]), str(size),
+                    *(str(state["sessions"][x][1]["utc_t0"] + state["sessions"][x][1]["offset_s"]) for x in sids)])
+    out = THUMBS / f"map_{hashlib.sha1(tag.encode()).hexdigest()[:16]}.png"
+    if out.exists():
+        return out
+    result = state["sessions"][sid][1]
+    panel, project, _ = telemetry._map_panel(result, clip, [state["sessions"][x][1] for x in sids], size, size / 0.26)
+    if clip["end"] > clip["start"]:
+        lat, lon = telemetry._series(result, "lat"), telemetry._series(result, "lon")
+        if lat is not None:
+            D = max(8, int(size * 0.06)) // 2 * 2
+            x, y = project(lat[int(clip["start"])], lon[int(clip["start"])])
+            dot = telemetry._dot(D)
+            x0, y0 = int(round(x - D / 2)), int(round(y - D / 2))
+            if 0 <= x0 <= size - D and 0 <= y0 <= size - D:
+                telemetry._over(panel[y0:y0 + D, x0:x0 + D], dot)
+    THUMBS.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.clip(panel, 0, 255).astype(np.uint8), "RGBA").save(out)
+    return out
+
+
 def thumbnail(sid, t, yaw=0.0, pitch=-10.0, fov=100.0, width=320):
     """Vignette JPEG (vue plane) d'une session à l'instant t, mise en cache."""
     session, result = state["sessions"][sid]
@@ -745,6 +771,16 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, subprocess.SubprocessError):
                 return self.send_error(500)
             return self._file(img, "image/jpeg")
+        if parts == ["minimap.png"]:
+            qs = dict(x.split("=", 1) for x in self.path.partition("?")[2].split("&") if "=" in x)
+            if qs.get("sid") not in state["sessions"]:
+                return self.send_error(404)
+            try:
+                img = minimap(qs["sid"], qs.get("clip"), max(160, min(800, int(qs.get("size", 320)))))
+            except Exception:
+                traceback.print_exc()
+                return self.send_error(500)
+            return self._file(img, "image/png")
         if path == "/api/sources":
             return self._json({"scan": state["scan"], "folders": [
                 {"path": f, "present": Path(f).is_dir(), "removable": f != state["dcim"],

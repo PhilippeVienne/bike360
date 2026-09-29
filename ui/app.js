@@ -919,6 +919,7 @@ function renderClips() {
   renderEditor();
   updateBulk();
   renderStats();
+  if (st.project) updateMontageMap();
 }
 
 function renderEditor() {
@@ -992,8 +993,8 @@ $("#quick-clip").addEventListener("click", quickClip);
 
 // ------------------------------------------------------------------ statistiques
 
-document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
-  document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
+document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-tab]").forEach((x) => x.classList.toggle("active", x === b));
   $("#map").hidden = b.dataset.tab !== "map";
   $("#stats").hidden = b.dataset.tab !== "stats";
   if (b.dataset.tab === "map") map.invalidateSize();
@@ -1353,6 +1354,21 @@ function renderMontage() {
   $("#mt-total").textContent = kept.length ? `${kept.length} clip(s) · ${fmt(total)}` + (clips.length > kept.length ? ` · ${clips.length - kept.length} exclu(s)` : "") : "";
   $("#mt-count").textContent = kept.length ? kept.length : "";
   $("#mt-start").disabled = $("#mt-preview").disabled = !kept.length;
+  updateMontageMap();
+}
+
+// aperçu de la mini-carte d'export : clip sélectionné (ou premier du montage)
+function updateMontageMap() {
+  if ($("#p-montage").hidden) return;
+  const sel = st.s && st.clips[st.sel];
+  const c = (sel && st.project.clips.find((x) => x.sid === st.s.id && x.id === sel.id))
+    || st.project.clips.find((x) => !x.excluded);
+  const img = $("#mt-map");
+  img.parentElement.hidden = !c;
+  if (!c) return;
+  const size = Math.round(Math.min(640, img.clientWidth * devicePixelRatio || 320));
+  const src = `/minimap.png?sid=${c.sid}&clip=${c.id}&size=${size}&v=${c.start}-${c.end}-${st.project.clips.length}`;
+  if (img.getAttribute("src") !== src) img.src = src;
 }
 async function saveMontage(clips) {
   st.project.clips = clips;

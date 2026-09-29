@@ -217,7 +217,7 @@ header { position: relative; z-index: 2000; }  /* menus au-dessus des contrôles
 #project { border-right: 1px solid var(--line); display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; min-width: 0; }
 .p-body { overflow: auto; padding: 6px 8px 10px; min-height: 0; }
 .p-body[hidden] { display: none; }
-#p-montage { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 6px; overflow: hidden; }
+#p-montage { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 6px; overflow: hidden; }
 .day-head { margin: 10px 2px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .day-head:first-child { margin-top: 4px; }
 .file-card { display: grid; grid-template-columns: 1fr; border: 1px solid var(--line); border-radius: 8px;
@@ -249,3 +249,7 @@ header { position: relative; z-index: 2000; }  /* menus au-dessus des contrôles
 .mt-foot { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
 .mt-actions { display: flex; gap: 6px; justify-content: flex-end; }
 #p-montage[hidden] { display: none; }
+.mt-map { margin: 0; position: relative; }
+.mt-map img { width: 100%; aspect-ratio: 1; display: block; border-radius: 8px; background: var(--panel); }
+.mt-map figcaption { position: absolute; right: 6px; bottom: 5px; font-size: 9px; color: #333;
+  background: rgba(255,255,255,.7); padding: 0 4px; border-radius: 3px; }
