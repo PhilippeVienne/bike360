@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 import analyze
+import basemap
 
 FONT_BOLD = "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"
 FONT = "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
@@ -71,6 +72,13 @@ def _dot(size):
     return img
 
 
+def _over(base, layer):
+    """Compose un calque RGBA par-dessus `base` (sur place)."""
+    a = layer[..., 3:4] / 255
+    base[..., :3] = base[..., :3] * (1 - a) + layer[..., :3] * a
+    base[..., 3] = np.maximum(base[..., 3], layer[..., 3])
+
+
 def _save_png(img, path):
     h, w = img.shape[:2]
     data = np.clip(img, 0, 255).astype(np.uint8).tobytes()
@@ -106,13 +114,92 @@ def _escape(text):
     return text.replace("\\", "\\\\").replace("'", "’").replace(":", "\\:").replace("%", "\\%")
 
 
+def _raw(result, key):
+    """Série brute (NaN là où le GPS manque : tunnels, pertes) pour tracer sans raccord."""
+    return np.array([np.nan if x is None else x for x in result["series"][key]], float)
+
+
+def _runs(xs, ys, step):
+    """Polylignes continues (listes de points) en coupant aux NaN, sous-échantillonnées."""
+    runs, cur = [], []
+    for i in range(0, len(xs), step):
+        if np.isnan(xs[i]) or np.isnan(ys[i]):
+            if len(cur) > 1:
+                runs.append(cur)
+            cur = []
+        else:
+            cur.append((float(xs[i]), float(ys[i])))
+    if len(cur) > 1:
+        runs.append(cur)
+    return runs
+
+
+def _map_panel(result, clip, tracks, S, U):
+    """Mini-carte : fond de carte (ou panneau sombre hors ligne), tracés de toutes les sessions
+    du montage, session courante plus marquée, portion du clip en couleur.
+
+    Retourne (image RGBA, project(lat, lon) → pixels, attribution requise).
+    """
+    lat_all = np.concatenate([_raw(r, "lat") for r in tracks])
+    lon_all = np.concatenate([_raw(r, "lon") for r in tracks])
+    radius = S * 0.08
+    base = basemap.render(lat_all, lon_all, S)
+    if base is not None:
+        img, project = base
+        panel = _canvas(S, S)
+        panel[..., :3] = img
+        panel[..., 3] = _rounded_panel(S, S, radius, alpha=1.0)[..., 3]
+        styles = ((255, 255, 255), 0.8), ((255, 255, 255), 1.0), (25, 25, 35)
+    else:  # hors ligne : ancien panneau sombre, même cadrage (équirectangulaire)
+        ok = ~(np.isnan(lat_all) | np.isnan(lon_all))
+        lat0 = math.radians(np.nanmean(lat_all[ok]))
+        X, Y = np.radians(lon_all[ok]) * math.cos(lat0), np.radians(lat_all[ok])
+        span = max(np.ptp(X), np.ptp(Y)) or 1e-9
+        pad = S * 0.1
+
+        def project(lat, lon):
+            x = np.radians(np.asarray(lon)) * math.cos(lat0)
+            y = np.radians(np.asarray(lat))
+            return (pad + (x - X.min() + (span - np.ptp(X)) / 2) / span * (S - 2 * pad),
+                    S - pad - (y - Y.min() + (span - np.ptp(Y)) / 2) / span * (S - 2 * pad))
+        panel = _rounded_panel(S, S, radius)
+        styles = ((170, 170, 170), 0.6), ((210, 210, 210), 0.9), (0, 0, 0)
+
+    def layer(runs, width, color, alpha=1.0):
+        lay = _canvas(S, S)
+        for run in runs:
+            _stroke(lay, run, width, color, alpha)
+        _over(panel, lay)
+        return lay
+
+    (other_c, other_a), (cur_c, cur_a), outline = styles
+    # tracés clairs cernés de sombre : lisibles sur le relief comme sur le panneau sombre
+    for r in tracks:
+        if r is not result:
+            px, py = project(_raw(r, "lat"), _raw(r, "lon"))
+            runs = _runs(px, py, max(1, len(px) // 600))
+            layer(runs, max(3, U * 0.005), outline, 0.45)
+            layer(runs, max(2, U * 0.0025), other_c, other_a)
+    px, py = project(_raw(result, "lat"), _raw(result, "lon"))
+    runs = _runs(px, py, max(1, len(px) // 800))
+    layer(runs, max(4, U * 0.0075), outline, 0.6)
+    layer(runs, max(2, U * 0.004), cur_c, cur_a)
+    a, b = int(clip["start"]), int(min(len(px) - 1, clip["end"]))
+    clip_runs = _runs(px[a:b + 1], py[a:b + 1], 1)
+    layer(clip_runs, max(5, U * 0.012), outline, 0.55)          # liseré sombre : lisible sur la carte claire
+    layer(clip_runs, max(3, U * 0.008), ACCENT)
+    panel[..., 3] = np.minimum(panel[..., 3], _rounded_panel(S, S, radius, alpha=1.0)[..., 3])
+    return panel, project, base is not None
+
+
 # ------------------------------------------------------------------ incrustation
 
-def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_args, workdir, time_map=None):
+def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_args, workdir, time_map=None,
+            tracks=None):
     """Incruste la télémétrie sur `part` (morceau commençant à t0, temps de session) → `out`.
 
     `time_map(t_sortie) → t_session` (vectorisée) pour un temps non linéaire (hyperlapse) ;
-    par défaut t0 + t.
+    par défaut t0 + t. `tracks` : analyses des sessions du montage (étendue de la mini-carte).
     """
     opts = {**DEFAULTS, **(opts or {})}
     lat, lon = _series(result, "lat"), _series(result, "lon")
@@ -141,30 +228,29 @@ def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_ar
     # --- mini-carte + profil d'altitude (haut droite)
     S = int(0.26 * U)
     if opts["map"]:
-        lat0 = math.radians(np.nanmean(lat))
-        X, Y = np.radians(lon) * math.cos(lat0), np.radians(lat)
-        span = max(np.ptp(X), np.ptp(Y)) or 1e-9
-        pad = S * 0.1
-        to_px = lambda i: (pad + (X[i] - X.min() + (span - np.ptp(X)) / 2) / span * (S - 2 * pad),
-                           S - pad - (Y[i] - Y.min() + (span - np.ptp(Y)) / 2) / span * (S - 2 * pad))
-        panel = _rounded_panel(S, S, S * 0.08)
-        step = max(1, len(lat) // 800)
-        _stroke(panel, [to_px(i) for i in range(0, len(lat), step)], max(2, U * 0.004), (200, 200, 200), 0.85)
-        a, b = int(clip["start"]), int(min(len(lat) - 1, clip["end"]))
-        _stroke(panel, [to_px(i) for i in range(a, b + 1)], max(3, U * 0.008), ACCENT)
+        panel, project, attribution = _map_panel(result, clip, tracks or [result], S, U)
         mx, my = W - m - S, top
         tag = add_image(panel, "map")
         chain.append(f"[{label}][{tag}]overlay={mx}:{my}[m1]")
         label = "m1"
+        if attribution:
+            fs = max(8, int(U * 0.011))
+            lines = basemap.ATTRIBUTION
+            for k, text in enumerate(lines):
+                y = my + S - int(S * 0.04) - (len(lines) - k) * int(fs * 1.45)
+                chain.append(f"[{label}]drawtext=fontfile={FONT}:text='{_escape(text)}':fontsize={fs}"
+                             f":fontcolor=0x333333:box=1:boxcolor=white@0.7:boxborderw=2"
+                             f":x={mx + S - int(S * 0.05)}-tw:y={y}[m1a{k}]")
+                label = f"m1a{k}"
         D = max(8, int(U * 0.024)) // 2 * 2
         dot = add_image(_dot(D), "dot")
-        x0, y0 = to_px(int(t0))
-        chain.append(f"[{label}][{dot}]overlay@dot={mx + x0 - D / 2:.1f}:{my + y0 - D / 2:.1f}[m2]")
+        PXx, PXy = project(lat, lon)
+        idx = np.arange(len(PXx))
+        dot_x = lambda t: mx + np.interp(t, idx, PXx) - D / 2
+        dot_y = lambda t: my + np.interp(t, idx, PXy) - D / 2
+        chain.append(f"[{label}][{dot}]overlay@dot={dot_x(t0):.1f}:{dot_y(t0):.1f}[m2]")
         label = "m2"
-        PX = np.array([to_px(i) for i in range(len(X))])
-        idx = np.arange(len(X))
-        cmds["dot"] = [(None, mx + np.interp(t, idx, PX[:, 0]) - D / 2, my + np.interp(t, idx, PX[:, 1]) - D / 2)
-                       for t in times]
+        cmds["dot"] = [(None, dot_x(t), dot_y(t)) for t in times]
     if opts["altitude"] and alt is not None:
         PH = int(0.08 * U)
         py = top + (S + int(0.012 * U) if opts["map"] else 0)

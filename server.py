@@ -505,7 +505,8 @@ def run_export(key, clips, quality, opts):
                 with_tel = out.with_name(out.stem + "_tel.mp4")
                 if telemetry.overlay(out, with_tel, result, clip, seg_offset + ss, dur, out_w, out_h, tel_opts,
                                      first_part=abs(seg_offset + ss - clip["start"]) < 0.5,
-                                     encoder_args=encoder_args(q), workdir=out_dir / f"tel_{n:03d}"):
+                                     encoder_args=encoder_args(q), workdir=out_dir / f"tel_{n:03d}",
+                                     tracks=[state["sessions"][x][1] for x in sids]):
                     with_tel.replace(out)
             done += dur
             files.append(out)
