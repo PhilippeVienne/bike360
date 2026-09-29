@@ -39,7 +39,9 @@ header { border-bottom: 1px solid var(--line); background: var(--panel); flex-wr
 #export-status a { color: var(--accent); }
 progress { width: 120px; accent-color: var(--accent); }
 
-main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(280px, 28vw, 420px); min-height: 0; overflow: hidden; }
+main { display: grid; grid-template-columns: var(--project-w, 250px) minmax(0, 1fr) clamp(280px, 26vw, 400px); min-height: 0; overflow: hidden; }
+body.no-project main { --project-w: 0px; }
+body.no-project #project { display: none; }
 .viewer { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; min-width: 0; }
 .stage { min-height: 0; min-width: 0; display: grid; place-items: center; background: #000; position: relative; overflow: hidden; }
 #gl { display: block; cursor: grab; }  /* taille 16:9 calculée en JS (fitStage) */
@@ -204,8 +206,46 @@ kbd {
 .src-add { display: flex; gap: 4px; }
 .src-add input { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line);
   border-radius: 6px; padding: 4px 8px; font: inherit; }
-#mt-menu .menu-box { min-width: 320px; }
 .mt-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .warn { color: var(--accent); }
 header { position: relative; z-index: 2000; }  /* menus au-dessus des contrôles Leaflet (z-index 1000) */
 .menu-box a { color: var(--accent); word-break: break-all; }
+
+/* ---- panneau Projet (gauche) */
+.icon-btn { padding: 3px 9px; font-size: 15px; }
+.session-title { font-weight: 600; white-space: nowrap; }
+#project { border-right: 1px solid var(--line); display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; min-width: 0; }
+.p-body { overflow: auto; padding: 6px 8px 10px; min-height: 0; }
+.p-body[hidden] { display: none; }
+#p-montage { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 6px; overflow: hidden; }
+.day-head { margin: 10px 2px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.day-head:first-child { margin-top: 4px; }
+.file-card { display: grid; grid-template-columns: 1fr; border: 1px solid var(--line); border-radius: 8px;
+  overflow: hidden; margin-bottom: 6px; cursor: pointer; background: var(--panel); position: relative; }
+.file-card:hover { border-color: var(--muted); }
+.file-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.file-card.out { opacity: .45; }
+.file-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: #000; }
+.fc-info { padding: 5px 8px 6px; font-size: 12px; line-height: 1.35; }
+.fc-info .muted { font-size: 11px; }
+.fc-check { position: absolute; top: 6px; right: 6px; display: flex; align-items: center; gap: 4px; font-size: 11px;
+  background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 6px; color: #fff; }
+.badge { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--accent); color: var(--accent); margin-left: 4px; }
+.badge.clips { border-color: var(--clip); color: var(--clip); }
+#mt-list { list-style: none; margin: 0; padding: 0; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+.mt-item { display: grid; grid-template-columns: 14px 72px minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 4px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel); font-size: 12px; cursor: grab; }
+.mt-item img { width: 72px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; background: #000; display: block; }
+.mt-item .grip { color: var(--muted); cursor: grab; text-align: center; }
+.mt-item .n { color: var(--clip); font-weight: 700; margin-right: 4px; }
+.mt-item.excluded { opacity: .4; }
+.mt-item.excluded .n { color: var(--muted); }
+.mt-item.dragging { opacity: .3; }
+.mt-item.drop-before { box-shadow: 0 -2px 0 var(--accent); }
+.mt-item.drop-after { box-shadow: 0 2px 0 var(--accent); }
+.mt-item.current { border-color: var(--clip); }
+.mt-btns { display: flex; flex-direction: column; gap: 2px; }
+.mt-btns button { padding: 0 5px; font-size: 11px; line-height: 1.4; }
+.mt-foot { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+.mt-actions { display: flex; gap: 6px; justify-content: flex-end; }
+#p-montage[hidden] { display: none; }

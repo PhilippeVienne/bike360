@@ -9,8 +9,9 @@
 </head>
 <body>
 <header>
+  <button id="project-toggle" class="icon-btn" title="Afficher / masquer le panneau Projet">☰</button>
   <div class="brand" title="Tri et montage des balades Insta360">◉ Tri 360</div>
-  <select id="session" title="Session"></select>
+  <span id="session-title" class="session-title"></span>
   <details class="menu" id="src-menu">
     <summary title="Dossiers de vidéos analysés (carte SD, copies sur disque…)">Dossiers</summary>
     <div class="menu-box">
@@ -63,15 +64,6 @@
           <label><input type="checkbox" data-tel="place"> lieu au début des clips</label>
         </div></details>
     </div>
-    <details class="menu" id="mt-menu"><summary title="Enchaîner les clips de plusieurs sessions dans un seul export">Montage <span id="mt-badge" class="muted"></span></summary>
-      <div class="menu-box">
-        <div class="menu-title">Montage de plusieurs sessions</div>
-        <ul id="mt-list" class="src-list"></ul>
-        <span id="mt-total" class="hint"></span>
-        <span class="hint">Clips dans l'ordre chronologique, avec la destination, la résolution et la qualité choisies.</span>
-        <div class="mt-actions"><button id="mt-preview">Aperçu 720p</button><button id="mt-start" class="primary">Exporter le montage</button></div>
-        <span id="mt-status" class="hint"></span>
-      </div></details>
     <details class="menu" id="hl-menu"><summary title="Toute la balade en quelques minutes, vitesse selon l'intérêt">⏩ Résumé</summary>
       <div class="menu-box">
         <div class="menu-title">Résumé hyperlapse</div>
@@ -87,6 +79,25 @@
 </header>
 
 <main>
+  <nav id="project">
+    <div class="tabs">
+      <button data-ptab="files" class="active">Fichiers</button>
+      <button data-ptab="montage">Montage <span id="mt-count" class="muted"></span></button>
+    </div>
+    <div id="p-files" class="p-body">
+      <label class="toggle small" title="Montrer aussi les fichiers exclus du projet"><input type="checkbox" id="show-all"> afficher hors projet</label>
+      <div id="file-list"></div>
+    </div>
+    <div id="p-montage" class="p-body" hidden>
+      <div id="mt-total" class="hint"></div>
+      <ol id="mt-list"></ol>
+      <div class="mt-foot">
+        <span class="hint">Glisser pour réordonner · 👁 pour exclure. Destination, résolution et qualité : en haut.</span>
+        <div class="mt-actions"><button id="mt-preview">Aperçu 720p</button><button id="mt-start" class="primary">Exporter le montage</button></div>
+        <span id="mt-status" class="hint"></span>
+      </div>
+    </div>
+  </nav>
   <section class="viewer">
     <div class="stage">
       <canvas id="gl"></canvas>

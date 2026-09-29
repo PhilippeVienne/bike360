@@ -4,8 +4,10 @@
 Usage : python3 server.py [DCIM] [--port 8360] [--host 127.0.0.1]
 """
 import argparse
+import hashlib
 import json
 import math
+import secrets
 import mimetypes
 import re
 import subprocess
@@ -30,6 +32,9 @@ SELECTIONS = analyze.DATA / "selections"
 EXPORTS = ROOT / "exports"
 SETTINGS = analyze.DATA / "settings.json"
 SOURCES = analyze.DATA / "sources.json"  # dossiers de vidéos ajoutés depuis l'interface
+PROJECT = analyze.DATA / "project.json"  # sessions du projet, ordre et exclusions du montage
+THUMBS = analyze.CACHE / "thumbs"
+PROJECT_MIN_S = 60  # sans projet enregistré : sessions d'au moins une minute
 RENDER_BIN = ROOT / "render" / "target" / "release" / "insta-render"
 
 # Objectifs X5 : ~195° utiles par fisheye. Dans ffmpeg v360 (dfisheye), yaw 0 = moitié
@@ -128,11 +133,47 @@ def source_folders():
     return list(dict.fromkeys([state["dcim"], *extra]))
 
 
+_durations = {}
+
+
+def session_duration(session):
+    """Durée (s) d'une session d'origine : somme des .lrv (ffprobe, mémorisée)."""
+    total = 0.0
+    for seg in session.segments:
+        key = (seg.lrv, Path(seg.lrv).stat().st_size)
+        if key not in _durations:
+            _durations[key] = float(analyze._ffprobe_format(seg.lrv, "=duration") or 0)
+        total += _durations[key]
+    return total
+
+
+def migrate_block_selections(block, members):
+    """Reporte sur le bloc les clips posés sur ses morceaux avant la fusion (décalés dans le temps).
+
+    `members` : [(session d'origine, début dans le bloc en s)]. Le fichier du morceau est
+    renommé en .fusionné.json pour ne pas être repris deux fois.
+    """
+    moved = []
+    for member, offset in members:
+        path = selections_path(member.id)
+        if member.id == block.id or not path.exists():
+            continue
+        for c in json.loads(path.read_text()):
+            moved.append({**c, "start": round(c["start"] + offset, 2), "end": round(c["end"] + offset, 2)})
+        path.rename(path.with_suffix(".fusionné.json"))
+    if moved:
+        clips = sorted(get_selections(block.id) + moved, key=lambda c: c["start"])
+        SELECTIONS.mkdir(parents=True, exist_ok=True)
+        selections_path(block.id).write_text(json.dumps(clips, indent=1))
+        print(f"  {len(moved)} clip(s) reporté(s) sur le bloc {block.id}")
+
+
 def load_sessions():
     """Analyse les sessions de tous les dossiers présents (analyses en cache réutilisées).
 
     Une session présente dans deux dossiers (carte + copie) n'est prise qu'une fois : la
-    première trouvée, dans l'ordre de source_folders().
+    première trouvée, dans l'ordre de source_folders(). Les fichiers qui se suivent sans
+    interruption (enregistrement en boucle) forment un seul bloc continu.
     """
     by_id, origin = {}, {}
     for folder in source_folders():
@@ -141,8 +182,18 @@ def load_sessions():
         for s in insta360.scan(folder):
             if s.id not in by_id:
                 by_id[s.id], origin[s.id] = s, folder
-    results = analyze.analyze_sessions(list(by_id.values()))
-    state["sessions"] = {sid: (by_id[sid], {**r, "folder": origin[sid]}) for sid, r in results.items()}
+    originals = {sid: (s, session_duration(s)) for sid, s in by_id.items()}
+    blocks = insta360.merge_continuous([s for s, _ in originals.values()], lambda s: originals[s.id][1])
+    for b in blocks:
+        if b.parts:
+            offsets = [0.0]
+            for sid in b.parts[:-1]:
+                offsets.append(offsets[-1] + originals[sid][1])
+            migrate_block_selections(b, [(originals[sid][0], off) for sid, off in zip(b.parts, offsets)])
+    by_id = {b.id: b for b in blocks}
+    results = analyze.analyze_sessions(blocks)
+    state["sessions"] = {sid: (by_id[sid], {**r, "folder": origin[sid], "parts": len(by_id[sid].parts) or 1})
+                         for sid, r in results.items()}
 
 
 def rescan():
@@ -170,8 +221,59 @@ def get_settings():
 
 
 def get_selections(sid):
+    """Clips d'une session ; ceux d'avant les identifiants en reçoivent un (ordre du montage)."""
     p = selections_path(sid)
-    return json.loads(p.read_text()) if p.exists() else []
+    clips = json.loads(p.read_text()) if p.exists() else []
+    if any("id" not in c for c in clips):
+        for c in clips:
+            c.setdefault("id", secrets.token_hex(4))
+        p.write_text(json.dumps(clips, indent=1))
+    return clips
+
+
+def get_project():
+    """Projet : sessions retenues, ordre libre du montage [[sid, id du clip]], clips exclus."""
+    if PROJECT.exists():
+        proj = json.loads(PROJECT.read_text())
+    else:
+        proj = {"sessions": [sid for sid, (_, r) in sorted(state["sessions"].items())
+                             if r["duration"] >= PROJECT_MIN_S or get_selections(sid)]}
+    return {"sessions": [x for x in proj.get("sessions", []) if x in state["sessions"]],
+            "order": proj.get("order", []), "excluded": proj.get("excluded", [])}
+
+
+def montage_items(proj=None, with_excluded=False):
+    """Clips du montage dans l'ordre : ordre enregistré, puis les nouveaux clips chronologiquement."""
+    proj = proj or get_project()
+    clips = {(sid, c["id"]): c for sid in proj["sessions"] for c in get_selections(sid)}
+    order = [tuple(x) for x in proj["order"] if tuple(x) in clips]
+    rest = sorted(set(clips) - set(order),
+                  key=lambda k: state["sessions"][k[0]][1]["utc_t0"] + clips[k]["start"])
+    excluded = {tuple(x) for x in proj["excluded"]}
+    if with_excluded:
+        return [(sid, clips[(sid, cid)], (sid, cid) in excluded) for sid, cid in order + rest]
+    return [(sid, clips[(sid, cid)]) for sid, cid in order + rest if (sid, cid) not in excluded]
+
+
+def thumbnail(sid, t, yaw=0.0, pitch=-10.0, fov=100.0, width=320):
+    """Vignette JPEG (vue plane) d'une session à l'instant t, mise en cache."""
+    session, result = state["sessions"][sid]
+    name = hashlib.sha1(f"{sid}|{t:.1f}|{yaw:.1f}|{pitch:.1f}|{fov:.0f}|{width}".encode()).hexdigest()[:16]
+    out = THUMBS / f"{name}.jpg"
+    if out.exists():
+        return out
+    for seg, info in zip(session.segments, result["segments"]):
+        if info["offset"] <= t < info["offset"] + info["duration"] or info is result["segments"][-1]:
+            local = max(0.0, min(t - info["offset"], info["duration"] - 0.5))
+            break
+    height = width * 9 // 16
+    vfov = v_fov_of(fov, width, height)
+    THUMBS.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{local:.2f}", "-i", seg.lrv, "-frames:v", "1",
+                    "-vf", f"v360=input=dfisheye:ih_fov={LENS_FOV}:iv_fov={LENS_FOV}:output=flat:yaw={yaw}:pitch={pitch}"
+                           f":h_fov={fov}:v_fov={vfov:.2f}:w={width}:h={height}",
+                    "-q:v", "5", str(out)], check=True, timeout=60)
+    return out
 
 
 # ---------------------------------------------------------------- export ffmpeg
@@ -348,15 +450,14 @@ def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks
     h264.unlink(missing_ok=True)
 
 
-def run_export(key, sids, quality, opts):
-    """Exporte les clips d'une session, ou de plusieurs (montage) dans l'ordre chronologique."""
+def run_export(key, clips, quality, opts):
+    """Exporte une liste de clips [(session, clip)] dans l'ordre donné (une session ou un montage)."""
     job = state["jobs"][key]
     try:
         q = {**QUALITY[quality], **opts, **FORMATS.get(opts.get("format", "standard"), {})}
         out_w, out_h = output_size(q)
         name = f"{quality}_{out_h}p" if q.get("format", "standard") == "standard" else q["format"]
-        sids = sorted(sids, key=lambda x: state["sessions"][x][1]["utc_t0"])
-        clips = [(sid, c) for sid in sids for c in get_selections(sid)]
+        sids = list(dict.fromkeys(sid for sid, _ in clips))
         settings = get_settings()
         masks, tel_opts = settings["masks"], settings["telemetry"]
         sizes = {}
@@ -411,7 +512,7 @@ def run_export(key, sids, quality, opts):
         job["message"] = "assemblage"
         listing = out_dir / "concat.txt"
         listing.write_text("".join(f"file '{f.name}'\n" for f in files))
-        prefix = f"montage_{sids[0][4:12]}_{len(sids)}sessions" if key == "montage" else key
+        prefix = f"montage_{min(sids)[4:12]}_{len(clips)}clips" if key == "montage" else key
         final = EXPORTS / f"{prefix}_{name}.mp4"
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
                         "-c", "copy", "-movflags", "+faststart", str(final)], check=True)
@@ -593,10 +694,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"ok": True})
 
     def _montage(self, body):
-        """Montage : les clips de plusieurs sessions dans un seul export."""
-        sids = [x for x in body.get("sids", []) if x in state["sessions"]]
-        if not sids:
-            return self._json({"error": "aucune session choisie"}, 400)
+        """Montage : les clips du projet, dans l'ordre choisi, dans un seul export."""
+        items = montage_items()
+        if not items:
+            return self._json({"error": "aucun clip dans le montage"}, 400)
         quality = body.get("quality", "final")
         if quality not in QUALITY:
             return self.send_error(400)
@@ -604,8 +705,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "montage déjà en cours"}, 409)
         opts = export_opts(body, quality)
         state["jobs"]["montage"] = {"state": "running", "progress": 0.0, "quality": quality, "message": "démarrage",
-                                    "format": opts.get("format", "standard"), "sids": sids}
-        threading.Thread(target=run_export, args=("montage", sids, quality, opts), daemon=True).start()
+                                    "format": opts.get("format", "standard")}
+        threading.Thread(target=run_export, args=("montage", items, quality, opts), daemon=True).start()
         return self._json({"ok": True})
 
     def do_GET(self):
@@ -624,8 +725,25 @@ class Handler(BaseHTTPRequestHandler):
                 "id": r["id"], "date": r["date"], "time": r["time"], "duration": r["duration"],
                 "gps_coverage": r["gps_coverage"], "candidates": len(r["candidates"]),
                 "clips": len(get_selections(sid)), "clips_s": round(sum(c["end"] - c["start"] for c in get_selections(sid)), 1),
-                "folder": r.get("folder"),
+                "folder": r.get("folder"), "parts": r.get("parts", 1),
             } for sid, (_, r) in sorted(state["sessions"].items())])
+        if path == "/api/project":
+            proj = get_project()
+            return self._json({**proj, "clips": [
+                {"sid": sid, "id": c["id"], "start": c["start"], "end": c["end"], "excluded": ex,
+                 "yaw": c.get("yaw", 0), "pitch": c.get("pitch", 0), "fov": c.get("fov", 100),
+                 "utc": state["sessions"][sid][1]["utc_t0"] + c["start"]}
+                for sid, c, ex in montage_items(proj, with_excluded=True)]})
+        if parts[0] == "thumb" and len(parts) == 2 and parts[1].removesuffix(".jpg") in state["sessions"]:
+            sid = parts[1].removesuffix(".jpg")
+            qs = dict(x.split("=", 1) for x in self.path.partition("?")[2].split("&") if "=" in x)
+            try:
+                num = lambda k, d: float(qs.get(k, d))
+                img = thumbnail(sid, num("t", state["sessions"][sid][1]["duration"] / 3), num("yaw", 0),
+                                num("pitch", -10), max(30.0, min(150.0, num("fov", 100))))
+            except (ValueError, subprocess.SubprocessError):
+                return self.send_error(500)
+            return self._file(img, "image/jpeg")
         if path == "/api/sources":
             return self._json({"scan": state["scan"], "folders": [
                 {"path": f, "present": Path(f).is_dir(), "removable": f != state["dcim"],
@@ -659,8 +777,19 @@ class Handler(BaseHTTPRequestHandler):
             analyze.DATA.mkdir(exist_ok=True)
             SETTINGS.write_text(json.dumps({"masks": masks[:8], "telemetry": tel}, indent=1))
             return self._json({"ok": True})
+        if parts == ["api", "project"]:
+            body = self._body() or {}
+            proj = get_project()
+            for k in ("sessions", "order", "excluded"):
+                if isinstance(body.get(k), list):
+                    proj[k] = body[k]
+            analyze.DATA.mkdir(exist_ok=True)
+            PROJECT.write_text(json.dumps(proj, indent=1))
+            return self._json({"ok": True})
         if parts[:2] == ["api", "selections"] and len(parts) == 3 and parts[2] in state["sessions"]:
             clips = self._body()
+            for c in clips:
+                c.setdefault("id", secrets.token_hex(4))
             SELECTIONS.mkdir(parents=True, exist_ok=True)
             selections_path(parts[2]).write_text(json.dumps(clips, indent=1))
             return self._json({"ok": True, "count": len(clips)})
@@ -693,7 +822,8 @@ class Handler(BaseHTTPRequestHandler):
                 session, _ = state["sessions"][sid]
                 refs = [(r["utc_t0"], r["offset_s"]) for s2, (_, r) in state["sessions"].items()
                         if s2 != sid and r["offset_source"] in ("manuel", "corrélation")]
-                r = {**analyze.analyze(session, ov, refs), "folder": state["sessions"][sid][1].get("folder")}
+                old = state["sessions"][sid][1]
+                r = {**analyze.analyze(session, ov, refs), "folder": old.get("folder"), "parts": old.get("parts", 1)}
                 state["sessions"][sid] = (session, r)
             return self._json({**r, "selections": get_selections(sid)})
         if parts[:2] == ["api", "export"]:
@@ -712,7 +842,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "export déjà en cours"}, 409)
             state["jobs"][sid] = {"state": "running", "progress": 0.0, "quality": quality, "message": "démarrage",
                                   "format": opts.get("format", "standard")}
-            threading.Thread(target=run_export, args=(sid, [sid], quality, opts), daemon=True).start()
+            clips = [(sid, c) for c in get_selections(sid)]
+            threading.Thread(target=run_export, args=(sid, clips, quality, opts), daemon=True).start()
             return self._json({"ok": True})
         if parts[:2] == ["api", "hyperlapse"]:
             body = self._body() or {}

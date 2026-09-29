@@ -793,7 +793,7 @@ function saveClips(keep) {
   renderClips(); drawClipsOnMap();
   clearTimeout(saveTimer);
   const sid = st.s.id, clips = st.clips.map((c) => ({ ...c }));
-  saveTimer = setTimeout(() => api("PUT", `/api/selections/${sid}`, clips).catch(console.error), 300);
+  saveTimer = setTimeout(() => api("PUT", `/api/selections/${sid}`, clips).then(refreshSessions).catch(console.error), 300);
 }
 
 function currentViewParams() {
@@ -806,7 +806,9 @@ function currentViewParams() {
 function addClip(start, end) {
   start = Math.max(0, start); end = Math.min(st.s.duration, end);
   if (end - start < 0.5) return;
-  const c = { start: +start.toFixed(2), end: +end.toFixed(2), ...currentViewParams() };
+  // identifiant stable : ordre du montage (crypto.randomUUID indisponible en http sur le réseau local)
+  const id = Math.random().toString(16).slice(2, 10);
+  const c = { id, start: +start.toFixed(2), end: +end.toFixed(2), ...currentViewParams() };
   st.clips.push(c);
   st.sel = st.clips.length - 1;
   saveClips(c);
@@ -1040,6 +1042,10 @@ async function loadSession(id) {
   st.horizonStatus = "";
   st.seg = -1;
   st.tl = { v0: 0, v1: st.s.duration };
+  const info = (st.sessions || []).find((x) => x.id === id);
+  $("#session-title").textContent = `${dayLabel(st.s.date)} · ${hhmm(st.s)} · ${fmt(st.s.duration)}` +
+    (info && info.parts > 1 ? ` · boucle de ${info.parts} fichiers` : "");
+  document.querySelectorAll(".file-card").forEach((c) => c.classList.toggle("current", c.dataset.sid === id));
   showOffset();
   drawMap(); drawClipsOnMap(); renderClips();
   seek(st.s.candidates[0] ?? 0, false);
@@ -1143,7 +1149,6 @@ $("#view-front").addEventListener("click", () => userView({ yaw: 0, pitch: -10, 
 $("#view-rider").addEventListener("click", () => userView({ yaw: 180, pitch: 8, fov: 100, roll: 0, raw: false }));
 $("#horizon-mode").addEventListener("change", (e) => setView({ horizon: e.target.value }));
 $("#view-raw").addEventListener("click", () => setView({ raw: !st.view.raw }));
-$("#session").addEventListener("change", (e) => loadSession(e.target.value));
 
 // menus déroulants : un seul ouvert, fermés au clic ailleurs ou sur Échap
 document.addEventListener("click", (e) => {
@@ -1227,28 +1232,67 @@ function frame(ts) {
   requestAnimationFrame(frame);
 }
 
-// ------------------------------------------------------------------ sessions, dossiers, montage
+// ------------------------------------------------------------------ projet : fichiers, dossiers, montage
 const dayLabel = (d) => new Date(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}T12:00`)
   .toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const hhmm = (s) => `${s.time.slice(0, 2)}:${s.time.slice(2, 4)}`;
+const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+st.project = { sessions: [], order: [], excluded: [], clips: [] };
 
 async function refreshSessions() {
-  st.sessions = await api("GET", "/api/sessions");
-  const sel = $("#session"), current = sel.value;
-  sel.innerHTML = "";
-  const days = {};
-  st.sessions.forEach((s) => {
-    const g = days[s.date] ??= Object.assign(document.createElement("optgroup"), { label: dayLabel(s.date) });
-    const o = document.createElement("option");
-    o.value = s.id;
-    o.textContent = `${s.time.slice(0, 2)}:${s.time.slice(2, 4)} · ${fmt(s.duration)}` +
-      (s.gps_coverage > 0.5 ? " · GPS" : "") + (s.clips ? ` · ${s.clips} clip(s)` : "");
-    g.appendChild(o);
-  });
-  Object.keys(days).sort().forEach((d) => sel.appendChild(days[d]));
-  if (current) sel.value = current;
+  [st.sessions, st.project] = await Promise.all([api("GET", "/api/sessions"), api("GET", "/api/project")]);
+  renderFiles();
   renderMontage();
   return st.sessions;
 }
+
+function renderFiles() {
+  const list = $("#file-list"), inProj = new Set(st.project.sessions), all = $("#show-all").checked;
+  list.innerHTML = "";
+  let day = null, hidden = 0;
+  st.sessions.forEach((s) => {
+    const inside = inProj.has(s.id);
+    if (!inside && !all) { hidden++; return; }
+    if (s.date !== day) {
+      day = s.date;
+      list.insertAdjacentHTML("beforeend", `<div class="day-head">${dayLabel(s.date)}</div>`);
+    }
+    const folder = (s.folder || "").split("/").filter(Boolean).pop() || "";
+    const card = document.createElement("div");
+    card.className = "file-card" + (st.s && st.s.id === s.id ? " current" : "") + (inside ? "" : " out");
+    card.dataset.sid = s.id;
+    card.innerHTML = `<img loading="lazy" alt="" src="/thumb/${s.id}.jpg">
+      <label class="fc-check" title="Inclure ce fichier dans le projet"><input type="checkbox" ${inside ? "checked" : ""}> projet</label>
+      <div class="fc-info"><strong>${hhmm(s)}</strong> · ${fmt(s.duration)}${s.parts > 1 ? `<span class="badge" title="Enregistrement en boucle : ${s.parts} fichiers continus réunis">boucle ×${s.parts}</span>` : ""}${s.clips ? `<span class="badge clips">${s.clips} clip${s.clips > 1 ? "s" : ""}</span>` : ""}
+        <div class="muted">${s.gps_coverage > 0.05 ? `GPS ${Math.round(s.gps_coverage * 100)} %` : "sans GPS"} · ${esc(folder)}</div></div>`;
+    list.appendChild(card);
+  });
+  if (hidden) list.insertAdjacentHTML("beforeend", `<p class="hint">${hidden} fichier(s) hors projet masqué(s).</p>`);
+}
+$("#show-all").addEventListener("change", renderFiles);
+$("#file-list").addEventListener("click", async (e) => {
+  const card = e.target.closest(".file-card");
+  if (!card) return;
+  if (e.target.closest(".fc-check")) {
+    if (e.target.tagName !== "INPUT") return;               // le clic sur le libellé coche la case
+    const set = new Set(st.project.sessions);
+    e.target.checked ? set.add(card.dataset.sid) : set.delete(card.dataset.sid);
+    await api("PUT", "/api/project", { sessions: [...set] });
+    return refreshSessions();
+  }
+  if (!st.s || card.dataset.sid !== st.s.id) await loadSession(card.dataset.sid);
+});
+$("#project-toggle").addEventListener("click", () => {
+  document.body.classList.toggle("no-project");
+  try { localStorage.setItem("noProject", document.body.classList.contains("no-project") ? "1" : ""); } catch (e) { /* stockage indisponible */ }
+});
+try { if (localStorage.getItem("noProject")) document.body.classList.add("no-project"); } catch (e) { /* idem */ }
+document.querySelectorAll("[data-ptab]").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-ptab]").forEach((x) => x.classList.toggle("active", x === b));
+  $("#p-files").hidden = b.dataset.ptab !== "files";
+  $("#p-montage").hidden = b.dataset.ptab !== "montage";
+  if (b.dataset.ptab === "montage") { refreshSessions(); pollMontage(); }
+}));
 
 async function refreshSources() {
   const r = await api("GET", "/api/sources");
@@ -1285,41 +1329,92 @@ $("#src-add").addEventListener("submit", async (e) => {
   refreshSources();
 });
 
-// montage : sessions ayant des clips, cochées par défaut celles du jour affiché
-st.montage = new Set();
+// montage : tous les clips du projet, dans un ordre libre (glisser ou ↑↓), avec exclusions
+const mtKey = (c) => `${c.sid}|${c.id}`;
 function renderMontage() {
-  const ul = $("#mt-list");
-  const withClips = (st.sessions || []).filter((s) => s.clips);
-  ul.innerHTML = withClips.length ? "" : "<li class='muted'>Aucune session n'a de clips.</li>";
-  withClips.forEach((s) => {
+  const ul = $("#mt-list"), clips = st.project.clips;
+  ul.innerHTML = clips.length ? "" : "<li class='hint'>Aucun clip dans les fichiers du projet.</li>";
+  let n = 0;
+  clips.forEach((c) => {
     const li = document.createElement("li");
-    li.innerHTML = `<input type="checkbox" data-sid="${s.id}" ${st.montage.has(s.id) ? "checked" : ""}>
-      <span>${s.date.slice(6)}/${s.date.slice(4, 6)} ${s.time.slice(0, 2)}:${s.time.slice(2, 4)}</span>
-      <span class="muted">${s.clips} clip(s) · ${fmt(s.clips_s)}</span>`;
+    li.className = "mt-item" + (c.excluded ? " excluded" : "") + (st.s && st.s.id === c.sid && st.clips[st.sel]?.id === c.id ? " current" : "");
+    li.draggable = true;
+    li.dataset.key = mtKey(c);
+    const when = new Date(c.utc * 1000).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const t = (c.start + Math.min(2, (c.end - c.start) / 2)).toFixed(1);
+    li.innerHTML = `<span class="grip">⋮⋮</span>
+      <img loading="lazy" alt="" src="/thumb/${c.sid}.jpg?t=${t}&yaw=${c.yaw}&pitch=${c.pitch}&fov=${c.fov}">
+      <div><span class="n">${c.excluded ? "–" : ++n}</span>${when}<div class="muted">${fmt(c.end - c.start)}</div></div>
+      <div class="mt-btns"><button data-mv="-1" title="Monter">↑</button><button data-ex title="${c.excluded ? "Inclure" : "Exclure"} du montage">${c.excluded ? "◌" : "👁"}</button><button data-mv="1" title="Descendre">↓</button></div>`;
     ul.appendChild(li);
   });
-  const chosen = withClips.filter((s) => st.montage.has(s.id));
-  const total = chosen.reduce((a, s) => a + s.clips_s, 0);
-  $("#mt-total").textContent = chosen.length ? `${chosen.length} session(s) · ${chosen.reduce((a, s) => a + s.clips, 0)} clips · ${fmt(total)}` : "Coche les sessions à enchaîner.";
-  $("#mt-start").disabled = $("#mt-preview").disabled = !chosen.length;
+  const kept = clips.filter((c) => !c.excluded);
+  const total = kept.reduce((a, c) => a + c.end - c.start, 0);
+  $("#mt-total").textContent = kept.length ? `${kept.length} clip(s) · ${fmt(total)}` + (clips.length > kept.length ? ` · ${clips.length - kept.length} exclu(s)` : "") : "";
+  $("#mt-count").textContent = kept.length ? kept.length : "";
+  $("#mt-start").disabled = $("#mt-preview").disabled = !kept.length;
 }
-$("#mt-menu").addEventListener("toggle", async (e) => {
-  if (!e.target.open) return;
-  if (!st.montage.size && st.s) st.sessions.filter((s) => s.clips && s.date === st.s.date).forEach((s) => st.montage.add(s.id));
-  await refreshSessions();
-  pollMontage();
-});
-$("#mt-list").addEventListener("change", (e) => {
-  const sid = e.target.dataset.sid;
-  if (!sid) return;
-  e.target.checked ? st.montage.add(sid) : st.montage.delete(sid);
+async function saveMontage(clips) {
+  st.project.clips = clips;
   renderMontage();
+  await api("PUT", "/api/project", { order: clips.map((c) => [c.sid, c.id]),
+                                     excluded: clips.filter((c) => c.excluded).map((c) => [c.sid, c.id]) });
+}
+$("#mt-list").addEventListener("click", async (e) => {
+  const li = e.target.closest(".mt-item");
+  if (!li) return;
+  const clips = [...st.project.clips], i = clips.findIndex((c) => mtKey(c) === li.dataset.key);
+  const b = e.target.closest("button");
+  if (b && b.dataset.mv) {
+    const j = i + +b.dataset.mv;
+    if (j < 0 || j >= clips.length) return;
+    [clips[i], clips[j]] = [clips[j], clips[i]];
+    return saveMontage(clips);
+  }
+  if (b && "ex" in b.dataset) { clips[i] = { ...clips[i], excluded: !clips[i].excluded }; return saveMontage(clips); }
+  // clic sur le clip : l'ouvrir dans sa session
+  const c = clips[i];
+  if (!st.s || st.s.id !== c.sid) await loadSession(c.sid);
+  const k = st.clips.findIndex((x) => x.id === c.id);
+  if (k >= 0) selectClip(k, "seek");
+  renderMontage();
+});
+let dragKey = null;
+$("#mt-list").addEventListener("dragstart", (e) => {
+  const li = e.target.closest(".mt-item");
+  if (!li) return;
+  dragKey = li.dataset.key;
+  li.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", dragKey);
+});
+$("#mt-list").addEventListener("dragover", (e) => {
+  const li = e.target.closest(".mt-item");
+  if (!li || !dragKey) return;
+  e.preventDefault();
+  const after = e.clientY > li.getBoundingClientRect().top + li.offsetHeight / 2;
+  document.querySelectorAll(".drop-before, .drop-after").forEach((x) => x.classList.remove("drop-before", "drop-after"));
+  li.classList.add(after ? "drop-after" : "drop-before");
+});
+$("#mt-list").addEventListener("drop", (e) => {
+  e.preventDefault();
+  const li = e.target.closest(".mt-item");
+  if (!li || !dragKey || li.dataset.key === dragKey) return;
+  const after = li.classList.contains("drop-after");
+  const clips = st.project.clips.filter((c) => mtKey(c) !== dragKey);
+  const moved = st.project.clips.find((c) => mtKey(c) === dragKey);
+  clips.splice(clips.findIndex((c) => mtKey(c) === li.dataset.key) + (after ? 1 : 0), 0, moved);
+  saveMontage(clips);
+});
+$("#mt-list").addEventListener("dragend", () => {
+  dragKey = null;
+  document.querySelectorAll(".dragging, .drop-before, .drop-after").forEach((x) => x.classList.remove("dragging", "drop-before", "drop-after"));
 });
 async function startMontage(quality) {
   clearTimeout(saveTimer);
   await api("PUT", `/api/selections/${st.s.id}`, st.clips);   // la session affichée est à jour
   const r = await fetch("/api/montage", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sids: [...st.montage], quality, format: $("#export-format").value,
+    body: JSON.stringify({ quality, format: $("#export-format").value,
                            height: +$("#export-height").value, crf: +$("#export-crf").value }) }).then((x) => x.json());
   if (r.error) { $("#mt-status").textContent = "⚠ " + r.error; return; }
   pollMontage();
@@ -1335,10 +1430,8 @@ async function pollMontage() {
     el.innerHTML = `<progress value="${j.progress}" max="1"></progress> ${Math.round(j.progress * 100)} % · ${j.message}
       <button id="mt-cancel">annuler</button>`;
     $("#mt-cancel").onclick = () => api("POST", "/api/export/montage", { cancel: true });
-    $("#mt-badge").textContent = `${Math.round(j.progress * 100)} %`;
     montageTimer = setTimeout(pollMontage, 1000);
   } else {
-    $("#mt-badge").textContent = j.state === "done" ? "✓" : j.state === "error" ? "⚠" : "";
     el.innerHTML = j.state === "done" ? `✓ <a href="/exports/${encodeURIComponent(j.output)}" target="_blank">${j.output}</a>`
       : j.state === "error" ? "⚠ " + j.message.slice(0, 200) : "";
     if (j.warning) el.insertAdjacentHTML("beforeend", ` <span class="warn">⚠ ${j.warning}</span>`);
@@ -1352,7 +1445,6 @@ async function pollMontage() {
   const sessions = await refreshSessions();
   const wanted = location.hash.slice(1);
   const first = sessions.find((s) => s.id === wanted) || sessions.reduce((a, b) => (b.duration > a.duration ? b : a));
-  $("#session").value = first.id;
   await loadSession(first.id);
   pollMontage();
   requestAnimationFrame(frame);

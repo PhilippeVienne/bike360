@@ -107,6 +107,7 @@ class Session:
     date: str               # YYYYMMDD (heure locale caméra)
     time: str               # HHMMSS
     segments: list[Segment] = field(default_factory=list)
+    parts: list[str] = field(default_factory=list)  # sessions d'origine fusionnées (enregistrement en boucle)
 
 
 def scan(dcim):
@@ -130,3 +131,38 @@ def scan(dcim):
     for s in sessions.values():
         s.segments.sort(key=lambda x: x.index)
     return [s for s in sessions.values() if all(seg.lrv for seg in s.segments)]
+
+
+MAX_CHAIN_GAP_S = 2.5  # écart toléré entre fin d'un fichier et début du suivant (heure du nom : à la seconde)
+
+
+def merge_continuous(sessions, duration_of):
+    """Fusionne les sessions qui se suivent sans interruption (enregistrement en boucle).
+
+    En mode boucle, la caméra écrit des fichiers d'une minute effacés au fil de l'eau : chacun
+    forme une « session » dont l'heure de début suit exactement la fin de la précédente. On
+    les réunit en un bloc continu, identifié par sa première session ; `parts` garde la liste
+    d'origine et les segments sont renumérotés dans l'ordre.
+    `duration_of(session)` : durée (s) d'une session d'origine.
+    """
+    from datetime import datetime
+    out = []
+    for s in sorted(sessions, key=lambda x: x.date + x.time):
+        start = datetime.strptime(s.date + s.time, "%Y%m%d%H%M%S")
+        dur = duration_of(s)
+        prev = out[-1] if out else None
+        if prev and abs((start - prev[1]).total_seconds() - prev[2]) <= MAX_CHAIN_GAP_S:
+            block = prev[0]
+            if not block.parts:
+                block.parts.append(block.id)
+            block.parts.append(s.id)
+            block.segments.extend(s.segments)
+            out[-1] = (block, start, dur)
+        else:
+            out.append((s, start, dur))
+    blocks = [b for b, _, _ in out]
+    for b in blocks:
+        if b.parts:
+            for i, seg in enumerate(b.segments):
+                seg.index = i + 1
+    return blocks
