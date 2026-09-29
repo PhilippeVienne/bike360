@@ -272,3 +272,18 @@ main > aside { grid-column: 3; }
 #p-montage > *, .mt-foot > *, .finish > * { min-width: 0; }
 .finish select, .finish input[type=text] { width: 100%; }
 .finish label > select { flex: 1 1 0; width: auto; }
+
+/* confidentialité : revue des zones détectées */
+#pv-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow: auto; }
+.pv-clip { display: flex; flex-direction: column; gap: 4px; }
+.pv-head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.pv-head .spacer { flex: 1; }
+.pv-head button { padding: 0 6px; font-size: 11px; }
+.pv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 4px; }
+.pv-zone { position: relative; border: 2px solid var(--play); border-radius: 5px; overflow: hidden; cursor: pointer; aspect-ratio: 1; background: #000; }
+.pv-zone img { width: 100%; height: 100%; object-fit: cover; display: block; filter: blur(3px); }
+.pv-zone:hover img { filter: none; }
+.pv-zone span { position: absolute; left: 0; right: 0; bottom: 0; font-size: 9px; text-align: center; background: rgba(0,0,0,.6); color: #fff; }
+.pv-zone.off { border-color: var(--line); opacity: .45; }
+.pv-zone.off span { text-decoration: line-through; }
+.pv-stale { color: var(--accent); }

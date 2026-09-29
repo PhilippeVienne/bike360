@@ -25,6 +25,7 @@ import geometry
 import horizon
 import hyperlapse
 import insta360
+import privacy
 import telemetry
 
 ROOT = Path(__file__).resolve().parent
@@ -221,7 +222,8 @@ def selections_path(sid):
 
 def get_settings():
     cfg = json.loads(SETTINGS.read_text()) if SETTINGS.exists() else {}
-    return {"masks": cfg.get("masks", []), "telemetry": {**telemetry.DEFAULTS, **cfg.get("telemetry", {})}}
+    return {"masks": cfg.get("masks", []), "telemetry": {**telemetry.DEFAULTS, **cfg.get("telemetry", {})},
+            "privacy": {"enabled": False, **cfg.get("privacy", {})}}
 
 
 def get_selections(sid):
@@ -455,6 +457,7 @@ def export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, ma
         if line.startswith("out_time_us=") and line[12:].strip().isdigit():
             report(int(line[12:]) / 1e6)
     run_part_process(job, cmd, progress)
+    return [seg_offset + ss + t for t, _, _ in targets], [m for _, m, _ in targets], [f for _, _, f in targets]
 
 
 def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, out_w, out_h, out, report):
@@ -483,6 +486,7 @@ def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks
                            "-c:v", "copy", "-c:a", "aac", "-b:a", q.get("audio", "160k"), "-ar", "48000", "-ac", "2",
                            "-movflags", "+faststart", str(out)], lambda _: None)
     h264.unlink(missing_ok=True)
+    return [seg_offset + ss + t for t, _, _ in targets], [m for _, m, _ in targets], fovs
 
 
 def run_export(key, clips, quality, opts):
@@ -495,6 +499,7 @@ def run_export(key, clips, quality, opts):
         sids = list(dict.fromkeys(sid for sid, _ in clips))
         settings = get_settings()
         masks, tel_opts = settings["masks"], settings["telemetry"]
+        blur_on = settings["privacy"]["enabled"]
         sizes = {}
         if not clips:
             raise ValueError("aucun clip sélectionné")
@@ -529,11 +534,18 @@ def run_export(key, clips, quality, opts):
             def report(t, base=done):
                 job["progress"] = min(1.0, (base + t) / total)
             if gpu:
-                export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, out_w, out_h, out, report)
+                views = export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, out_w, out_h, out, report)
             else:
                 if src not in sizes:
                     sizes[src] = source_size(src, q["source"])
-                export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, sizes[src], out_w, out_h, out, report)
+                views = export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, sizes[src], out_w, out_h, out, report)
+            if blur_on:
+                tracks = privacy.load(sid).get(clip.get("id"), {}).get("tracks", [])
+                if any(t.get("enabled", True) for t in tracks):
+                    job["message"] = f"clip {i + 1}/{len(clips)} : floutage"
+                    blurred = out.with_name(out.stem + "_flou.mp4")
+                    privacy.blur_video(out, blurred, *views, tracks, out_w, out_h, encoder_args(q))
+                    blurred.replace(out)
             if tel_opts["enabled"] and result.get("gps_coverage", 0) > 0.3:
                 job["message"] = f"clip {i + 1}/{len(clips)} : télémétrie"
                 seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
@@ -576,6 +588,83 @@ def run_export(key, clips, quality, opts):
         job.update(state="error", message=str(e))
     finally:
         job.pop("proc", None)
+
+
+def run_privacy(items, force=False):
+    """Analyse de confidentialité : visages et plaques de chaque clip, dans son cadrage."""
+    job = state["jobs"]["privacy"]
+    try:
+        if not gpu_engine_available():
+            raise ValueError("l'analyse demande le moteur GPU (render/ + NVENC)")
+        job["message"] = "chargement des modèles"
+        detector = privacy.Detector()
+        work = analyze.CACHE / "privacy_render"
+        work.mkdir(parents=True, exist_ok=True)
+        total = sum(c["end"] - c["start"] for _, c in items) or 1
+        done, found, skipped = 0.0, 0, 0
+        for n, (sid, clip) in enumerate(items):
+            dur_clip = clip["end"] - clip["start"]
+            key = privacy.view_key(clip)
+            if not force and privacy.load(sid).get(clip["id"], {}).get("key") == key:
+                done += dur_clip
+                skipped += 1
+                continue
+            session, result = state["sessions"][sid]
+            full = state["horizon"].get(sid, {})
+            horizon_data = full.get("data") if full.get("status") == "done" else None
+            if geometry.clip_horizon_mode(clip) == "auto" and horizon_data is None:
+                horizon_data = horizon.compute_range(session, result, clip["start"] - 3, clip["end"] + 3)
+            tracks = []
+            for k, (seg, ss, dur) in enumerate(clip_parts(session, result, clip)):
+                if not seg.insv:
+                    raise ValueError(f"fichier .insv manquant pour {sid}")
+                fps = source_fps(seg.insv)
+                seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
+                targets = part_targets(clip, result, horizon_data, seg_offset, ss, dur, 1 / float(fps))
+                h264, spec = work / f"{sid}_{clip['id']}_{k}.h264", work / f"{sid}_{clip['id']}_{k}.json"
+                spec.write_text(json.dumps({
+                    "source": seg.insv, "start": ss, "duration": dur, "width": privacy.AW, "height": privacy.AH,
+                    "fov": targets[0][2], "fovs": [float(f) for _, _, f in targets], "cq": 21, "masks": [],
+                    "matrices": [[float(v) for v in m.flatten()] for _, m, _ in targets], "output": str(h264)}))
+                job["message"] = f"clip {n + 1}/{len(items)} : rendu"
+                run_part_process(job, [str(RENDER_BIN), str(spec)], lambda _: None)
+                job["message"] = f"clip {n + 1}/{len(items)} : détection"
+
+                def progress(f, base=done, d=dur):
+                    job["progress"] = min(1.0, (base + f * d) / total)
+                part = privacy.analyze_clip(h264, [seg_offset + ss + t for t, _, _ in targets],
+                                            [m for _, m, _ in targets], [f for _, _, f in targets],
+                                            sid, f"{clip['id']}_{k}", detector, progress)
+                for t in part:
+                    t["id"] = len(tracks)
+                    tracks.append(t)
+                h264.unlink(missing_ok=True)
+                spec.unlink(missing_ok=True)
+                done += dur
+            data = privacy.load(sid)
+            data[clip["id"]] = {"key": key, "tracks": tracks}
+            privacy.save(sid, data)
+            found += len(tracks)
+        msg = f"{found} zone(s) détectée(s)" + (f", {skipped} clip(s) déjà à jour" if skipped else "")
+        job.update(state="done", progress=1.0, message=msg)
+    except Exception as e:
+        traceback.print_exc()
+        job.update(state="error", message=str(e))
+    finally:
+        job.pop("proc", None)
+
+
+def privacy_overview():
+    """État de l'analyse de confidentialité pour chaque clip du montage (revue)."""
+    out = []
+    for sid, clip in montage_items():
+        entry = privacy.load(sid).get(clip["id"])
+        tracks = (entry or {}).get("tracks", [])
+        out.append({"sid": sid, "clip": clip["id"], "start": clip["start"], "end": clip["end"],
+                    "analyzed": entry is not None, "stale": bool(entry) and entry["key"] != privacy.view_key(clip),
+                    "tracks": [{k: t[k] for k in ("id", "kind", "conf", "enabled", "thumb")} |
+                               {"t0": t["samples"][0][0], "t1": t["samples"][-1][0]} for t in tracks if t["samples"]]})
+    return out
 
 
 def run_hyperlapse(sid, opts):
@@ -822,6 +911,11 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 return self.send_error(500)
             return self._file(img, "image/png")
+        if path == "/api/privacy":
+            return self._json({"job": {k: v for k, v in state["jobs"].get("privacy", {"state": "idle"}).items() if k != "proc"},
+                               "enabled": get_settings()["privacy"]["enabled"], "clips": privacy_overview()})
+        if parts[0] == "privacy-thumb" and len(parts) == 2 and (privacy.THUMBS / parts[1]).is_file():
+            return self._file(privacy.THUMBS / Path(parts[1]).name, "image/jpeg")
         if path == "/api/music":
             return self._json(music_files())
         if path == "/api/sources":
@@ -854,8 +948,17 @@ class Handler(BaseHTTPRequestHandler):
                      for m in cfg.get("masks", current["masks"])]
             tel = {k: bool(v) for k, v in {**current["telemetry"], **cfg.get("telemetry", {})}.items()
                    if k in telemetry.DEFAULTS}
+            priv = {"enabled": bool({**current["privacy"], **cfg.get("privacy", {})}["enabled"])}
             analyze.DATA.mkdir(exist_ok=True)
-            SETTINGS.write_text(json.dumps({"masks": masks[:8], "telemetry": tel}, indent=1))
+            SETTINGS.write_text(json.dumps({"masks": masks[:8], "telemetry": tel, "privacy": priv}, indent=1))
+            return self._json({"ok": True})
+        if parts[:2] == ["api", "privacy"] and len(parts) == 4 and parts[2] in state["sessions"]:
+            body = self._body() or {}
+            data = privacy.load(parts[2])
+            for t in data.get(parts[3], {}).get("tracks", []):
+                if body.get("track") in (t["id"], "all"):
+                    t["enabled"] = bool(body.get("enabled"))
+            privacy.save(parts[2], data)
             return self._json({"ok": True})
         if parts == ["api", "project"]:
             body = self._body() or {}
@@ -885,8 +988,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._music_upload()
         if parts == ["api", "montage"]:
             return self._montage(self._body() or {})
-        if parts == ["api", "export", "montage"] and (self._body() or {}).get("cancel"):
-            job = state["jobs"].get("montage", {})
+        if parts == ["api", "privacy", "analyze"]:
+            body = self._body() or {}
+            if state["jobs"].get("privacy", {}).get("state") == "running":
+                return self._json({"error": "analyse déjà en cours"}, 409)
+            if body.get("sid") in state["sessions"] and body.get("clip"):
+                items = [(body["sid"], c) for c in get_selections(body["sid"]) if c["id"] == body["clip"]]
+            else:
+                items = montage_items()
+            if not items:
+                return self._json({"error": "aucun clip à analyser"}, 400)
+            state["jobs"]["privacy"] = {"state": "running", "progress": 0.0, "message": "démarrage"}
+            threading.Thread(target=run_privacy, args=(items, bool(body.get("force"))), daemon=True).start()
+            return self._json({"ok": True})
+        if len(parts) == 3 and parts[:2] == ["api", "export"] and parts[2] in ("montage", "privacy") \
+                and (self._body() or {}).get("cancel"):
+            job = state["jobs"].get(parts[2], {})
             job["cancelled"] = True
             if job.get("proc"):
                 job["proc"].terminate()

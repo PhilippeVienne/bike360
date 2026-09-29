@@ -1409,6 +1409,62 @@ $("#fin-upload").addEventListener("change", async (e) => {
   renderFinish();
 });
 
+// confidentialité : analyse (visages, plaques), revue des zones, floutage à l'export
+let pvTimer = null;
+async function renderPrivacy() {
+  clearTimeout(pvTimer);
+  const r = await api("GET", "/api/privacy");
+  $("#pv-enabled").checked = r.enabled;
+  const j = r.job, running = j.state === "running";
+  $("#pv-analyze").disabled = running;
+  $("#pv-status").innerHTML = running
+    ? `<progress value="${j.progress}" max="1"></progress> ${Math.round(j.progress * 100)} % · ${esc(j.message)} <button id="pv-cancel">annuler</button>`
+    : j.state === "done" ? "✓ " + esc(j.message) : j.state === "error" ? "⚠ " + esc(j.message)
+    : "Détecte visages et plaques dans chaque clip, dans son cadrage (moteur GPU).";
+  if (running) {
+    $("#pv-cancel").onclick = () => api("POST", "/api/export/privacy", { cancel: true });
+    pvTimer = setTimeout(renderPrivacy, 1500);
+  }
+  const list = $("#pv-list");
+  list.innerHTML = "";
+  let kept = 0, pending = 0;
+  const num = new Map(st.project.clips.filter((c) => !c.excluded).map((c, k) => [`${c.sid}|${c.id}`, k + 1]));
+  r.clips.forEach((c) => {
+    const div = document.createElement("div");
+    div.className = "pv-clip";
+    const state = !c.analyzed ? "non analysé" : c.stale ? "<span class='pv-stale'>cadrage modifié : à refaire</span>"
+      : c.tracks.length ? `${c.tracks.length} zone(s)` : "rien détecté";
+    if (!c.analyzed || c.stale) pending++;
+    div.innerHTML = `<div class="pv-head"><strong>Clip ${num.get(`${c.sid}|${c.clip}`) ?? "?"}</strong><span class="muted">${state}</span><span class="spacer"></span>
+      ${c.tracks.length ? `<button data-all="1">tout garder</button><button data-all="0">tout ignorer</button>` : ""}</div>
+      <div class="pv-grid">${c.tracks.map((t) => `<div class="pv-zone${t.enabled ? "" : " off"}" data-track="${t.id}" title="${t.kind} · confiance ${Math.round(t.conf * 100)} % · ${fmt(t.t1 - t.t0 + 0.5)}">
+        <img loading="lazy" alt="" src="/privacy-thumb/${encodeURIComponent(t.thumb)}"><span>${t.kind}</span></div>`).join("")}</div>`;
+    div.dataset.sid = c.sid; div.dataset.clip = c.clip;
+    kept += c.tracks.filter((t) => t.enabled).length;
+    list.appendChild(div);
+  });
+  $("#pv-summary").textContent = `· ${r.enabled ? "flou activé" : "flou désactivé"}` + (kept ? ` · ${kept} zone(s)` : "") + (pending ? ` · ${pending} à analyser` : "");
+}
+$("#mt-privacy").addEventListener("toggle", (e) => { if (e.target.open) renderPrivacy(); });
+$("#pv-enabled").addEventListener("change", async (e) => {
+  await api("PUT", "/api/settings", { privacy: { enabled: e.target.checked } });
+  renderPrivacy();
+});
+$("#pv-analyze").addEventListener("click", async () => {
+  const r = await fetch("/api/privacy/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((x) => x.json());
+  if (r.error) $("#pv-status").textContent = "⚠ " + r.error;
+  renderPrivacy();
+});
+$("#pv-list").addEventListener("click", async (e) => {
+  const clip = e.target.closest(".pv-clip"), zone = e.target.closest(".pv-zone"), all = e.target.closest("[data-all]");
+  if (!clip || (!zone && !all)) return;
+  const body = zone ? { track: +zone.dataset.track, enabled: zone.classList.contains("off") }
+    : { track: "all", enabled: all.dataset.all === "1" };
+  if (zone) zone.classList.toggle("off");
+  await api("PUT", `/api/privacy/${clip.dataset.sid}/${clip.dataset.clip}`, body);
+  renderPrivacy();
+});
+
 async function saveMontage(clips) {
   st.project.clips = clips;
   renderMontage();

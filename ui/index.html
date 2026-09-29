@@ -115,6 +115,14 @@
           <label class="slider" title="Son d'origine (moteur, vent) sous la musique">son d'origine <input data-style="original_volume" type="range" min="0" max="1.5" step="0.05"></label>
           <span class="hint" id="fin-status">Ouverture et fermeture en fondu au noir dès qu'une finition est choisie.</span>
         </details>
+        <details class="finish" id="mt-privacy">
+          <summary>Confidentialité <span id="pv-summary" class="muted"></span></summary>
+          <label title="Flouter à l'export les visages et plaques gardés ci-dessous"><input type="checkbox" id="pv-enabled"> flouter visages et plaques à l'export</label>
+          <div class="mt-actions"><button id="pv-analyze" class="primary">Analyser les clips</button></div>
+          <span id="pv-status" class="hint">Détecte visages et plaques dans chaque clip, dans son cadrage (moteur GPU).</span>
+          <div id="pv-list"></div>
+          <span class="hint">Clic sur une vignette : garder ↔ ignorer (fausse détection).</span>
+        </details>
         <span class="hint">Glisser pour réordonner · 👁 pour exclure. Destination, résolution et qualité : en haut.</span>
         <div class="mt-actions"><button id="mt-preview">Aperçu 720p</button><button id="mt-start" class="primary">Exporter le montage</button></div>
         <span id="mt-status" class="hint"></span>
