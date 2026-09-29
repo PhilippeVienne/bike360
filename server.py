@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 
 import analyze
+import finishing
 import geometry
 import horizon
 import hyperlapse
@@ -34,6 +35,9 @@ SETTINGS = analyze.DATA / "settings.json"
 SOURCES = analyze.DATA / "sources.json"  # dossiers de vidéos ajoutés depuis l'interface
 PROJECT = analyze.DATA / "project.json"  # sessions du projet, ordre et exclusions du montage
 THUMBS = analyze.CACHE / "thumbs"
+MUSIC = analyze.DATA / "music"  # musiques de fond envoyées depuis l'interface
+MUSIC_EXT = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus", ".flac"}
+MUSIC_MAX_BYTES = 60 * 1024 * 1024
 PROJECT_MIN_S = 60  # sans projet enregistré : sessions d'au moins une minute
 RENDER_BIN = ROOT / "render" / "target" / "release" / "insta-render"
 
@@ -239,7 +243,12 @@ def get_project():
         proj = {"sessions": [sid for sid, (_, r) in sorted(state["sessions"].items())
                              if r["duration"] >= PROJECT_MIN_S or get_selections(sid)]}
     return {"sessions": [x for x in proj.get("sessions", []) if x in state["sessions"]],
-            "order": proj.get("order", []), "excluded": proj.get("excluded", [])}
+            "order": proj.get("order", []), "excluded": proj.get("excluded", []),
+            "style": finishing.clean(proj.get("style"))}
+
+
+def music_files():
+    return sorted(p.name for p in MUSIC.glob("*") if p.suffix.lower() in MUSIC_EXT) if MUSIC.is_dir() else []
 
 
 def montage_items(proj=None, with_excluded=False):
@@ -535,14 +544,32 @@ def run_export(key, clips, quality, opts):
                                      tracks=[state["sessions"][x][1] for x in sids]):
                     with_tel.replace(out)
             done += dur
-            files.append(out)
+            files.append((i, out))
         job["message"] = "assemblage"
-        listing = out_dir / "concat.txt"
-        listing.write_text("".join(f"file '{f.name}'\n" for f in files))
         prefix = f"montage_{min(sids)[4:12]}_{len(clips)}clips" if key == "montage" else key
         final = EXPORTS / f"{prefix}_{name}.mp4"
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
-                        "-c", "copy", "-movflags", "+faststart", str(final)], check=True)
+        style = get_project()["style"] if key == "montage" else None
+        if style and not finishing.is_plain(style):
+            # un fichier par clip (morceaux d'un même clip recollés sans transition), puis finition
+            clip_files = []
+            for i in dict.fromkeys(i for i, _ in files):
+                parts = [f for j, f in files if j == i]
+                if len(parts) == 1:
+                    clip_files.append(parts[0])
+                    continue
+                joined = out_dir / f"clip_{i:03d}.mp4"
+                (out_dir / f"clip_{i:03d}.txt").write_text("".join(f"file '{f.name}'\n" for f in parts))
+                subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0",
+                                "-i", str(out_dir / f"clip_{i:03d}.txt"), "-c", "copy", str(joined)], check=True)
+                clip_files.append(joined)
+            music = MUSIC / style["music"] if style["music"] in music_files() else None
+            job["message"] = "transitions, titre, musique"
+            finishing.finish(clip_files, final, style, encoder_args(q), out_w, out_h, music, q.get("audio", "160k"))
+        else:
+            listing = out_dir / "concat.txt"
+            listing.write_text("".join(f"file '{f.name}'\n" for _, f in files))
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+                            "-c", "copy", "-movflags", "+faststart", str(final)], check=True)
         job.update(state="done", progress=1.0, message=f"terminé ({job['engine']})", output=final.name)
     except Exception as e:
         traceback.print_exc()
@@ -720,6 +747,20 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(target=rescan, daemon=True).start()
         return self._json({"ok": True})
 
+    def _music_upload(self):
+        """Reçoit une musique (corps brut) : POST /api/music?name=fichier.mp3."""
+        qs = dict(x.split("=", 1) for x in self.path.partition("?")[2].split("&") if "=" in x)
+        from urllib.parse import unquote
+        name = Path(unquote(qs.get("name", ""))).name
+        n = int(self.headers.get("Content-Length") or 0)
+        if Path(name).suffix.lower() not in MUSIC_EXT or not name.strip("."):
+            return self._json({"error": "format non pris en charge (mp3, m4a, aac, wav, ogg, opus, flac)"}, 400)
+        if not 0 < n <= MUSIC_MAX_BYTES:
+            return self._json({"error": "fichier vide ou trop gros (60 Mo max)"}, 400)
+        MUSIC.mkdir(parents=True, exist_ok=True)
+        (MUSIC / name).write_bytes(self.rfile.read(n))
+        return self._json({"ok": True, "name": name})
+
     def _montage(self, body):
         """Montage : les clips du projet, dans l'ordre choisi, dans un seul export."""
         items = montage_items()
@@ -781,6 +822,8 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 return self.send_error(500)
             return self._file(img, "image/png")
+        if path == "/api/music":
+            return self._json(music_files())
         if path == "/api/sources":
             return self._json({"scan": state["scan"], "folders": [
                 {"path": f, "present": Path(f).is_dir(), "removable": f != state["dcim"],
@@ -820,6 +863,8 @@ class Handler(BaseHTTPRequestHandler):
             for k in ("sessions", "order", "excluded"):
                 if isinstance(body.get(k), list):
                     proj[k] = body[k]
+            if isinstance(body.get("style"), dict):
+                proj["style"] = finishing.clean({**proj["style"], **body["style"]})
             analyze.DATA.mkdir(exist_ok=True)
             PROJECT.write_text(json.dumps(proj, indent=1))
             return self._json({"ok": True})
@@ -836,6 +881,8 @@ class Handler(BaseHTTPRequestHandler):
         parts = self.path.strip("/").split("/")
         if parts == ["api", "sources"]:
             return self._sources(self._body() or {})
+        if parts[:2] == ["api", "music"]:
+            return self._music_upload()
         if parts == ["api", "montage"]:
             return self._montage(self._body() or {})
         if parts == ["api", "export", "montage"] and (self._body() or {}).get("cancel"):

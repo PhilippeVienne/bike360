@@ -257,3 +257,18 @@ header { position: relative; z-index: 2000; }  /* menus au-dessus des contrôles
 #project { grid-column: 1; }
 .viewer { grid-column: 2; }
 main > aside { grid-column: 3; }
+
+/* finition du montage */
+.finish { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; }
+.finish[open] { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; }
+.finish summary { cursor: pointer; font-weight: 600; }
+.finish label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.finish select { flex: 1; min-width: 0; font-size: 12px; padding: 2px 4px; }
+.finish input[type=text] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 8px; font: inherit; font-size: 12px; min-width: 0; }
+.finish .slider input { flex: 1; accent-color: var(--accent); min-width: 0; }
+.finish .upload { cursor: pointer; border: 1px solid var(--line); border-radius: 6px; padding: 1px 8px; color: var(--text); }
+#p-montage { grid-template-columns: minmax(0, 1fr); }
+#p-montage > *, .mt-foot > *, .finish > * { min-width: 0; }
+.finish select, .finish input[type=text] { width: 100%; }
+.finish label > select { flex: 1 1 0; width: auto; }
