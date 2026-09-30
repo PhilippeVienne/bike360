@@ -28,6 +28,7 @@ THUMBS = analyze.CACHE / "privacy"
 AW, AH = 1920, 1080               # rendu d'analyse (cadrage et champ du clip)
 DETECT_EVERY = 2                  # une image sur deux : le suivi comble
 FACE_SCORE, PLATE_SCORE = 0.6, 0.35
+FACE_SCALE = 0.5                  # détection des visages à mi-résolution (≈ 4× plus rapide)
 TRACK_GAP = 12                    # images sans détection tolérées dans une piste
 MIN_HITS, SURE_CONF = 2, 0.75     # piste retenue si ≥ 2 détections, ou une seule très sûre
 EXTEND_S = 0.25                   # floutage prolongé avant/après la piste
@@ -42,28 +43,34 @@ class Detector:
         from open_image_models import create_detector
         warnings.filterwarnings("ignore")
         self.cv2 = cv2
+        import onnxruntime as ort
+        ort.set_default_logger_severity(3)
         self.face = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (AW, AH), FACE_SCORE, 0.3, 5000)
-        self.plates = create_detector(PLATE_MODEL, conf_thresh=PLATE_SCORE)
+        # carte graphique si onnxruntime-gpu est utilisable (CUDA 12), sinon processeur
+        providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in ort.get_available_providers()]
+        self.plates = create_detector(PLATE_MODEL, conf_thresh=PLATE_SCORE, providers=providers, batch_size=5)
 
     def __call__(self, img):
         cv2 = self.cv2
         h, w = img.shape[:2]
         out = []
-        self.face.setInputSize((w, h))
-        _, faces = self.face.detect(img)
+        # visages à mi-résolution : un visage trop petit pour y être vu n'est pas reconnaissable
+        fs = FACE_SCALE
+        small = cv2.resize(img, (int(w * fs), int(h * fs)), interpolation=cv2.INTER_AREA)
+        self.face.setInputSize((small.shape[1], small.shape[0]))
+        _, faces = self.face.detect(small)
         for f in [] if faces is None else faces:
-            out.append(("visage", float(f[-1]), *(float(v) for v in f[:4])))
+            out.append(("visage", float(f[-1]), *(float(v) / fs for v in f[:4])))
         # image entière (plaques proches, qui chevauchent deux tuiles) + tuiles 2×2 avec
         # recouvrement (plaques de moto lointaines : ~2 % de la largeur)
         ov = 100
-        boxes = [[b.x1, b.y1, b.width, b.height, float(d.confidence)]
-                 for d in self.plates.predict(img) for b in [d.bounding_box]]
-        for ty in (0, h // 2 - ov):
-            for tx in (0, w // 2 - ov):
-                crop = img[ty:ty + h // 2 + ov, tx:tx + w // 2 + ov]
-                for d in self.plates.predict(np.ascontiguousarray(crop)):
-                    b = d.bounding_box
-                    boxes.append([b.x1 + tx, b.y1 + ty, b.width, b.height, float(d.confidence)])
+        views = [(0, 0, img)] + [(tx, ty, np.ascontiguousarray(img[ty:ty + h // 2 + ov, tx:tx + w // 2 + ov]))
+                                 for ty in (0, h // 2 - ov) for tx in (0, w // 2 - ov)]
+        boxes = []
+        for (tx, ty, _), dets in zip(views, self.plates.predict([v for _, _, v in views])):   # un seul lot
+            for d in dets:
+                b = d.bounding_box
+                boxes.append([b.x1 + tx, b.y1 + ty, b.width, b.height, float(d.confidence)])
         # fusion par union : une plaque vue en deux moitiés (bord de tuile) est floutée en entier
         merged = []
         for x, y, bw, bh, c in sorted(boxes, key=lambda b: -b[4]):
