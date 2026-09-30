@@ -330,3 +330,135 @@ def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_ar
            "-map", "[vout]", "-map", "0:a?", *encoder_args, "-c:a", "copy", "-movflags", "+faststart", str(out)]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
     return True
+
+
+# ------------------------------------------------------------------ incrustation par le moteur GPU
+
+def _text_sprite(text, font, size, color=(255, 255, 255), shadow=False):
+    """Texte sur fond transparent (image RGBA PIL), avec ombre portée éventuelle."""
+    from PIL import Image, ImageDraw, ImageFont
+    f = ImageFont.truetype(font, size)
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    x0, y0, x1, y1 = probe.textbbox((0, 0), text, font=f)
+    pad = max(2, size // 12) + (3 if shadow else 0)
+    im = Image.new("RGBA", (x1 - x0 + 2 * pad, y1 - y0 + 2 * pad), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    if shadow:
+        d.text((pad - x0 + 2, pad - y0 + 2), text, font=f, fill=(0, 0, 0, 150))
+    d.text((pad - x0, pad - y0), text, font=f, fill=(*color, 255))
+    return im, pad, y0
+
+
+def layers(result, clip, t0, n_frames, fps, W, H, opts, first_part, workdir, time_map=None, tracks=None):
+    """Télémétrie pour le moteur GPU : images RGBA (PNG) et placements par image de sortie.
+
+    Même rendu que `overlay` (ffmpeg), sans réencodage : le moteur incruste pendant le rendu.
+    Retourne (chemins des images, [[ (indice, x, y, opacité) ] par image]) ou None sans GPS.
+    """
+    from PIL import Image
+    opts = {**DEFAULTS, **(opts or {})}
+    lat, lon = _series(result, "lat"), _series(result, "lon")
+    speed, alt = _series(result, "speed"), _series(result, "alt")
+    if lat is None or speed is None:
+        return None
+    workdir.mkdir(parents=True, exist_ok=True)
+    U = min(W, H)
+    m = int(0.03 * U)
+    top = int(0.09 * H) if H > W else m
+    bottom = int(0.16 * H) if H > W else m
+    out_t = np.arange(n_frames) / fps
+    times = time_map(out_t) if time_map else t0 + out_t
+    at = lambda arr, t: np.interp(t, np.arange(len(arr)), arr)
+    paths, index = [], {}
+
+    def sprite(key, make):
+        """Indice d'une image (créée à la première demande)."""
+        if key not in index:
+            img = make()
+            path = workdir / f"s{len(paths):04d}.png"
+            if isinstance(img, np.ndarray):
+                img = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8), "RGBA")
+            img.save(path)
+            index[key] = len(paths)
+            paths.append(str(path))
+        return index[key]
+
+    frames = [[] for _ in range(n_frames)]
+
+    def place_all(idx, xs, ys, alpha=None):
+        for k in range(n_frames):
+            a = 1.0 if alpha is None else float(alpha[k])
+            if a > 0:
+                frames[k].append([idx, float(xs[k] if np.ndim(xs) else xs), float(ys[k] if np.ndim(ys) else ys), a])
+
+    S = int(0.26 * U)
+    if opts["map"]:
+        def make_map():
+            panel, _, attribution = _map_panel(result, clip, tracks or [result], S, U)
+            img = Image.fromarray(np.clip(panel, 0, 255).astype(np.uint8), "RGBA")
+            if attribution:   # attribution dessinée dans l'image (plus de drawtext)
+                txt, pad, _ = _text_sprite(" · ".join(basemap.ATTRIBUTION), FONT, max(8, int(U * 0.011)), (220, 220, 220))
+                box = Image.new("RGBA", txt.size, (0, 0, 0, 130))
+                box.alpha_composite(txt)
+                img.alpha_composite(box, (max(0, S - box.width - int(S * 0.04)), S - box.height - int(S * 0.03)))
+            return img
+        mx, my = W - m - S, top
+        place_all(sprite("map", make_map), mx, my)
+        _, project, _ = _map_panel(result, clip, tracks or [result], S, U)   # même cadrage (tuiles en cache)
+        D = max(8, int(U * 0.024)) // 2 * 2
+        px, py = project(lat, lon)
+        idx = np.arange(len(px))
+        place_all(sprite("dot", lambda: _dot(D)), mx + np.interp(times, idx, px) - D / 2,
+                  my + np.interp(times, idx, py) - D / 2)
+    if opts["altitude"] and alt is not None:
+        PH = int(0.08 * U)
+        py_ = top + (S + int(0.012 * U) if opts["map"] else 0)
+        px_ = W - m - S
+        n = len(alt)
+        lo, hi = np.nanmin(alt), np.nanmax(alt)
+
+        def make_profile():
+            prof = _rounded_panel(S, PH, PH * 0.2)
+            pts = [(S * 0.04 + i / (n - 1) * S * 0.92, PH * 0.85 - (alt[i] - lo) / max(hi - lo, 1) * PH * 0.55)
+                   for i in range(0, n, max(1, n // 400))]
+            _stroke(prof, pts, max(2, U * 0.003), (220, 220, 220), 0.9)
+            a, b = int(clip["start"]), int(min(n - 1, clip["end"]))
+            _stroke(prof, [(S * 0.04 + i / (n - 1) * S * 0.92, PH * 0.85 - (alt[i] - lo) / max(hi - lo, 1) * PH * 0.55)
+                           for i in range(a, b + 1, max(1, (b - a) // 100))], max(3, U * 0.005), ACCENT)
+            return prof
+        place_all(sprite("profile", make_profile), px_, py_)
+
+        def make_cursor():
+            cur = _canvas(max(2, int(U * 0.003)), PH)
+            cur[..., :3] = 255
+            cur[..., 3] = 230
+            return cur
+        place_all(sprite("cursor", make_cursor), px_ + S * 0.04 + np.clip(times / (n - 1), 0, 1) * S * 0.92, py_)
+        fs = int(PH * 0.3)
+        values = np.round(at(alt, times)).astype(int)
+        for k, v in enumerate(values):
+            label = f"{v} m"
+            i = sprite(("alt", label), lambda: _text_sprite(label, FONT_BOLD, fs)[0])
+            frames[k].append([i, px_ + int(S * 0.05), py_ + int(PH * 0.08), 1.0])
+    if opts["speed"]:
+        BW, BH = int(0.22 * U), int(0.13 * U)
+        bx, by = m, H - bottom - BH
+
+        def make_speed_panel():
+            img = Image.fromarray(np.clip(_rounded_panel(BW, BH, BH * 0.18), 0, 255).astype(np.uint8), "RGBA")
+            unit, _, _ = _text_sprite("km/h", FONT, int(BH * 0.22), (230, 230, 230))
+            img.alpha_composite(unit, (int(BW * 0.66), int(BH * 0.55)))
+            return img
+        place_all(sprite("speed_panel", make_speed_panel), bx, by)
+        fs = int(BH * 0.62)
+        for k, v in enumerate(np.round(at(speed, times)).astype(int)):
+            label = str(max(0, v))
+            i = sprite(("spd", label), lambda: _text_sprite(label, FONT_BOLD, fs)[0])
+            frames[k].append([i, bx + int(BW * 0.08), by + int(BH * 0.06), 1.0])
+    if opts["place"] and first_part:
+        place = place_at(result, clip["start"])
+        if place:
+            i = sprite("place", lambda: _text_sprite(place, FONT_BOLD, int(0.05 * U), shadow=True)[0])
+            fade = np.clip(np.minimum(out_t / 0.6, (4.0 - out_t) / 0.6), 0, 1)
+            place_all(i, m, top, fade)
+    return paths, frames

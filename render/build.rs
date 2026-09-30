@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    for name in ["reproject", "horizon"] {
+    for name in ["reproject", "horizon", "postfx"] {
         println!("cargo:rerun-if-changed=src/{name}.cu");
         let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(format!("{name}.ptx"));
         let status = Command::new("nvcc")

@@ -573,6 +573,24 @@ def analyze_clip(render_h264, times, mats, fovs, sid, clip_id, detector, progres
 
 # ------------------------------------------------------------------ floutage à l'export
 
+def frame_boxes(times, mats, fovs, tracks, W, H):
+    """Zones à flouter par image de sortie [[x, y, w, h]] pour le moteur GPU (même calcul que
+    blur_video, sans décoder ni réencoder la vidéo)."""
+    out = []
+    for t, M, fov in zip(times, mats, fovs):
+        boxes = []
+        for d, ax, ay in regions_at(tracks, t):
+            b = sphere_to_box(d, ax, ay, M, fov, W, H)
+            if b is None:
+                continue
+            x0, y0 = max(0.0, b[0]), max(0.0, b[1])
+            x1, y1 = min(float(W), b[0] + b[2]), min(float(H), b[1] + b[3])
+            if x1 - x0 >= 2 and y1 - y0 >= 2:
+                boxes.append([round(x0, 1), round(y0, 1), round(x1 - x0, 1), round(y1 - y0, 1)])
+        out.append(boxes)
+    return out
+
+
 AUTO_NEIGHBORS = 2   # mode détection directe : zones des 2 images voisines ajoutées (pas de clignotement)
 
 

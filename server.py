@@ -463,8 +463,12 @@ def export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, ma
     return [seg_offset + ss + t for t, _, _ in targets], [m for _, m, _ in targets], [f for _, _, f in targets]
 
 
-def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, out_w, out_h, out, report):
-    """Rendu NVDEC → CUDA → NVENC (render/), puis multiplexage du son par ffmpeg."""
+def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, out_w, out_h, out, report,
+                    effects=None):
+    """Rendu NVDEC → CUDA → NVENC (render/), puis multiplexage du son par ffmpeg.
+
+    `effects(temps, matrices, champs, cadence)` → champs du job pour le moteur (zones à
+    flouter, images à incruster) : appliqués pendant le rendu, sans réencodage."""
     fps = source_fps(src)
     fd = 1 / float(fps)
     seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
@@ -473,11 +477,13 @@ def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks
     fovs = [float(output_fov(f, out_w, out_h)) for _, _, f in targets]
     h264 = out.with_suffix(".h264")
     spec = out.with_suffix(".json")
+    times = [seg_offset + ss + t for t, _, _ in targets]
+    extra = effects(times, [m for _, m, _ in targets], fovs, float(fps)) if effects else {}
     spec.write_text(json.dumps({
         "source": src, "start": ss, "duration": dur, "width": out_w, "height": out_h,
         "fov": fovs[0], "fovs": fovs, "cq": int(q["crf"]), "max_bitrate": int(q.get("max_bitrate", 0)),
         "masks": [[m["x"], m["y"], m["w"], m["h"]] for m in masks],
-        "matrices": matrices, "output": str(h264),
+        "matrices": matrices, "output": str(h264), **extra,
     }))
 
     def progress(line):
@@ -489,7 +495,7 @@ def export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks
                            "-c:v", "copy", "-c:a", "aac", "-b:a", q.get("audio", "160k"), "-ar", "48000", "-ac", "2",
                            "-movflags", "+faststart", str(out)], lambda _: None)
     h264.unlink(missing_ok=True)
-    return [seg_offset + ss + t for t, _, _ in targets], [m for _, m, _ in targets], fovs
+    return times, [m for _, m, _ in targets], fovs
 
 
 def run_export(key, clips, quality, opts):
@@ -540,12 +546,31 @@ def run_export(key, clips, quality, opts):
 
             def report(t, base=done):
                 job["progress"] = min(1.0, (base + t) / total)
-            if gpu:
-                views = export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, out_w, out_h, out, report)
-            else:
-                if src not in sizes:
-                    sizes[src] = source_size(src, q["source"])
-                views = export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, sizes[src], out_w, out_h, out, report)
+            tracks = privacy.all_tracks(privacy.load(sid).get(clip.get("id"))) if blur_on else []
+            tracks = [t for t in tracks if t.get("enabled", True)]
+            tel_on = tel_opts["enabled"] and result.get("gps_coverage", 0) > 0.3
+            if gpu:   # floutage et télémétrie faits par le moteur pendant le rendu
+
+                def effects(times, mats, fovs, fps, clip=clip, result=result, n=n):
+                    extra = {}
+                    if tracks:
+                        extra["blur"] = privacy.frame_boxes(times, mats, fovs, tracks, out_w, out_h)
+                    if tel_on:
+                        lay = telemetry.layers(result, clip, times[0], len(times), fps, out_w, out_h, tel_opts,
+                                               abs(times[0] - clip["start"]) < 0.5, out_dir / f"tel_{n:03d}",
+                                               tracks=[state["sessions"][x][1] for x in sids])
+                        if lay:
+                            extra["sprites"], extra["overlays"] = lay
+                    return extra
+                job["message"] = f"clip {i + 1}/{len(clips)} ({job['engine']})"
+                export_part_gpu(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, out_w, out_h, out, report,
+                                effects)
+                done += dur
+                files.append((i, out))
+                continue
+            if src not in sizes:
+                sizes[src] = source_size(src, q["source"])
+            views = export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, sizes[src], out_w, out_h, out, report)
             if blur_on:
                 tracks = privacy.all_tracks(privacy.load(sid).get(clip.get("id")))
                 if any(t.get("enabled", True) for t in tracks):
@@ -907,7 +932,16 @@ def run_hyperlapse(sid, opts):
                 fovs.append(float(output_fov(v["fov"], out_w, out_h)))
             out = out_dir / f"part_{n:03d}.mp4"
             h264, spec = out.with_suffix(".h264"), out.with_suffix(".json")
+            extra = {}
+            if tel_opts["enabled"] and result.get("gps_coverage", 0) > 0.3:   # incrustée par le moteur
+                out_t = np.arange(len(part_taus)) / float(fps)
+                lay = telemetry.layers(result, view, float(part_taus[0]), len(part_taus), float(fps), out_w, out_h,
+                                       tel_opts, not files, out_dir / f"tel_{n:03d}",
+                                       time_map=lambda t, ot=out_t, pt=part_taus: np.interp(t, ot, pt))
+                if lay:
+                    extra["sprites"], extra["overlays"] = lay
             spec.write_text(json.dumps({
+                **extra,
                 "source": src, "start": 0.0, "duration": 0.0, "width": out_w, "height": out_h,
                 "fov": fovs[0], "fovs": fovs, "cq": int(q["crf"]), "samples": [int(x) for x in samples],
                 "max_bitrate": cap,
@@ -935,15 +969,6 @@ def run_hyperlapse(sid, opts):
                                    [np.array(m).reshape(3, 3) for m in matrices], fovs, known, out_w, out_h,
                                    encoder_args({**q, "max_bitrate": cap}), detector, blur_progress)
                 blurred.replace(out)
-            if tel_opts["enabled"] and result.get("gps_coverage", 0) > 0.3:
-                job["message"] = f"fichier {n + 1}/{len(session.segments)} : télémétrie"
-                out_t = np.arange(len(part_taus)) / float(fps)
-                with_tel = out.with_name(out.stem + "_tel.mp4")
-                if telemetry.overlay(out, with_tel, result, view, float(part_taus[0]), len(part_taus) / float(fps),
-                                     out_w, out_h, tel_opts, first_part=not files, encoder_args=encoder_args(q),
-                                     workdir=out_dir / f"tel_{n:03d}",
-                                     time_map=lambda t, ot=out_t, pt=part_taus: np.interp(t, ot, pt)):
-                    with_tel.replace(out)
             done += len(sel)
             files.append(out)
         if not files:

@@ -9,6 +9,7 @@
 mod horizon;
 mod mp4;
 mod nvdec;
+mod postfx;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -53,6 +54,15 @@ struct Job {
     masks: Vec<[f32; 4]>,
     /// Rotation écran → caméra (ligne par ligne) pour chaque image de sortie.
     matrices: Vec<[f32; 9]>,
+    /// Par image de sortie : zones à flouter (x, y, w, h) en pixels de sortie (confidentialité).
+    #[serde(default)]
+    blur: Vec<Vec<[f32; 4]>>,
+    /// Images RGBA (PNG) à incruster (télémétrie) …
+    #[serde(default)]
+    sprites: Vec<String>,
+    /// … et, par image de sortie, leurs placements (indice d'image, x, y, opacité).
+    #[serde(default)]
+    overlays: Vec<Vec<[f32; 4]>>,
     output: PathBuf,
 }
 
@@ -108,7 +118,7 @@ fn main() -> Result<()> {
 
 /// Rendu d'un morceau de .insv (voir l'en-tête du fichier).
 fn render(path: &str) -> Result<()> {
-    let job: Job = serde_json::from_reader(File::open(&path)?).context("lecture du job")?;
+    let mut job: Job = serde_json::from_reader(File::open(&path)?).context("lecture du job")?;
     if job.width % 2 != 0 || job.height % 2 != 0 || job.matrices.is_empty() {
         bail!("dimensions paires et au moins une matrice requises");
     }
@@ -232,6 +242,11 @@ fn render(path: &str) -> Result<()> {
         block_dim: (16, 16, 1),
         shared_mem_bytes: 0,
     };
+    // floutage et incrustations appliqués sur le GPU après la reprojection, avant l'encodage
+    let fx = postfx::PostFx::new(&ctx, stream.clone(), &job.sprites, std::mem::take(&mut job.blur),
+                                 std::mem::take(&mut job.overlays))?;
+    let out_frame = postfx::Frame { y: out_buf, uv: out_buf + (out_pitch * oh) as u64, w: ow as i32,
+                                    h: oh as i32, pitch: out_pitch as i32 };
 
     let hevc = nvidia_video_codec_sdk::sys::cuviddec::cudaVideoCodec::cudaVideoCodec_HEVC;
     let mut dec_a = nvdec::Decoder::new(ctx.cu_ctx(), hevc)?;
@@ -256,6 +271,9 @@ fn render(path: &str) -> Result<()> {
         let mut b = stream.launch_builder(&kernel);
         b.arg(&p);
         unsafe { b.launch(launch)? };
+        if let Some(fx) = &fx {
+            fx.apply(out_frame, idx)?;
+        }
         stream.synchronize()?;
         session
             .encode_picture(&mut input, &mut bitstream, EncodePictureParams { input_timestamp: idx as u64, ..Default::default() })
