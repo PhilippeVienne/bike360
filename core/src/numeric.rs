@@ -147,3 +147,18 @@ pub fn round_nd(x: f64, nd: i32) -> f64 {
     }
     format!("{x:.*}", nd as usize).parse().unwrap_or(x)
 }
+
+/// Lissage gaussien à bords prolongés (np.pad « edge » + np.convolve « valid »).
+pub fn gauss(x: &[f64], sig: f64) -> Vec<f64> {
+    let r = (4.0 * sig) as i64;
+    let w: Vec<f64> = (-r..=r).map(|k| (-((k * k) as f64) / (2.0 * sig * sig)).exp()).collect();
+    let sum: f64 = w.iter().sum();
+    let w: Vec<f64> = w.iter().map(|v| v / sum).collect();
+    let n = x.len() as i64;
+    if n == 0 {
+        return vec![];
+    }
+    (0..n)
+        .map(|i| (-r..=r).map(|k| x[(i + k).clamp(0, n - 1) as usize] * w[(k + r) as usize]).sum())
+        .collect()
+}

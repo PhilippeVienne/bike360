@@ -1,8 +1,8 @@
 //! Outil de vérification : sorties JSON à comparer avec les modules Python.
 use std::path::Path;
 
-use anyhow::{bail, Result};
-use insta_core::{analyze, geometry, insta360};
+use anyhow::{bail, Context, Result};
+use insta_core::{analyze, geometry, horizon, hyperlapse, insta360, paths};
 use serde_json::json;
 
 fn main() -> Result<()> {
@@ -34,25 +34,54 @@ fn main() -> Result<()> {
         }
         Some("analyze") => {
             // analyze DOSSIER... : comme server.load_sessions (dédoublonnage, blocs continus), sans cache
-            let mut sessions: Vec<insta360::Session> = vec![];
-            for dir in &args[2..] {
-                for s in insta360::scan(Path::new(dir)) {
-                    if !sessions.iter().any(|x| x.id == s.id) {
-                        sessions.push(s);
-                    }
-                }
-            }
-            let dur = |s: &insta360::Session| -> f64 {
-                s.segments.iter().filter_map(|x| x.lrv.as_ref()).map(|p| analyze::file_duration(p)).sum()
-            };
-            let durations: std::collections::HashMap<String, f64> = sessions.iter().map(|s| (s.id.clone(), dur(s))).collect();
-            let blocks = insta360::merge_continuous(sessions, |s| durations[&s.id]);
-            for (s, r) in analyze::analyze_sessions(blocks, true)? {
+            for (s, r) in analyze::analyze_sessions(load_blocks(&args[2..]), true)? {
                 eprintln!("{} : {:.1} min, GPS {:.0} %, décalage {:+.1} s ({}), {} candidats", s.id, r.duration as f64 / 60.0,
                           r.gps_coverage * 100.0, r.offset_s, r.offset_source, r.candidates.len());
             }
         }
-        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER..."),
+        Some("horizon") => {
+            // horizon SESSION DOSSIER... : horizon complet (cache de la racine) ; « range A B » en option via $RANGE
+            let sid = &args[2];
+            let all = analyze::analyze_sessions(load_blocks(&args[3..]), false)?;
+            let (s, r) = all.iter().find(|(s, _)| &s.id == sid).context("session inconnue")?;
+            let data = match std::env::var("RANGE").ok() {
+                Some(range) => {
+                    let (a, b) = range.split_once(',').context("RANGE=début,fin")?;
+                    horizon::compute_range(s, r, a.parse()?, b.parse()?).context("portion trop courte")?
+                }
+                None => horizon::compute(s, r, &paths::cache(), Some(&|f| eprint!("\r{:.0} %", f * 100.0)))?,
+            };
+            println!("{}", serde_json::to_string(&data)?);
+        }
+        Some("emission") => {
+            // emission IMAGE.gray : émissions processeur d'une image 1024×512 en niveaux de gris
+            let img: Vec<f32> = std::fs::read(&args[2])?.iter().map(|v| *v as f32).collect();
+            println!("{}", serde_json::to_string(&horizon::emission(&img, None))?);
+        }
+        Some("hyperlapse") => {
+            // hyperlapse CACHE.json DURÉE : résumé et instants des images
+            let r: analyze::Analysis = serde_json::from_reader(std::fs::File::open(&args[2])?)?;
+            let d: f64 = args[3].parse()?;
+            println!("{}", json!({"summary": hyperlapse::summary(&r, d), "density": hyperlapse::density(&r, d),
+                                  "times": hyperlapse::frame_times(&r, d)}));
+        }
+        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER... | horizon SESSION DOSSIER... | hyperlapse CACHE.json DURÉE"),
     }
     Ok(())
+}
+
+/// Sessions de plusieurs dossiers (première occurrence gardée), fusionnées en blocs continus.
+fn load_blocks(dirs: &[String]) -> Vec<insta360::Session> {
+    let mut sessions: Vec<insta360::Session> = vec![];
+    for dir in dirs {
+        for s in insta360::scan(Path::new(dir)) {
+            if !sessions.iter().any(|x| x.id == s.id) {
+                sessions.push(s);
+            }
+        }
+    }
+    let durations: std::collections::HashMap<String, f64> = sessions.iter()
+        .map(|s| (s.id.clone(), s.segments.iter().filter_map(|x| x.lrv.as_ref()).map(|p| analyze::file_duration(p)).sum()))
+        .collect();
+    insta360::merge_continuous(sessions, |s| durations[&s.id])
 }
