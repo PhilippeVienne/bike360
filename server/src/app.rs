@@ -49,10 +49,24 @@ pub fn selections_path(sid: &str) -> PathBuf {
     selections_dir().join(format!("{sid}.json"))
 }
 
-/// Interface web : <racine>/ui, sinon celle du dépôt compilé.
-pub fn ui_dir() -> PathBuf {
-    let p = paths::root().join("ui");
-    if p.is_dir() { p } else { PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui")) }
+include!(concat!(env!("OUT_DIR"), "/ui_files.rs"));
+
+/// Fichier de l'interface web (`rel` : chemin sous ui/) : <racine>/ui sur disque en priorité,
+/// sinon la copie embarquée à la compilation. None si introuvable ou chemin suspect.
+pub enum UiFile {
+    Disk(PathBuf),
+    Embedded(&'static [u8]),
+}
+
+pub fn ui_file(rel: &str) -> Option<UiFile> {
+    if rel.is_empty() || rel.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+        return None;
+    }
+    let p = paths::root().join("ui").join(rel);
+    if p.is_file() {
+        return Some(UiFile::Disk(p));
+    }
+    UI_FILES.iter().find(|(name, _)| *name == rel).map(|(_, data)| UiFile::Embedded(data))
 }
 
 /// Moteur GPU : à côté de ce binaire, sinon <racine>/target/release/insta-render.

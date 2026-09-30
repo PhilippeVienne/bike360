@@ -14,7 +14,7 @@ use insta_core::{analyze, automontage, finishing, geometry, hyperlapse, insta360
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::app::{self, exports_dir, music_dir, overrides_path, read_json, sources_path, ui_dir,
+use crate::app::{self, exports_dir, music_dir, overrides_path, read_json, sources_path,
                  write_json_indent, App, Sess, MUSIC_EXT};
 use crate::export::{self, float_of, int_of, HyperOpts, FORMATS, HEIGHTS};
 use crate::{pending, pyjson};
@@ -25,6 +25,8 @@ const MUSIC_MAX_BYTES: usize = 60 * 1024 * 1024;
 pub enum Reply {
     Json(u16, Value),
     File(PathBuf, Option<&'static str>),
+    /// Fichier de l'interface embarqué dans le binaire.
+    Static(&'static [u8], &'static str),
     Error(u16),
 }
 
@@ -55,6 +57,12 @@ pub async fn dispatch(State(app): State<Arc<App>>, ConnectInfo(addr): ConnectInf
                 .unwrap()
         }
         Reply::File(path, ctype) => serve_file(&path, ctype, &headers).await,
+        Reply::Static(data, ctype) => Response::builder()
+            .status(200)
+            .header(header::CONTENT_TYPE, ctype)
+            .header(header::CONTENT_LENGTH, data.len())
+            .body(Body::from(data))
+            .unwrap(),
         Reply::Error(code) => error_page(code),
     };
     if !uri.path().starts_with("/media/") && !uri.path().starts_with("/api/export") {
@@ -256,13 +264,19 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
     let path = full.split('?').next().unwrap_or("");
     let parts = split(path);
     let p: Vec<&str> = parts.iter().map(String::as_str).collect();
-    if path == "/" {
-        return Ok(Reply::File(ui_dir().join("index.html"), None));
-    }
-    if p[0] == "ui" && p.len() == 2 {
-        let f = ui_dir().join(unquote(p[1], false));
-        if f.is_file() && !p[1].contains("..") {
-            return Ok(Reply::File(f, None));
+    // interface : fichier sur disque (<racine>/ui) en priorité, sinon copie embarquée
+    let ui_rel = if path == "/" {
+        Some("index.html".to_string())
+    } else if p[0] == "ui" && p.len() >= 2 {
+        Some(p[1..].iter().map(|x| unquote(x, false)).collect::<Vec<_>>().join("/"))
+    } else {
+        None
+    };
+    if let Some(rel) = ui_rel {
+        match app::ui_file(&rel) {
+            Some(app::UiFile::Disk(f)) => return Ok(Reply::File(f, None)),
+            Some(app::UiFile::Embedded(data)) => return Ok(Reply::Static(data, mime(Path::new(&rel)))),
+            None => {}
         }
     }
     if p[0] == "media" && p.len() == 2 {

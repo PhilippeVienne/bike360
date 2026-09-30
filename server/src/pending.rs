@@ -31,14 +31,14 @@ const BRIDGE: &str = include_str!("pending_bridge.py");
 /// Encodeur NVENC utilisable (testé au démarrage par le serveur), transmis au pont Python.
 pub static NVENC: AtomicBool = AtomicBool::new(false);
 
-/// Dossier du code Python : $INSTA_PYTHON_DIR, sinon la racine si elle contient server.py,
-/// sinon le dépôt compilé.
+/// Dossier du code Python (privacy.py et ses dépendances) : $INSTA_PYTHON_DIR, sinon la racine
+/// (INSTA_BUILD_ROOT) si elle le contient, sinon le dépôt compilé.
 pub fn python_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("INSTA_PYTHON_DIR") {
         return PathBuf::from(p);
     }
     let root = paths::root();
-    if root.join("server.py").exists() {
+    if root.join("privacy.py").exists() {
         return root;
     }
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
@@ -251,7 +251,7 @@ fn sessions_payload(app: &App, sids: &[&str]) -> Result<Value> {
 
 /// Analyse de confidentialité (visages et plaques) de clips dans leur cadrage : rendu GPU,
 /// détection, pistes enregistrées dans data/privacy/. Retourne (zones trouvées, clips à jour).
-/// Remplacera : `server.analyze_privacy` (+ `privacy.Detector`, `privacy.analyze_clip`) — pont Python.
+/// Remplacera : `server.analyze_privacy` (copie dans le pont) (+ `privacy.Detector`, `privacy.analyze_clip`) — pont Python.
 pub fn analyze_privacy(app: &App, job: &Job, items: &[(String, Map<String, Value>)], force: bool, label: &str)
                        -> Result<(u64, u64)> {
     let sids: Vec<&str> = items.iter().map(|(s, _)| s.as_str()).collect();
@@ -262,20 +262,20 @@ pub fn analyze_privacy(app: &App, job: &Job, items: &[(String, Map<String, Value
 }
 
 /// Zone tracée à la main à l'instant t0 : suivie dans le temps (VitTrack) ou fixe sur le clip ;
-/// enregistrée dans data/privacy/. L'état final (done/error) est écrit dans `job`.
-/// Remplacera : `server.run_manual_zone` (+ `privacy.follow`, `local_view`, `tight_box`…) — pont Python.
+/// enregistrée dans data/privacy/. Retourne le message de fin (« zone suivie sur … s »).
+/// Remplacera : `server.run_manual_zone` (copie dans le pont) (+ `privacy.follow`, `local_view`, `tight_box`…) — pont Python.
 #[allow(clippy::too_many_arguments)]
 pub fn privacy_manual_zone(app: &App, job: &Job, sid: &str, clip: &Map<String, Value>, t0: f64, d0: [f64; 3], ax: f64,
-                           ay: f64, track_it: bool) -> Result<()> {
-    call_streaming("privacy_manual_zone", &json!({
+                           ay: f64, track_it: bool) -> Result<String> {
+    let r = call_streaming("privacy_manual_zone", &json!({
         "sessions": sessions_payload(app, &[sid])?, "sid": sid, "clip": clip, "t0": t0, "d0": d0, "ax": ax, "ay": ay,
         "track_it": track_it}), Some(job), forward(job))?;
-    Ok(())
+    Ok(r.as_str().unwrap_or_default().to_string())
 }
 
 /// Suit un objet sur la sphère entre a et b depuis t0 (vues locales rendues par le moteur GPU,
 /// suivi VitTrack) : [(t, direction)] triés.
-/// Remplacera : `server.track_sphere` (+ `server.render_local`, `privacy.follow`…) — pont Python.
+/// Remplacera : `server.track_sphere` (copie dans le pont ; + `render_local`, `privacy.follow`…) — pont Python.
 #[allow(clippy::too_many_arguments)]
 pub fn follow_track(app: &App, job: &Job, sid: &str, t0: f64, d0: [f64; 3], ax: f64, ay: f64, a: f64, b: f64)
                     -> Result<Vec<(f64, [f64; 3])>> {

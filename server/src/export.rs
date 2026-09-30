@@ -14,7 +14,7 @@ use insta_core::insta360::{Segment, Session};
 use insta_core::numeric::{interp, round_nd, unwrap};
 use insta_core::lean::{self, LeanTrack};
 use insta_core::telemetry::{self, Span};
-use insta_core::{chapters, draw, endcard, finishing, hyperlapse, musiclib};
+use insta_core::{chapters, draw, endcard, finishing, hyperlapse, musiclib, ramp};
 use serde_json::{json, Map, Value};
 
 use crate::app::{exports_dir, music_dir, render_bin, thumbs_dir, App, Job};
@@ -438,18 +438,26 @@ fn export_part_ffmpeg(app: &App, job: &Job, clip: &Clip, result: &Analysis, hori
         targets.iter().map(|x| x.2).collect()))
 }
 
-type Effects<'a> = &'a dyn Fn(&[f64], &[Mat3], &[f64], f64) -> Result<Map<String, Value>>;
+/// `effects(temps de session, matrices, champs, cadence, accéléré)` → champs du travail du moteur
+/// (zones floutées, incrustations) ; `accéléré` : temps non linéaires (points de vitesse).
+type Effects<'a> = &'a dyn Fn(&[f64], &[Mat3], &[f64], f64, bool) -> Result<Map<String, Value>>;
 
 fn flat(m: &Mat3) -> Vec<f64> {
     m.iter().flatten().copied().collect()
 }
 
 /// Rendu NVDEC → CUDA → NVENC (render/), puis multiplexage du son par ffmpeg.
-/// `effects(temps, matrices, champs, cadence)` → champs du job pour le moteur.
+/// Clip accéléré (points de vitesse) : voir [`export_part_gpu_ramp`]. None : aucune image de
+/// sortie dans ce morceau (morceau très court à grande vitesse).
 #[allow(clippy::too_many_arguments)]
 fn export_part_gpu(job: &Job, clip: &Clip, result: &Analysis, horizon_data: Option<&HorizonData>, seg: &Segment, ss: f64,
                    dur: f64, src: &Path, q: &Quality, masks: &[[f64; 4]], out_w: u32, out_h: u32, out: &Path,
-                   report: &dyn Fn(f64), effects: Option<Effects>) -> Result<Views> {
+                   report: &dyn Fn(f64), effects: Option<Effects>) -> Result<Option<Views>> {
+    let keys = ramp::speed_keys(clip);
+    if !keys.is_empty() {
+        return export_part_gpu_ramp(job, clip, &keys, result, horizon_data, seg, ss, dur, src, q, masks, out_w, out_h,
+                                    out, report, effects);
+    }
     let (fps_s, fps) = source_fps(src)?;
     let fd = 1.0 / fps;
     let off = seg_offset(result, seg)?;
@@ -460,7 +468,7 @@ fn export_part_gpu(job: &Job, clip: &Clip, result: &Analysis, horizon_data: Opti
     let spec = out.with_extension("json");
     let times: Vec<f64> = targets.iter().map(|(t, _, _)| off + ss + t).collect();
     let extra = match effects {
-        Some(e) => e(&times, &mats, &fovs, fps)?,
+        Some(e) => e(&times, &mats, &fovs, fps, false)?,
         None => Map::new(),
     };
     let mut job_spec = json!({
@@ -486,7 +494,116 @@ fn export_part_gpu(job: &Job, clip: &Clip, result: &Analysis, horizon_data: Opti
     cmd.push(out.display().to_string());
     run_part_process(job, &cmd, |_| {})?;
     let _ = std::fs::remove_file(&h264);
-    Ok((times, mats, fovs))
+    Ok(Some((times, mats, fovs)))
+}
+
+const RAMP_AUDIO_MIN_S: f64 = 0.5; // passage à vitesse normale plus court : pas de son
+const RAMP_AUDIO_FADE_S: f64 = 0.2;
+
+/// Morceau d'un clip accéléré : le moteur ne rend que les images source retenues
+/// (`samples`, comme l'hyperlapse, tirées de ramp::source_times) ; le son d'origine n'est gardé
+/// que sur les passages à vitesse normale (ramp::audio_spans, fondus de 0,2 s), silence ailleurs.
+#[allow(clippy::too_many_arguments)]
+fn export_part_gpu_ramp(job: &Job, clip: &Clip, keys: &[ramp::SpeedKey], result: &Analysis,
+                        horizon_data: Option<&HorizonData>, seg: &Segment, ss: f64, dur: f64, src: &Path, q: &Quality,
+                        masks: &[[f64; 4]], out_w: u32, out_h: u32, out: &Path, report: &dyn Fn(f64),
+                        effects: Option<Effects>) -> Result<Option<Views>> {
+    let (fps_s, fps) = source_fps(src)?;
+    let off = seg_offset(result, seg)?;
+    let length = clip.end - clip.start;
+    let all = ramp::source_times(keys, length, fps);
+    // portion du clip couverte par ce morceau (s depuis le début du clip)
+    let (p0, p1) = (off + ss - clip.start, off + ss + dur - clip.start);
+    let (mut samples, mut times, mut first_out): (Vec<i64>, Vec<f64>, Option<usize>) = (vec![], vec![], None);
+    for (k, t) in all.iter().enumerate() {
+        if *t < p0 - 1e-9 || *t >= p1 - 1e-9 {
+            continue;
+        }
+        let t_session = clip.start + t;
+        let sample = ((t_session - off) * fps).round_ties_even().max(0.0) as i64;
+        if samples.last() == Some(&sample) {
+            continue;
+        }
+        first_out.get_or_insert(k);
+        samples.push(sample);
+        times.push(t_session);
+    }
+    let Some(first_out) = first_out else { return Ok(None) };
+    let mut mats = vec![];
+    let mut fovs = vec![];
+    for t in &times {
+        let level = level_matrix_at(clip, result, horizon_data, *t);
+        let v = geometry::clip_view_at(clip, t - clip.start);
+        mats.push(geometry::view_matrix(v.yaw, v.pitch, level.as_ref(), v.roll));
+        fovs.push(output_fov(v.fov, out_w, out_h));
+    }
+    let extra = match effects {
+        Some(e) => e(&times, &mats, &fovs, fps, true)?,
+        None => Map::new(),
+    };
+    let h264 = out.with_extension("h264");
+    let spec = out.with_extension("json");
+    let mut job_spec = json!({
+        "source": src, "start": 0.0, "duration": 0.0, "width": out_w, "height": out_h,
+        "fov": fovs[0], "fovs": fovs, "cq": q.crf, "samples": samples, "max_bitrate": q.max_bitrate.unwrap_or(0),
+        "masks": masks, "matrices": mats.iter().map(flat).collect::<Vec<_>>(), "output": h264,
+    });
+    for (k, v) in extra {
+        job_spec[k] = v;
+    }
+    std::fs::write(&spec, serde_json::to_string(&job_spec)?)?;
+    let n = samples.len() as f64;
+    run_part_process(job, &[render_bin().display().to_string(), spec.display().to_string()], |line| {
+        if let Some(k) = line.strip_prefix("frame=").and_then(|v| v.trim().parse::<u64>().ok()) {
+            report(k as f64 / n * dur);
+        }
+    })?;
+
+    // son : passages à vitesse normale de ce morceau → (décalage en sortie, début dans le fichier, durée)
+    let o0 = first_out as f64 / fps;
+    let out_dur = n / fps;
+    let mut pieces: Vec<(f64, f64, f64)> = vec![];
+    for sp in ramp::audio_spans(keys, length, fps, RAMP_AUDIO_MIN_S) {
+        let src_end = sp.src_start + (sp.out_end - sp.out_start);
+        let (a, b) = (sp.src_start.max(p0), src_end.min(p1));
+        let delay = sp.out_start + (a - sp.src_start) - o0;
+        let len = (b - a).min(out_dur - delay);
+        if len >= 0.05 && delay > -1e-6 {
+            pieces.push((delay.max(0.0), a + clip.start - off, len));
+        }
+    }
+    let has_audio = finishing::probe(src).map(|(_, a)| a).unwrap_or(false);
+    if !has_audio {
+        pieces.clear();
+    }
+    let mut cmd: Vec<String> = ["ffmpeg", "-v", "error", "-y", "-framerate", &fps_s, "-i"].map(s).to_vec();
+    cmd.push(h264.display().to_string());
+    let mut graph = format!("anullsrc=r=48000:cl=stereo,atrim=duration={out_dur:.3}[s0]");
+    if pieces.is_empty() {
+        graph += ";[s0]anull[a]";
+    } else {
+        let a0 = pieces.iter().map(|p| p.1).fold(f64::INFINITY, f64::min).floor().max(0.0);
+        let a1 = pieces.iter().map(|p| p.1 + p.2).fold(0.0, f64::max);
+        cmd.extend(["-ss", &format!("{a0:.3}"), "-t", &format!("{:.3}", a1 - a0 + 1.0), "-i"].map(s));
+        cmd.push(src.display().to_string());
+        let labels: String = (0..pieces.len()).map(|i| format!("[x{i}]")).collect();
+        graph += &format!(";[1:a:0]asplit={}{labels}", pieces.len());
+        for (i, (delay, start, len)) in pieces.iter().enumerate() {
+            let f = RAMP_AUDIO_FADE_S.min(len / 2.0);
+            graph += &format!(";[x{i}]atrim=start={:.3}:duration={len:.3},asetpts=PTS-STARTPTS,aresample=48000,\
+                               aformat=sample_fmts=fltp:channel_layouts=stereo,afade=t=in:d={f:.3},\
+                               afade=t=out:st={:.3}:d={f:.3},adelay={}:all=1[a{i}]",
+                              start - a0, len - f, (delay * 1000.0).round() as i64);
+        }
+        let inputs: String = (0..pieces.len()).map(|i| format!("[a{i}]")).collect();
+        graph += &format!(";[s0]{inputs}amix=inputs={}:duration=first:normalize=0[a]", pieces.len() + 1);
+    }
+    cmd.extend(["-filter_complex", &graph, "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", &q.audio,
+                "-ar", "48000", "-ac", "2", "-movflags", "+faststart"].map(s));
+    cmd.push(out.display().to_string());
+    run_part_process(job, &cmd, |_| {})?;
+    let _ = std::fs::remove_file(&h264);
+    Ok(Some((times, mats, fovs)))
 }
 
 fn settings_masks(settings: &Value) -> Vec<[f64; 4]> {
@@ -601,15 +718,19 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
         let lean_track = hdata.filter(|_| tel_on && tel_opts.lean).map(|h| LeanTrack::new(h, &result.tilt));
         if gpu {
             // floutage et télémétrie faits par le moteur pendant le rendu
-            let effects = |times: &[f64], mats: &[Mat3], fovs: &[f64], fps: f64| -> Result<Map<String, Value>> {
+            let effects = |times: &[f64], mats: &[Mat3], fovs: &[f64], fps: f64, ramped: bool| -> Result<Map<String, Value>> {
                 let mut extra = Map::new();
                 if !tracks.is_empty() {
                     extra.insert("blur".into(), pending::privacy_frame_boxes(times, mats, fovs, &tracks, out_w, out_h)?);
                 }
                 if tel_on {
+                    // accéléré : temps de session de chaque image de sortie (interpolé)
+                    let out_t: Vec<f64> = (0..times.len()).map(|k| k as f64 / fps).collect();
+                    let time_map = |t: f64| interp(t, &out_t, times);
+                    let tm: Option<&dyn Fn(f64) -> f64> = if ramped { Some(&time_map) } else { None };
                     let lay = telemetry::layers(result, Span::from(clip), times[0], times.len(), fps, out_w as usize,
                                                 out_h as usize, &tel_opts, (times[0] - clip.start).abs() < 0.5,
-                                                &out_dir.join(format!("tel_{n:03}")), None, &tracks_all,
+                                                &out_dir.join(format!("tel_{n:03}")), tm, &tracks_all,
                                                 lean_track.as_ref())?;
                     if let Some(l) = lay {
                         extra.insert("sprites".into(), json!(l.sprites));
@@ -618,10 +739,12 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
                 }
                 Ok(extra)
             };
-            export_part_gpu(job, clip, result, hdata, seg, ss, dur, &src, &q, &masks, out_w, out_h, &out, &report,
-                            Some(&effects))?;
+            let rendered = export_part_gpu(job, clip, result, hdata, seg, ss, dur, &src, &q, &masks, out_w, out_h, &out,
+                                           &report, Some(&effects))?;
             done += dur;
-            files.push((i, out));
+            if rendered.is_some() {
+                files.push((i, out));
+            }
             continue;
         }
         if !sizes.contains_key(&src) {
@@ -734,7 +857,12 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
 fn montage_chapters(clips: &[(String, Map<String, Value>)], sessions: &[Arc<crate::app::Sess>], parsed: &[Clip],
                     style: &Value, end_card: bool) -> String {
     let items: Vec<(f64, String)> = clips.iter().enumerate()
-        .map(|(i, _)| (parsed[i].end - parsed[i].start, telemetry::place_at(&sessions[i].result, parsed[i].start)))
+        .map(|(i, _)| {
+            let c = &parsed[i];
+            let keys = ramp::speed_keys(c);
+            let length = if keys.is_empty() { c.end - c.start } else { ramp::output_duration(&keys, c.end - c.start, 30000.0 / 1001.0) };
+            (length, telemetry::place_at(&sessions[i].result, c.start))
+        })
         .collect();
     let transition = if finishing::is_plain(style) || style["transition"] == json!("aucune") {
         0.0
@@ -914,10 +1042,8 @@ pub fn run_privacy(app: Arc<App>, job: Arc<Job>, items: Vec<(String, Map<String,
 #[allow(clippy::too_many_arguments)]
 pub fn run_manual_zone(app: Arc<App>, job: Arc<Job>, sid: String, clip: Map<String, Value>, t0: f64, d0: [f64; 3], ax: f64,
                        ay: f64, track_it: bool) {
-    let r = pending::privacy_manual_zone(&app, &job, &sid, &clip, t0, d0, ax, ay, track_it);
-    if job.running() && r.is_ok() {
-        job.update(json!({"state": "error", "message": "zone non enregistrée"}));
-    }
+    let r = pending::privacy_manual_zone(&app, &job, &sid, &clip, t0, d0, ax, ay, track_it)
+        .map(|msg| job.update(json!({"state": "done", "progress": 1.0, "message": msg})));
     job.finish(r);
 }
 
