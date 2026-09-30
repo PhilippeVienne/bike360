@@ -469,7 +469,14 @@ pub fn analyze_sessions(mut sessions: Vec<Session>, force: bool) -> Result<Vec<(
     let mut refs = vec![];
     let mut out = vec![];
     for mut s in sessions {
-        let r = analyze(&mut s, &overrides, &refs, force)?;
+        // une session illisible (carte retirée, fichier tronqué…) est ignorée, pas fatale
+        let r = match analyze(&mut s, &overrides, &refs, force) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("  {} ignorée : {e:#}", s.id);
+                continue;
+            }
+        };
         if (r.offset_source == "manuel" || r.offset_source == "corrélation") && r.corr.filter(|c| *c != 0.0).unwrap_or(1.0) > 0.5 {
             refs.push((r.utc_t0, r.offset_s));
         }
