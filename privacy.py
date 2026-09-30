@@ -53,18 +53,32 @@ class Detector:
         _, faces = self.face.detect(img)
         for f in [] if faces is None else faces:
             out.append(("visage", float(f[-1]), *(float(v) for v in f[:4])))
-        # tuiles 2×2 avec recouvrement : une plaque de moto fait ~2 % de la largeur
+        # image entière (plaques proches, qui chevauchent deux tuiles) + tuiles 2×2 avec
+        # recouvrement (plaques de moto lointaines : ~2 % de la largeur)
         ov = 100
-        boxes, confs = [], []
+        boxes = [[b.x1, b.y1, b.width, b.height, float(d.confidence)]
+                 for d in self.plates.predict(img) for b in [d.bounding_box]]
         for ty in (0, h // 2 - ov):
             for tx in (0, w // 2 - ov):
                 crop = img[ty:ty + h // 2 + ov, tx:tx + w // 2 + ov]
                 for d in self.plates.predict(np.ascontiguousarray(crop)):
                     b = d.bounding_box
-                    boxes.append([b.x1 + tx, b.y1 + ty, b.width, b.height])
-                    confs.append(float(d.confidence))
-        for i in (cv2.dnn.NMSBoxes(boxes, confs, PLATE_SCORE, 0.3) if boxes else []):
-            out.append(("plaque", confs[i], *map(float, boxes[i])))
+                    boxes.append([b.x1 + tx, b.y1 + ty, b.width, b.height, float(d.confidence)])
+        # fusion par union : une plaque vue en deux moitiés (bord de tuile) est floutée en entier
+        merged = []
+        for x, y, bw, bh, c in sorted(boxes, key=lambda b: -b[4]):
+            for m in merged:
+                ix = max(0, min(x + bw, m[0] + m[2]) - max(x, m[0]))
+                iy = max(0, min(y + bh, m[1] + m[3]) - max(y, m[1]))
+                if ix * iy > 0.2 * min(bw * bh, m[2] * m[3]):
+                    x0, y0 = min(x, m[0]), min(y, m[1])
+                    m[2], m[3] = max(x + bw, m[0] + m[2]) - x0, max(y + bh, m[1] + m[3]) - y0
+                    m[0], m[1], m[4] = x0, y0, max(c, m[4])
+                    break
+            else:
+                merged.append([x, y, bw, bh, c])
+        for x, y, bw, bh, c in merged:
+            out.append(("plaque", c, float(x), float(y), float(bw), float(bh)))
         return out
 
 
