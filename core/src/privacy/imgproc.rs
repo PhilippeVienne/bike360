@@ -119,21 +119,6 @@ fn linear_tab_y(src: usize, dst: usize) -> Vec<(i64, [i16; 2])> {
         .collect()
 }
 
-/// Nombre d'éléments traités par la boucle vectorielle de VResizeLinearVec_32s8u
-/// (registres de 16 octets pour les roues pip d'OpenCV sur x86-64), le reste en scalaire.
-fn vec_count(width: usize) -> usize {
-    const U8: usize = 16;
-    const I16: usize = 8;
-    let mut x = 0;
-    while x + U8 <= width {
-        x += U8;
-    }
-    while x + I16 <= width {
-        x += I16;
-    }
-    x
-}
-
 /// cv2.resize(INTER_LINEAR) sur 8 bits, bit à bit (y compris le cas ×2 → moyenne 2×2).
 pub fn resize_linear(src: &Image, ow: usize, oh: usize) -> Image {
     if ow == src.w && oh == src.h {
@@ -146,7 +131,6 @@ pub fn resize_linear(src: &Image, ow: usize, oh: usize) -> Image {
     let (xofs, alpha, xmax) = linear_tab(src.w, ow);
     let ytab = linear_tab_y(src.h, oh);
     let width = ow * cn;
-    let nvec = vec_count(width);
     // table par élément (pixel × canal) : deux indices source et deux poids ; au-delà de xmax,
     // OpenCV prend le pixel seul × 2048, ce qui revient à des poids (2048, 0)
     let mut tab: Vec<(u32, u32, i32, i32)> = Vec::with_capacity(width);
@@ -190,16 +174,13 @@ pub fn resize_linear(src: &Image, ow: usize, oh: usize) -> Image {
         let (s0, s1) = (&buf0, &buf1);
         let (b0, b1) = (beta[0] as i32, beta[1] as i32);
         let d = &mut out.data[dy * width..(dy + 1) * width];
-        for ((o, &a), &b) in d[..nvec].iter_mut().zip(&s0[..nvec]).zip(&s1[..nvec]) {
-            // v_pack(v_shr<4>) sature en 16 bits, v_mul_hi garde les 16 bits hauts, v_rshr_pack_u<2>
+        // VResizeLinear<uchar…> (boucle vectorielle et reste scalaire, même arithmétique) :
+        // lignes décalées de 4 bits, 16 bits hauts du produit, arrondi sur 2 bits
+        for ((o, &a), &b) in d.iter_mut().zip(s0.iter()).zip(s1.iter()) {
             let a = (a >> 4).clamp(i16::MIN as i32, i16::MAX as i32);
             let b = (b >> 4).clamp(i16::MIN as i32, i16::MAX as i32);
             let v = ((a * b0) >> 16) + ((b * b1) >> 16);
             *o = ((v + 2) >> 2).clamp(0, 255) as u8;
-        }
-        for x in nvec..width {
-            let v = s0[x] as i64 * b0 as i64 + s1[x] as i64 * b1 as i64;
-            d[x] = ((v + (1 << 21)) >> 22).clamp(0, 255) as u8;
         }
     }
     out

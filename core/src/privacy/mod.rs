@@ -77,6 +77,13 @@ pub struct Detector {
     pub tracker: VitNet,
 }
 
+// Le détecteur et le réseau de suivi peuvent être déplacés dans un fil de travail (serveur).
+const _: fn() = || {
+    fn send<T: Send>() {}
+    send::<Detector>();
+    send::<VitNet>();
+};
+
 impl Detector {
     /// Modèles chargés sur la carte graphique si ONNX Runtime CUDA est utilisable (sinon processeur).
     pub fn new() -> Result<Self> {
