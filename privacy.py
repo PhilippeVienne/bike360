@@ -21,6 +21,7 @@ import analyze
 
 MODELS = analyze.CACHE / "models"
 FACE_MODEL = MODELS / "face_detection_yunet_2023mar.onnx"
+TRACK_MODEL = MODELS / "object_tracking_vittrack_2023sep.onnx"   # suivi des zones tracées à la main
 PLATE_MODEL = "yolo-v9-t-640-license-plate-end2end"
 DATA = analyze.DATA / "privacy"
 THUMBS = analyze.CACHE / "privacy"
@@ -183,6 +184,11 @@ def merge_fragments(tracks):
     return out
 
 
+def all_tracks(entry):
+    """Pistes détectées + zones tracées à la main d'un clip."""
+    return (entry or {}).get("tracks", []) + (entry or {}).get("manual", [])
+
+
 def regions_at(tracks, t):
     """Zones actives à l'instant t (session) : [(direction, ax, ay)], interpolées entre échantillons."""
     out = []
@@ -203,6 +209,107 @@ def regions_at(tracks, t):
             d = np.array(a[1:4]) * (1 - f) + np.array(b[1:4]) * f
             ax, ay = a[4] * (1 - f) + b[4] * f, a[5] * (1 - f) + b[5] * f
         out.append((d / np.linalg.norm(d), ax, ay))
+    return out
+
+
+# ------------------------------------------------------------------ zones tracées à la main
+
+MANUAL_WINDOW_S = 15.0    # suivi jusqu'à 15 s avant et après l'instant du tracé
+MANUAL_SIZE = 400         # vue locale carrée centrée sur la zone
+MANUAL_STEP = 2           # une image sur deux
+MANUAL_GOOD_SCORE = 0.35   # position acceptée
+MANUAL_MIN_SCORE = 0.15    # en dessous : suivi perdu
+MANUAL_HOLD_S = 2.0        # zone tenue à sa dernière position sûre (passage devant, flou…)
+MANUAL_MATCH = 0.55        # corrélation avec l'image d'origine de la zone : élément retrouvé
+
+
+def local_view(d):
+    """Vue (écran → caméra) regardant dans la direction d."""
+    import geometry
+    d = np.asarray(d, float) / np.linalg.norm(d)
+    return geometry.view_matrix(math.degrees(math.atan2(d[0], d[2])), math.degrees(math.asin(max(-1.0, min(1.0, d[1])))))
+
+
+def local_fov(ax, ay):
+    """Champ de la vue locale : la zone en occupe ~1/5, entre 25 et 90°."""
+    return max(25.0, min(90.0, math.degrees(2 * max(ax, ay)) * 5))
+
+
+def tight_box(d, ax, ay, M, fov, size):
+    """Boîte sans marge (sphere_to_box en ajoute une) : initialisation du suivi."""
+    x, y, w, h = sphere_to_box(d, ax, ay, M, fov, size, size)
+    cx, cy = x + w / 2, y + h / 2
+    w, h = w / (1 + PAD), h / (1 + PAD)
+    return int(cx - w / 2), int(cy - h / 2), max(4, int(w)), max(4, int(h))
+
+
+def decode(h264, size, step):
+    """Images BGR d'un rendu (une sur `step`)."""
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(h264), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+                            stdout=subprocess.PIPE)
+    frames, n, i = [], size * size * 3, 0
+    while True:
+        buf = proc.stdout.read(n)
+        if len(buf) < n:
+            break
+        if i % step == 0:
+            frames.append(np.frombuffer(buf, np.uint8).reshape(size, size, 3))
+        i += 1
+    proc.stdout.close()
+    proc.wait()
+    return frames
+
+
+def follow(frames, k0, box, direction, fps=30000 / 1001):
+    """Suit `box` depuis l'image k0 vers l'avant (+1) ou l'arrière (-1) ; {indice: boîte}.
+
+    Score faible (occultation, flou de mouvement) : la zone reste à sa dernière position sûre
+    au lieu de dériver avec le suiveur ; au-delà de MANUAL_HOLD_S sans position sûre, arrêt.
+    """
+    import cv2
+    params = cv2.TrackerVit_Params()
+    params.net = str(TRACK_MODEL)
+    tracker = cv2.TrackerVit.create(params)
+    tracker.init(frames[k0], box)
+    out, k = {k0: box}, k0 + direction
+    size = frames[k0].shape[0]
+    x0, y0, w0, h0 = box
+    template = frames[k0][y0:y0 + h0, x0:x0 + w0]
+    last, weak = box, 0
+    max_weak = int(MANUAL_HOLD_S * fps / MANUAL_STEP)
+
+    def rematch(img, around):
+        """Recherche de l'image d'origine de la zone autour de la dernière position sûre."""
+        x, y, w, h = around
+        m = max(w, h)   # fenêtre étroite : pendant une occultation l'élément bouge peu
+        xa, ya = max(0, x - m), max(0, y - m)
+        area = img[ya:min(size, y + h + m), xa:min(size, x + w + m)]
+        if area.shape[0] <= h0 or area.shape[1] <= w0 or template.size == 0:
+            return None
+        res = cv2.matchTemplate(area, template, cv2.TM_CCOEFF_NORMED)
+        _, best, _, loc = cv2.minMaxLoc(res)
+        return (xa + loc[0], ya + loc[1], w0, h0) if best >= MANUAL_MATCH else None
+
+    while 0 <= k < len(frames):
+        ok, b = tracker.update(frames[k])
+        score = tracker.getTrackingScore() if ok else 0.0
+        x, y, w, h = b
+        inside = not (x < 2 or y < 2 or x + w > size - 2 or y + h > size - 2)
+        if ok and score >= MANUAL_GOOD_SCORE and inside:
+            last, weak = tuple(int(v) for v in b), 0
+        else:
+            found = rematch(frames[k], last)
+            if found:                      # élément retrouvé (fin d'occultation) : on repart de là
+                last, weak = found, 0
+                tracker = cv2.TrackerVit.create(params)
+                tracker.init(frames[k], found)
+            elif weak < max_weak:
+                weak += 1
+            else:
+                break
+        out[k] = last
+        k += direction
+    # fin tenue sans position sûre : on ne garde pas cette queue incertaine au-delà de la tenue
     return out
 
 
@@ -281,10 +388,12 @@ def blur_video(src, dst, times, mats, fovs, tracks, W, H, encoder_args):
     Retourne le nombre d'images modifiées. Le son est recopié tel quel.
     """
     import cv2
+    rate = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
+                           "-of", "csv=p=0", str(src)], capture_output=True, text=True).stdout.strip() or "30000/1001"
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(src), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
                            stdout=subprocess.PIPE)
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
-                            "-r", "30000/1001", "-i", "-", "-i", str(src), "-map", "0:v", "-map", "1:a?",
+                            "-r", rate, "-i", "-", "-i", str(src), "-map", "0:v", "-map", "1:a?",
                             *encoder_args, "-c:a", "copy", "-movflags", "+faststart", str(dst)],
                            stdin=subprocess.PIPE)
     size, touched, fi = W * H * 3, 0, 0

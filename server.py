@@ -540,7 +540,7 @@ def run_export(key, clips, quality, opts):
                     sizes[src] = source_size(src, q["source"])
                 views = export_part_ffmpeg(job, clip, result, horizon_data, seg, ss, dur, src, q, masks, sizes[src], out_w, out_h, out, report)
             if blur_on:
-                tracks = privacy.load(sid).get(clip.get("id"), {}).get("tracks", [])
+                tracks = privacy.all_tracks(privacy.load(sid).get(clip.get("id")))
                 if any(t.get("enabled", True) for t in tracks):
                     job["message"] = f"clip {i + 1}/{len(clips)} : floutage"
                     blurred = out.with_name(out.stem + "_flou.mp4")
@@ -642,11 +642,78 @@ def run_privacy(items, force=False):
                 spec.unlink(missing_ok=True)
                 done += dur
             data = privacy.load(sid)
-            data[clip["id"]] = {"key": key, "tracks": tracks}
+            data[clip["id"]] = {**data.get(clip["id"], {}), "key": key, "tracks": tracks}
             privacy.save(sid, data)
             found += len(tracks)
         msg = f"{found} zone(s) détectée(s)" + (f", {skipped} clip(s) déjà à jour" if skipped else "")
         job.update(state="done", progress=1.0, message=msg)
+    except Exception as e:
+        traceback.print_exc()
+        job.update(state="error", message=str(e))
+    finally:
+        job.pop("proc", None)
+
+
+def run_manual_zone(sid, clip, t0, d0, ax, ay, track_it):
+    """Zone tracée à la main à l'instant t0 : suivie dans le temps (VitTrack) ou fixe sur le clip."""
+    job = state["jobs"]["privacy"]
+    try:
+        session, result = state["sessions"][sid]
+        d0 = np.asarray(d0, float) / np.linalg.norm(d0)
+        thumb, n = None, 0
+        if not track_it:   # fixe dans le repère caméra (ex. élément solidaire de la moto)
+            ts = np.arange(clip["start"], clip["end"] + 0.5, 0.5)
+            samples = [[round(float(t), 3), *(round(float(x), 5) for x in d0), round(ax, 5), round(ay, 5)] for t in ts]
+        else:
+            if not gpu_engine_available():
+                raise ValueError("le suivi demande le moteur GPU (render/ + NVENC)")
+            size, fov = privacy.MANUAL_SIZE, privacy.local_fov(ax, ay)
+            M = privacy.local_view(d0)
+            a = max(clip["start"], t0 - privacy.MANUAL_WINDOW_S)
+            b = min(clip["end"], t0 + privacy.MANUAL_WINDOW_S)
+            work = analyze.CACHE / "privacy_render"
+            work.mkdir(parents=True, exist_ok=True)
+            frames, times = [], []
+            for k, (seg, ss, dur) in enumerate(clip_parts(session, result, {"start": a, "end": b})):
+                fps = float(source_fps(seg.insv))
+                seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
+                h264, spec = work / f"manual_{k}.h264", work / f"manual_{k}.json"
+                spec.write_text(json.dumps({"source": seg.insv, "start": ss, "duration": dur, "width": size, "height": size,
+                                            "fov": fov, "fovs": [fov], "cq": 23, "masks": [],
+                                            "matrices": [[float(v) for v in M.flatten()]], "output": str(h264)}))
+                job["message"] = "rendu autour de la zone"
+                run_part_process(job, [str(RENDER_BIN), str(spec)], lambda _: None)
+                part = privacy.decode(h264, size, privacy.MANUAL_STEP)
+                times += [seg_offset + ss + i * privacy.MANUAL_STEP / fps for i in range(len(part))]
+                frames += part
+                h264.unlink(missing_ok=True)
+                spec.unlink(missing_ok=True)
+            if not frames:
+                raise ValueError("aucune image rendue autour de la zone")
+            job["message"] = "suivi de la zone"
+            k0 = int(np.argmin(np.abs(np.array(times) - t0)))
+            box0 = privacy.tight_box(d0, ax, ay, M, fov, size)
+            boxes = privacy.follow(frames, k0, box0, -1, fps) | privacy.follow(frames, k0, box0, +1, fps)
+            samples = []
+            for k in sorted(boxes):
+                d, bx, by = privacy.box_to_sphere(boxes[k], M, fov, size, size)
+                samples.append([round(times[k], 3), *(round(float(x), 5) for x in d), round(bx, 5), round(by, 5)])
+            import cv2
+            x, y, w, h = box0
+            m = max(w, h)
+            crop = frames[k0][max(0, y - m):y + h + m, max(0, x - m):x + w + m]
+            if crop.size:
+                thumb = f"{sid}_{clip['id']}_manuel_{secrets.token_hex(3)}.jpg"
+                privacy.THUMBS.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(privacy.THUMBS / thumb), cv2.resize(crop, (120, max(1, int(120 * crop.shape[0] / crop.shape[1])))))
+        data = privacy.load(sid)
+        manual = data.setdefault(clip["id"], {}).setdefault("manual", [])
+        manual.append({"id": f"m{secrets.token_hex(3)}", "kind": "manuel" if track_it else "fixe", "conf": 1.0,
+                       "enabled": True, "thumb": thumb, "samples": samples})
+        privacy.save(sid, data)
+        span = samples[-1][0] - samples[0][0] if samples else 0
+        job.update(state="done", progress=1.0,
+                   message=f"zone {'suivie' if track_it else 'fixe'} sur {span:.1f} s")
     except Exception as e:
         traceback.print_exc()
         job.update(state="error", message=str(e))
@@ -659,10 +726,11 @@ def privacy_overview():
     out = []
     for sid, clip in montage_items():
         entry = privacy.load(sid).get(clip["id"])
-        tracks = (entry or {}).get("tracks", [])
+        tracks = privacy.all_tracks(entry)
+        analyzed = bool(entry) and "key" in entry
         out.append({"sid": sid, "clip": clip["id"], "start": clip["start"], "end": clip["end"],
-                    "analyzed": entry is not None, "stale": bool(entry) and entry["key"] != privacy.view_key(clip),
-                    "tracks": [{k: t[k] for k in ("id", "kind", "conf", "enabled", "thumb")} |
+                    "analyzed": analyzed, "stale": analyzed and entry["key"] != privacy.view_key(clip),
+                    "tracks": [{k: t.get(k) for k in ("id", "kind", "conf", "enabled", "thumb")} |
                                {"t0": t["samples"][0][0], "t1": t["samples"][-1][0]} for t in tracks if t["samples"]]})
     return out
 
@@ -914,6 +982,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/privacy":
             return self._json({"job": {k: v for k, v in state["jobs"].get("privacy", {"state": "idle"}).items() if k != "proc"},
                                "enabled": get_settings()["privacy"]["enabled"], "clips": privacy_overview()})
+        if parts[:2] == ["api", "privacy"] and len(parts) == 3 and parts[2] in state["sessions"]:
+            data = privacy.load(parts[2])
+            return self._json({cid: [t for t in privacy.all_tracks(e) if t.get("samples")] for cid, e in data.items()})
         if parts[0] == "privacy-thumb" and len(parts) == 2 and (privacy.THUMBS / parts[1]).is_file():
             return self._file(privacy.THUMBS / Path(parts[1]).name, "image/jpeg")
         if path == "/api/music":
@@ -955,7 +1026,10 @@ class Handler(BaseHTTPRequestHandler):
         if parts[:2] == ["api", "privacy"] and len(parts) == 4 and parts[2] in state["sessions"]:
             body = self._body() or {}
             data = privacy.load(parts[2])
-            for t in data.get(parts[3], {}).get("tracks", []):
+            entry = data.get(parts[3], {})
+            if body.get("delete"):   # seules les zones tracées à la main se suppriment
+                entry["manual"] = [t for t in entry.get("manual", []) if t["id"] != body.get("track")]
+            for t in privacy.all_tracks(entry):
                 if body.get("track") in (t["id"], "all"):
                     t["enabled"] = bool(body.get("enabled"))
             privacy.save(parts[2], data)
@@ -988,6 +1062,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._music_upload()
         if parts == ["api", "montage"]:
             return self._montage(self._body() or {})
+        if parts == ["api", "privacy", "manual"]:
+            body = self._body() or {}
+            sid = body.get("sid")
+            clip = next((c for c in get_selections(sid) if c["id"] == body.get("clip")), None) \
+                if sid in state["sessions"] else None
+            if clip is None:
+                return self._json({"error": "place la tête de lecture dans un clip"}, 400)
+            if state["jobs"].get("privacy", {}).get("state") == "running":
+                return self._json({"error": "une analyse est déjà en cours"}, 409)
+            try:
+                v = body["view"]
+                M = geometry.view_matrix(float(v["yaw"]), float(v["pitch"]),
+                                         np.array(v["level"], float).reshape(3, 3), float(v.get("roll", 0)))
+                x, y, w, h = (float(q) for q in body["box"])
+                W, H = 1000 * float(body["aspect"]), 1000.0
+                d, ax, ay = privacy.box_to_sphere((x * W, y * H, w * W, h * H), M, float(v["fov"]), W, H)
+            except (KeyError, TypeError, ValueError):
+                return self._json({"error": "zone invalide"}, 400)
+            state["jobs"]["privacy"] = {"state": "running", "progress": 0.0, "message": "zone tracée"}
+            threading.Thread(target=run_manual_zone, daemon=True,
+                             args=(sid, clip, float(body["t"]), d.tolist(), ax, ay, bool(body.get("follow", True)))).start()
+            return self._json({"ok": True})
         if parts == ["api", "privacy", "analyze"]:
             body = self._body() or {}
             if state["jobs"].get("privacy", {}).get("state") == "running":

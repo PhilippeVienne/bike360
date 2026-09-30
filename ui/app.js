@@ -239,6 +239,7 @@ function render() {
   const L = st.s ? levelMatrix(t, clip ? clipMode(clip) : v.horizon) : [1, 0, 0, 0, 1, 0, 0, 0, 1];
   gl.uniform1f(U.roll, v.roll * rad);
   gl.uniformMatrix3fv(U.level, false, new Float32Array([L[0], L[3], L[6], L[1], L[4], L[7], L[2], L[5], L[8]]));
+  drawZones();
   const ms = st.maskDraft ? [...st.masks, st.maskDraft] : st.masks;
   const flat = new Float32Array(32);
   ms.slice(0, 8).forEach((m, i) => flat.set([m.x, m.y, m.w, m.h], i * 4));
@@ -339,6 +340,102 @@ function levelMatrix(t, mode) {
   return mul3(rotRows("p", tl.pitch), rotRows("r", tl.roll));
 }
 
+// Matrice écran → caméra de la vue affichée (mêmes formules que geometry.view_matrix)
+function currentView() {
+  const v = st.view, t = now(), clip = activeClip(t);
+  const L = levelMatrix(t, clip ? clipMode(clip) : v.horizon);
+  const M = mul3(L, mul3(mul3(rotRows("y", v.yaw), rotRows("p", v.pitch)), rotRows("r", v.roll || 0)));
+  return { L, M, fov: v.fov, t, clip };
+}
+
+// --- zones floutées (confidentialité) superposées à l'aperçu : même calcul que privacy.py
+const PV_EXTEND = 0.25, PV_GAP = 0.8, PV_PAD = 0.3;
+function regionsAt(tracks, t) {
+  const out = [];
+  for (const tr of tracks) {
+    const s = tr.samples;
+    if (!s || !s.length || t < s[0][0] - PV_EXTEND || t > s[s.length - 1][0] + PV_EXTEND) continue;
+    let k = s.findIndex((x) => x[0] >= t);
+    let d, ax, ay;
+    if (k <= 0) { const a = k === 0 ? s[0] : s[s.length - 1]; d = a.slice(1, 4); ax = a[4]; ay = a[5]; }
+    else {
+      const a = s[k - 1], b = s[k];
+      if (b[0] - a[0] > PV_GAP) continue;
+      const f = (t - a[0]) / Math.max(b[0] - a[0], 1e-6);
+      d = [0, 1, 2].map((i) => a[1 + i] * (1 - f) + b[1 + i] * f);
+      ax = a[4] * (1 - f) + b[4] * f; ay = a[5] * (1 - f) + b[5] * f;
+    }
+    out.push({ d, ax, ay, enabled: tr.enabled !== false });
+  }
+  return out;
+}
+function sphereToBox(d, ax, ay, M, hfov, W, H) {
+  const v = [0, 1, 2].map((i) => M[i] * d[0] + M[3 + i] * d[1] + M[6 + i] * d[2]);   // Mᵀ·d
+  if (v[2] <= 0.05) return null;
+  const th = Math.tan(hfov * Math.PI / 360), tv = th * H / W;
+  const u = (v[0] / v[2] / th + 1) * W / 2, y = (1 - v[1] / v[2] / tv) * H / 2;
+  const r2 = (v[0] / v[2]) ** 2 + (v[1] / v[2]) ** 2, k = 1 + r2;
+  const hw = Math.tan(ax) * k / th * W / 2 * (1 + PV_PAD), hh = Math.tan(ay) * k / tv * H / 2 * (1 + PV_PAD);
+  return [u - hw, y - hh, 2 * hw, 2 * hh];
+}
+const zc = $("#zones"), zctx = zc.getContext("2d");
+function drawZones() {
+  const show = st.zoneEdit || !$("#p-montage").hidden && $("#mt-privacy").open;
+  const cw = gl.canvas.clientWidth, ch = gl.canvas.clientHeight, dpr = devicePixelRatio;
+  if (zc.width !== cw * dpr || zc.height !== ch * dpr) { zc.width = cw * dpr; zc.height = ch * dpr; zc.style.width = cw + "px"; zc.style.height = ch + "px"; }
+  zctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  zctx.clearRect(0, 0, cw, ch);
+  if (!show || !st.s || st.view.raw) return;
+  const { M, fov, t } = currentView();
+  const clips = st.clips.filter((c) => t >= c.start - 1 && t <= c.end + 1);
+  for (const c of clips) {
+    for (const r of regionsAt((st.pvTracks || {})[c.id] || [], t)) {
+      const b = sphereToBox(r.d, r.ax, r.ay, M, fov, cw, ch);
+      if (!b) continue;
+      zctx.setLineDash(r.enabled ? [6, 4] : [2, 4]);
+      zctx.lineWidth = 2;
+      zctx.strokeStyle = r.enabled ? "#ff4d4f" : "rgba(200,200,200,.7)";
+      if (r.enabled) { zctx.fillStyle = "rgba(255,77,79,.18)"; zctx.fillRect(...b); }
+      zctx.strokeRect(...b);
+    }
+  }
+  if (st.zoneDraft) {
+    const z = st.zoneDraft;
+    zctx.setLineDash([]); zctx.lineWidth = 2; zctx.strokeStyle = css("--accent");
+    zctx.strokeRect(z.x * cw, z.y * ch, z.w * cw, z.h * ch);
+  }
+}
+async function loadPrivacyTracks() {
+  if (!st.s) return;
+  const id = st.s.id, r = await api("GET", `/api/privacy/${id}`);
+  if (st.s && st.s.id === id) st.pvTracks = r;
+}
+
+// tracé d'une zone à la main (élément raté par la détection)
+function setZoneEdit(on) {
+  st.zoneEdit = on;
+  $("#pv-draw").classList.toggle("active", on);
+  $("#pv-draw").textContent = on ? "Annuler le tracé" : "＋ Zone à la main";
+  $("#gl").classList.toggle("zoning", on);
+  if (on) {
+    video.pause();
+    if (st.view.raw) setView({ raw: false });
+    $("#pv-status").textContent = "Trace un rectangle sur la vidéo autour de l'élément à flouter.";
+  }
+}
+async function sendZone(z) {
+  const { L, t, clip } = currentView();
+  setZoneEdit(false);
+  if (!clip) { $("#pv-status").textContent = "⚠ Place la tête de lecture dans un clip."; return; }
+  const v = st.view;
+  const r = await fetch("/api/privacy/manual", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sid: st.s.id, clip: clip.id, t, box: [z.x, z.y, z.w, z.h], follow: $("#pv-follow").checked,
+      aspect: gl.canvas.clientWidth / gl.canvas.clientHeight,
+      view: { yaw: v.yaw, pitch: v.pitch, roll: v.roll || 0, fov: v.fov, level: L } }) }).then((x) => x.json());
+  if (r.error) { $("#pv-status").textContent = "⚠ " + r.error; return; }
+  renderPrivacy();
+}
+
 let horizonTimer = null;
 async function loadHorizon(id) {
   clearTimeout(horizonTimer);
@@ -390,8 +487,12 @@ function userView(p) {
     const r = cv.getBoundingClientRect();
     return Math.atan2(e.clientY - (r.top + r.height / 2), e.clientX - (r.left + r.width / 2)) * 180 / Math.PI;
   };
+  const canvasPos = (e) => {   // position dans le canvas (0..1)
+    const r = cv.getBoundingClientRect();
+    return { x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) };
+  };
   cv.addEventListener("pointerdown", (e) => {
-    drag = { x: e.clientX, y: e.clientY, q: texCoord(e), rotate: e.ctrlKey || e.metaKey, a: angleAt(e) };
+    drag = { x: e.clientX, y: e.clientY, q: texCoord(e), rotate: e.ctrlKey || e.metaKey, a: angleAt(e), z: st.zoneEdit ? canvasPos(e) : null };
     st.dragging = true;
     cv.classList.toggle("rotating", drag.rotate);
     cv.setPointerCapture(e.pointerId);
@@ -399,11 +500,22 @@ function userView(p) {
   cv.addEventListener("pointerup", () => {
     cv.classList.remove("rotating");
     st.dragging = false;
+    if (drag && drag.z) {
+      const z = st.zoneDraft;
+      st.zoneDraft = null; drag = null;
+      if (z && z.w > 0.005 && z.h > 0.005) sendZone(z);
+      return;
+    }
     const m = st.maskDraft;
     st.maskDraft = null; drag = null;
     if (m && m.w > .005 && m.h > .01) { st.masks.push(m); saveSettings(); }
   });
   cv.addEventListener("pointermove", (e) => {
+    if (drag && drag.z) {
+      const q = canvasPos(e);
+      st.zoneDraft = { x: Math.min(q.x, drag.z.x), y: Math.min(q.y, drag.z.y), w: Math.abs(q.x - drag.z.x), h: Math.abs(q.y - drag.z.y) };
+      return;
+    }
     if (drag && st.maskEdit) {
       const q = texCoord(e);
       st.maskDraft = { x: Math.min(q.x, drag.q.x), y: Math.min(q.y, drag.q.y),
@@ -1036,6 +1148,8 @@ async function loadSession(id) {
   video.pause();
   st.s = await api("GET", `/api/session/${id}`);
   st.clips = st.s.selections || [];
+  st.pvTracks = {};
+  loadPrivacyTracks();
   st.inPoint = null;
   st.sel = null;
   st.checked = new Set();
@@ -1196,7 +1310,7 @@ document.addEventListener("keydown", (e) => {
     h: () => setView({ horizon: { auto: "fixe", fixe: "aucun", aucun: "auto" }[st.view.horizon] }),
     f: () => $("#view-front").click(), r: () => $("#view-rider").click(), v: () => $("#view-raw").click(),
     m: () => $("#skim").click(), 0: () => (st.tl = { v0: 0, v1: st.s.duration }),
-    escape: () => { st.inPoint = null; updateMarkUI(); },
+    escape: () => { st.inPoint = null; updateMarkUI(); if (st.zoneEdit) setZoneEdit(false); },
   };
   if (/^[1-5]$/.test(e.key)) { setRate(RATES[+e.key - 1]); e.preventDefault(); return; }
   if (actions[k]) { actions[k](); e.preventDefault(); }
@@ -1414,6 +1528,7 @@ let pvTimer = null;
 async function renderPrivacy() {
   clearTimeout(pvTimer);
   const r = await api("GET", "/api/privacy");
+  loadPrivacyTracks();
   $("#pv-enabled").checked = r.enabled;
   const j = r.job, running = j.state === "running";
   $("#pv-analyze").disabled = running;
@@ -1437,15 +1552,17 @@ async function renderPrivacy() {
     if (!c.analyzed || c.stale) pending++;
     div.innerHTML = `<div class="pv-head"><strong>Clip ${num.get(`${c.sid}|${c.clip}`) ?? "?"}</strong><span class="muted">${state}</span><span class="spacer"></span>
       ${c.tracks.length ? `<button data-all="1">tout garder</button><button data-all="0">tout ignorer</button>` : ""}</div>
-      <div class="pv-grid">${c.tracks.map((t) => `<div class="pv-zone${t.enabled ? "" : " off"}" data-track="${t.id}" title="${t.kind} · confiance ${Math.round(t.conf * 100)} % · ${fmt(t.t1 - t.t0 + 0.5)}">
-        <img loading="lazy" alt="" src="/privacy-thumb/${encodeURIComponent(t.thumb)}"><span>${t.kind}</span></div>`).join("")}</div>`;
+      <div class="pv-grid">${c.tracks.map((t) => `<div class="pv-zone${t.enabled ? "" : " off"}${String(t.id).startsWith("m") ? " manual" : ""}" data-track="${t.id}" title="${t.kind} · ${String(t.id).startsWith("m") ? "tracée à la main" : `confiance ${Math.round(t.conf * 100)} %`} · ${fmt(t.t1 - t.t0 + 0.5)}">
+        ${t.thumb ? `<img loading="lazy" alt="" src="/privacy-thumb/${encodeURIComponent(t.thumb)}">` : ""}<span>${t.kind}</span>
+        ${String(t.id).startsWith("m") ? `<button data-del="${t.id}" title="Supprimer cette zone">✕</button>` : ""}</div>`).join("")}</div>`;
     div.dataset.sid = c.sid; div.dataset.clip = c.clip;
     kept += c.tracks.filter((t) => t.enabled).length;
     list.appendChild(div);
   });
   $("#pv-summary").textContent = `· ${r.enabled ? "flou activé" : "flou désactivé"}` + (kept ? ` · ${kept} zone(s)` : "") + (pending ? ` · ${pending} à analyser` : "");
 }
-$("#mt-privacy").addEventListener("toggle", (e) => { if (e.target.open) renderPrivacy(); });
+$("#mt-privacy").addEventListener("toggle", (e) => { if (e.target.open) renderPrivacy(); else setZoneEdit(false); });
+$("#pv-draw").addEventListener("click", () => setZoneEdit(!st.zoneEdit));
 $("#pv-enabled").addEventListener("change", async (e) => {
   await api("PUT", "/api/settings", { privacy: { enabled: e.target.checked } });
   renderPrivacy();
@@ -1458,6 +1575,10 @@ $("#pv-analyze").addEventListener("click", async () => {
 $("#pv-list").addEventListener("click", async (e) => {
   const clip = e.target.closest(".pv-clip"), zone = e.target.closest(".pv-zone"), all = e.target.closest("[data-all]");
   if (!clip || (!zone && !all)) return;
+  if (e.target.dataset.del) {
+    await api("PUT", `/api/privacy/${clip.dataset.sid}/${clip.dataset.clip}`, { track: e.target.dataset.del, delete: true });
+    return renderPrivacy();
+  }
   const body = zone ? { track: +zone.dataset.track, enabled: zone.classList.contains("off") }
     : { track: "all", enabled: all.dataset.all === "1" };
   if (zone) zone.classList.toggle("off");

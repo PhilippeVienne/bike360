@@ -118,10 +118,13 @@
         <details class="finish" id="mt-privacy">
           <summary>Confidentialité <span id="pv-summary" class="muted"></span></summary>
           <label title="Flouter à l'export les visages et plaques gardés ci-dessous"><input type="checkbox" id="pv-enabled"> flouter visages et plaques à l'export</label>
-          <div class="mt-actions"><button id="pv-analyze" class="primary">Analyser les clips</button></div>
+          <div class="mt-actions">
+            <label title="Suivre l'élément dans le temps (sinon zone fixe par rapport à la caméra, sur tout le clip)"><input type="checkbox" id="pv-follow" checked> suivre</label>
+            <button id="pv-draw" title="Tracer une zone à flouter sur la vidéo (élément raté par la détection)">＋ Zone à la main</button>
+            <button id="pv-analyze" class="primary">Analyser les clips</button></div>
           <span id="pv-status" class="hint">Détecte visages et plaques dans chaque clip, dans son cadrage (moteur GPU).</span>
           <div id="pv-list"></div>
-          <span class="hint">Clic sur une vignette : garder ↔ ignorer (fausse détection).</span>
+          <span class="hint">Clic sur une vignette : garder ↔ ignorer (fausse détection). Les zones s'affichent en rouge sur la vidéo.</span>
         </details>
         <span class="hint">Glisser pour réordonner · 👁 pour exclure. Destination, résolution et qualité : en haut.</span>
         <div class="mt-actions"><button id="mt-preview">Aperçu 720p</button><button id="mt-start" class="primary">Exporter le montage</button></div>
@@ -132,6 +135,7 @@
   <section class="viewer">
     <div class="stage">
       <canvas id="gl"></canvas>
+      <canvas id="zones"></canvas>
       <div id="hud"></div>
       <div id="viewinfo"></div>
       <div id="frame-guide" hidden><span></span></div>
