@@ -12,3 +12,4 @@ pub mod insta360;
 pub mod musiclib;
 pub mod numeric;
 pub mod paths;
+pub mod telemetry;
