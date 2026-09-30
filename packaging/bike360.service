@@ -7,6 +7,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# ffmpeg/ffprobe peuvent être installés dans ~/.local/bin (absent du PATH des services)
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/bike360/server.env
 ExecStart=%h/.local/bin/bike360-server ${DCIM} --host ${HOST} --port ${PORT}
 Restart=on-failure
