@@ -32,6 +32,7 @@ pub struct SegInfo {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Series {
     pub speed: Vec<Option<f64>>,
     pub alt: Vec<Option<f64>>,
