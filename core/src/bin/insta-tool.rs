@@ -5,6 +5,9 @@ use anyhow::{bail, Context, Result};
 use insta_core::{analyze, automontage, basemap, endcard, finishing, geometry, horizon, hyperlapse, insta360, lean, musiclib, paths, telemetry};
 use serde_json::{json, Value};
 
+#[path = "insta-tool/privacy.rs"]
+mod privacy_tool;
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -93,7 +96,8 @@ fn main() -> Result<()> {
             let spec: Value = serde_json::from_reader(std::fs::File::open(&args[2])?)?;
             println!("{}", serde_json::to_string(&port_check(cmd, &spec)?)?);
         }
-        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER... | horizon SESSION DOSSIER... | hyperlapse CACHE.json DURÉE | basemap|mappanel|layers|overlay|endcard|finishing SPEC.json"),
+        Some(c) if c.starts_with("privacy-") => privacy_tool::run(&args)?,
+        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER... | horizon SESSION DOSSIER... | hyperlapse CACHE.json DURÉE | lean CACHE.json HORIZON.json | basemap|mappanel|layers|overlay|endcard|finishing SPEC.json | privacy-… (voir insta-tool/privacy.rs)"),
     }
     Ok(())
 }
