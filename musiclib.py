@@ -55,7 +55,7 @@ def _seconds(length):
         return 0
 
 
-def search(query="", mood="", min_s=60, limit=40):
+def search(query="", mood="", min_s=60, limit=60):
     """Pièces correspondant à une ambiance et/ou à des mots (titre, description, instruments)."""
     words = [w for w in query.lower().split() if w]
     out = []
@@ -70,10 +70,11 @@ def search(query="", mood="", min_s=60, limit=40):
         if seconds < min_s:
             continue
         out.append({"title": p["title"], "filename": p["filename"], "seconds": seconds, "bpm": p.get("bpm"),
+                    "uploaded": p.get("uploaded") or "",
                     "feel": ", ".join(MOODS.get(f.strip(), f.strip()) for f in feel.split(",") if f.strip()),
                     "description": p.get("description") or "", "instruments": p.get("instruments") or "",
                     "preview": MP3_URL.format(urllib.parse.quote(p["filename"]))})
-    out.sort(key=lambda x: x.get("title", ""))
+    out.sort(key=lambda x: x["uploaded"], reverse=True)   # les plus récentes d'abord
     return out[:limit]
 
 
