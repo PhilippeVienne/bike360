@@ -1,17 +1,16 @@
-//! Appels aux modules pas encore portés en Rust (telemetry, endcard, finishing, basemap,
-//! privacy, et le suivi d'un compagnon qui repose sur privacy).
+//! Appels aux fonctions de confidentialité pas encore portées en Rust (module Python privacy,
+//! et le suivi d'un compagnon qui repose dessus).
 //!
-//! Chaque fonction garde une signature proche de la fonction Python qu'elle appelle. Deux
+//! Chaque fonction garde une signature proche de la fonction Python qu'elle remplace. Deux
 //! sortes d'implémentations provisoires :
 //! - **pont Python** : sous-processus `python3 -c <pending_bridge.py> <fonction>`, avec
 //!   PYTHONPATH = dossier du code Python, arguments JSON sur l'entrée standard, résultat JSON
 //!   (et progression de la tâche) sur la sortie standard ;
-//! - **copie directe** : quelques fonctions triviales (lecture/écriture de fichiers JSON,
-//!   validation d'un style, petite géométrie) recopiées ici pour ne pas lancer Python à chaque
-//!   requête. Elles devront être remplacées par celles des modules Rust correspondants.
+//! - **copie directe** : quelques fonctions triviales (lecture/écriture des fichiers JSON de
+//!   data/privacy/, petite géométrie) recopiées ici pour ne pas lancer Python à chaque requête.
 //!
-//! Quand un module sera porté, remplacer le corps de la fonction par l'appel Rust natif
-//! (le reste du serveur n'appelle que ces fonctions).
+//! Quand privacy sera porté, remplacer le corps de chaque fonction par l'appel Rust natif
+//! (le reste du serveur n'appelle que ces fonctions), puis supprimer pending_bridge.py.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -137,151 +136,6 @@ fn forward(job: &Job) -> impl FnMut(&Map<String, Value>) + '_ {
 
 fn mat_flat(m: &Mat3) -> Vec<f64> {
     m.iter().flatten().copied().collect()
-}
-
-// ================================================================ telemetry
-
-/// Copie directe de `telemetry.DEFAULTS` → à remplacer par la constante du module Rust telemetry.
-pub fn telemetry_defaults() -> Map<String, Value> {
-    let Value::Object(m) = json!({"enabled": false, "speed": true, "map": true, "altitude": true, "place": true}) else {
-        unreachable!()
-    };
-    m
-}
-
-/// Mini-carte d'aperçu (PNG `size`², session courante en couleur, point au début du clip).
-/// Remplacera : `telemetry._map_panel` + `_dot`/`_over` (dessin de `server.minimap`) — pont Python.
-pub fn minimap(result: &Value, clip: &Value, tracks: &[Value], size: u32, out: &Path) -> Result<()> {
-    call("minimap", &json!({"result": result, "clip": clip, "tracks": tracks, "size": size, "out": out}))?;
-    Ok(())
-}
-
-/// Télémétrie pour le moteur GPU : (images PNG, placements par image) ou None sans GPS.
-/// `time_map` : (temps de sortie, temps de session) interpolés (hyperlapse).
-/// Remplacera : `telemetry.layers` — pont Python.
-#[allow(clippy::too_many_arguments)]
-pub fn telemetry_layers(result: &Value, clip: &Value, t0: f64, n_frames: usize, fps: f64, w: u32, h: u32, opts: &Value,
-                        first_part: bool, workdir: &Path, time_map: Option<(&[f64], &[f64])>, tracks: Option<&[Value]>)
-                        -> Result<Option<(Value, Value)>> {
-    let r = call("telemetry_layers", &json!({
-        "result": result, "clip": clip, "t0": t0, "n_frames": n_frames, "fps": fps, "W": w, "H": h, "opts": opts,
-        "first_part": first_part, "workdir": workdir, "time_map": time_map.map(|(a, b)| json!([a, b])),
-        "tracks": tracks}))?;
-    Ok(match r {
-        Value::Array(mut a) if a.len() == 2 => {
-            let overlays = a.pop().unwrap();
-            Some((a.pop().unwrap(), overlays))
-        }
-        _ => None,
-    })
-}
-
-/// Incruste la télémétrie sur un morceau (export ffmpeg) → `out` ; faux sans GPS.
-/// Remplacera : `telemetry.overlay` — pont Python.
-#[allow(clippy::too_many_arguments)]
-pub fn telemetry_overlay(part: &Path, out: &Path, result: &Value, clip: &Value, t0: f64, dur: f64, w: u32, h: u32,
-                         opts: &Value, first_part: bool, encoder_args: &[String], workdir: &Path, tracks: &[Value])
-                         -> Result<bool> {
-    let r = call("telemetry_overlay", &json!({
-        "part": part, "out": out, "result": result, "clip": clip, "t0": t0, "dur": dur, "W": w, "H": h,
-        "opts": opts, "first_part": first_part, "encoder_args": encoder_args, "workdir": workdir,
-        "tracks": tracks}))?;
-    Ok(r.as_bool().unwrap_or(false))
-}
-
-// ================================================================ endcard
-
-/// Carte de fin (PNG w×h) : carte des trajets, chiffres, crédits de la musique.
-/// Remplacera : `endcard.render` — pont Python.
-pub fn endcard_render(results: &[Value], w: u32, h: u32, path: &Path, title: &str, credits: &[String]) -> Result<()> {
-    call("endcard_render", &json!({"results": results, "W": w, "H": h, "path": path, "title": title,
-                                   "credits": credits}))?;
-    Ok(())
-}
-
-// ================================================================ finishing
-
-const TRANSITIONS: [(&str, Option<&str>); 4] =
-    [("aucune", None), ("fondu", Some("fade")), ("noir", Some("fadeblack")), ("glisse", Some("slideleft"))];
-
-fn finishing_defaults() -> Map<String, Value> {
-    let Value::Object(m) = json!({"transition": "fondu", "duration": 0.6, "title": "", "subtitle": "",
-                                  "music": "", "music_volume": 0.8, "original_volume": 0.35, "end_card": true}) else {
-        unreachable!()
-    };
-    m
-}
-
-fn py_float(v: &Value) -> f64 {
-    match v {
-        Value::Number(n) => n.as_f64().unwrap_or(0.0),
-        Value::String(s) => s.trim().parse().unwrap_or(0.0),
-        Value::Bool(b) => *b as i32 as f64,
-        _ => 0.0,
-    }
-}
-
-fn py_truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64() != Some(0.0),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
-}
-
-/// Style validé (valeurs bornées, clés connues).
-/// Copie directe de `finishing.clean` → à remplacer par le module Rust finishing.
-pub fn finishing_clean(style: Option<&Value>) -> Value {
-    let mut s = finishing_defaults();
-    if let Some(Value::Object(m)) = style {
-        for (k, v) in m {
-            if s.contains_key(k) {
-                s.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    if !s["transition"].as_str().is_some_and(|t| TRANSITIONS.iter().any(|(k, _)| *k == t)) {
-        s.insert("transition".into(), "fondu".into());
-    }
-    let clamp = |v: &Value, lo: f64, hi: f64| Value::from(py_float(v).clamp(lo, hi));
-    let d = clamp(&s["duration"], 0.2, 2.0);
-    s.insert("duration".into(), d);
-    for k in ["music_volume", "original_volume"] {
-        let v = clamp(&s[k], 0.0, 1.5);
-        s.insert(k.into(), v);
-    }
-    for k in ["title", "subtitle", "music"] {
-        let t: String = pyjson::py_str(&s[k]).chars().take(120).collect();
-        s.insert(k.into(), t.into());
-    }
-    let e = py_truthy(&s["end_card"]);
-    s.insert("end_card".into(), e.into());
-    Value::Object(s)
-}
-
-/// Rien à faire au-delà d'un simple assemblage (copie sans réencodage).
-/// Copie directe de `finishing.is_plain` → à remplacer par le module Rust finishing.
-pub fn finishing_is_plain(style: &Value) -> bool {
-    let t = style["transition"].as_str().unwrap_or("fondu");
-    TRANSITIONS.iter().find(|(k, _)| *k == t).and_then(|(_, v)| *v).is_none()
-        && style["title"].as_str().unwrap_or("").is_empty()
-        && style["music"].as_str().unwrap_or("").is_empty()
-        && !style["end_card"].as_bool().unwrap_or(false)
-}
-
-/// Assemble les clips avec transitions, titre, musique et carte de fin → `final`.
-/// Remplacera : `finishing.finish` — pont Python.
-#[allow(clippy::too_many_arguments)]
-pub fn finishing_finish(clip_files: &[PathBuf], final_: &Path, style: &Value, encoder_args: &[String], w: u32, h: u32,
-                        music: Option<&Path>, audio_bitrate: &str, end_card: Option<&Path>, credits: &[String],
-                        job: &Job) -> Result<()> {
-    call_streaming("finishing_finish", &json!({
-        "clip_files": clip_files, "final": final_, "style": style, "encoder_args": encoder_args, "W": w, "H": h,
-        "music": music, "audio_bitrate": audio_bitrate, "end_card": end_card, "credits": credits}), Some(job), |_| {})?;
-    Ok(())
 }
 
 // ================================================================ privacy
@@ -431,18 +285,4 @@ pub fn follow_track(app: &App, job: &Job, sid: &str, t0: f64, d0: [f64; 3], ax: 
         Some(job), forward(job))?;
     let track: Vec<(f64, [f64; 3])> = serde_json::from_value(r)?;
     Ok(track)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clean_style() {
-        let s = finishing_clean(Some(&json!({"duration": 5, "title": 12, "junk": 1, "end_card": 0})));
-        assert_eq!(s["duration"], json!(2.0));
-        assert_eq!(s["title"], json!("12"));
-        assert_eq!(s["end_card"], json!(false));
-        assert!(s.get("junk").is_none());
-    }
 }

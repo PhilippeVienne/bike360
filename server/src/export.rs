@@ -11,8 +11,10 @@ use insta_core::analyze::Analysis;
 use insta_core::geometry::{self, Clip, HorizonMode, Mat3};
 use insta_core::horizon::{self, HorizonData};
 use insta_core::insta360::{Segment, Session};
-use insta_core::numeric::{round_nd, unwrap};
-use insta_core::{hyperlapse, musiclib};
+use insta_core::numeric::{interp, round_nd, unwrap};
+use insta_core::lean::{self, LeanTrack};
+use insta_core::telemetry::{self, Span};
+use insta_core::{chapters, draw, endcard, finishing, hyperlapse, musiclib};
 use serde_json::{json, Map, Value};
 
 use crate::app::{exports_dir, music_dir, render_bin, thumbs_dir, App, Job};
@@ -215,9 +217,24 @@ pub fn minimap(app: &App, sid: &str, clip_id: Option<&str>, size: u32) -> Result
     if out.exists() {
         return Ok(out);
     }
-    let result = serde_json::to_value(&app.sess(sid).unwrap().result)?;
-    let tracks: Vec<Value> = sess.iter().map(|s| serde_json::to_value(&s.result)).collect::<Result<_, _>>()?;
-    pending::minimap(&result, &clip, &tracks, size, &out)?;
+    let result = &sess[0].result;
+    let tracks: Vec<&Analysis> = sess.iter().map(|s| &s.result).collect();
+    let span = Span { start: float_of(clip.get("start"), 0.0), end: float_of(clip.get("end"), -1.0) };
+    let s = size as usize;
+    let (mut panel, project, _) = telemetry::map_panel(result, span, &tracks, s, size as f64 / 0.26);
+    if span.end > span.start {
+        if let (Some(lat), Some(lon)) = (telemetry::series(result, "lat"), telemetry::series(result, "lon")) {
+            let d = (8.max((size as f64 * 0.06) as usize)) / 2 * 2;
+            let k = (span.start as usize).min(lat.len() - 1);
+            let (x, y) = project.project(lat[k], lon[k]);
+            let (x0, y0) = ((x - d as f64 / 2.0).round_ties_even() as i64, (y - d as f64 / 2.0).round_ties_even() as i64);
+            if 0 <= x0 && x0 <= (s - d) as i64 && 0 <= y0 && y0 <= (s - d) as i64 {
+                panel.over(&draw::dot(d), x0, y0);
+            }
+        }
+    }
+    std::fs::create_dir_all(thumbs_dir())?;
+    panel.save_png(&out)?;
     Ok(out)
 }
 
@@ -513,7 +530,7 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
     }
     let settings = app.get_settings();
     let masks = settings_masks(&settings);
-    let tel_opts = settings["telemetry"].clone();
+    let tel_opts = telemetry::Options::merged(settings["telemetry"].as_object());
     let blur_on = settings["privacy"]["enabled"].as_bool().unwrap_or(false);
     if clips.is_empty() {
         bail!("aucun clip sélectionné");
@@ -548,9 +565,8 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
     let mut done = 0.0;
     let mut files: Vec<(usize, PathBuf)> = vec![];
     let mut clip_horizon: std::collections::HashMap<usize, Option<HorizonData>> = Default::default();
-    let tracks_all: Vec<Value> = sids.iter()
-        .map(|x| serde_json::to_value(&app.sess(x).unwrap().result).unwrap())
-        .collect();
+    let montage: Vec<Arc<crate::app::Sess>> = sids.iter().map(|x| app.sess(x).context("session inconnue")).collect::<Result<_>>()?;
+    let tracks_all: Vec<&Analysis> = montage.iter().map(|s| &s.result).collect();
     let mut sizes: std::collections::HashMap<PathBuf, (u32, u32)> = Default::default();
     let n_clips = clips.len();
     for (n, (i, seg, ss, dur)) in todo.iter().enumerate() {
@@ -576,13 +592,13 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
         let base = done;
         let report = |t: f64| job.set("progress", ((base + t) / total).min(1.0));
         let tracks: Vec<Value> = if blur_on {
-            enabled_tracks(sid, raw.get("id")).into_iter().filter(|t| t.get("enabled").and_then(Value::as_bool).unwrap_or(true)).collect()
+            enabled_tracks(sid, raw.get("id")).into_iter().filter(|t| t.get("enabled").is_none_or(telemetry::truthy)).collect()
         } else {
             vec![]
         };
-        let tel_on = tel_opts["enabled"].as_bool().unwrap_or(false) && result.gps_coverage > 0.3;
-        let result_v = serde_json::to_value(result)?;
-        let clip_v = Value::Object(raw.clone());
+        let tel_on = tel_opts.enabled && result.gps_coverage > 0.3;
+        // jauge d'inclinaison : horizon de la session (ou de la portion du clip) s'il est calculé
+        let lean_track = hdata.filter(|_| tel_on && tel_opts.lean).map(|h| LeanTrack::new(h, &result.tilt));
         if gpu {
             // floutage et télémétrie faits par le moteur pendant le rendu
             let effects = |times: &[f64], mats: &[Mat3], fovs: &[f64], fps: f64| -> Result<Map<String, Value>> {
@@ -591,12 +607,13 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
                     extra.insert("blur".into(), pending::privacy_frame_boxes(times, mats, fovs, &tracks, out_w, out_h)?);
                 }
                 if tel_on {
-                    let lay = pending::telemetry_layers(&result_v, &clip_v, times[0], times.len(), fps, out_w, out_h,
-                                                       &tel_opts, (times[0] - clip.start).abs() < 0.5,
-                                                       &out_dir.join(format!("tel_{n:03}")), None, Some(&tracks_all))?;
-                    if let Some((sprites, overlays)) = lay {
-                        extra.insert("sprites".into(), sprites);
-                        extra.insert("overlays".into(), overlays);
+                    let lay = telemetry::layers(result, Span::from(clip), times[0], times.len(), fps, out_w as usize,
+                                                out_h as usize, &tel_opts, (times[0] - clip.start).abs() < 0.5,
+                                                &out_dir.join(format!("tel_{n:03}")), None, &tracks_all,
+                                                lean_track.as_ref())?;
+                    if let Some(l) = lay {
+                        extra.insert("sprites".into(), json!(l.sprites));
+                        extra.insert("overlays".into(), json!(l.overlays));
                     }
                 }
                 Ok(extra)
@@ -614,7 +631,7 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
                                        out_h, &out, &report)?;
         if blur_on {
             let tracks = enabled_tracks(sid, raw.get("id"));
-            if tracks.iter().any(|t| t.get("enabled").and_then(Value::as_bool).unwrap_or(true)) {
+            if tracks.iter().any(|t| t.get("enabled").is_none_or(telemetry::truthy)) {
                 job.set("message", format!("clip {}/{n_clips} : floutage", i + 1));
                 let blurred = out.with_file_name(format!("part_{n:03}_flou.mp4"));
                 pending::privacy_blur_video(&out, &blurred, &views.0, &views.1, &views.2, &tracks, out_w, out_h,
@@ -626,9 +643,9 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
             job.set("message", format!("clip {}/{n_clips} : télémétrie", i + 1));
             let off = seg_offset(result, seg)?;
             let with_tel = out.with_file_name(format!("part_{n:03}_tel.mp4"));
-            if pending::telemetry_overlay(&out, &with_tel, &result_v, &clip_v, off + ss, dur, out_w, out_h, &tel_opts,
-                                          (off + ss - clip.start).abs() < 0.5, &encoder_args(app, &q),
-                                          &out_dir.join(format!("tel_{n:03}")), &tracks_all)? {
+            if telemetry::overlay(&out, &with_tel, result, Span::from(clip), off + ss, dur, out_w as usize,
+                                  out_h as usize, &tel_opts, (off + ss - clip.start).abs() < 0.5, &encoder_args(app, &q),
+                                  &out_dir.join(format!("tel_{n:03}")), None, &tracks_all)? {
                 std::fs::rename(&with_tel, &out)?;
             }
         }
@@ -644,8 +661,9 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
     };
     let final_ = exports_dir().join(format!("{prefix}_{name}.mp4"));
     let style = (key == "montage").then(|| app.get_project()["style"].clone());
-    match style {
-        Some(style) if !pending::finishing_is_plain(&style) => {
+    let mut chapter_text = None;
+    match &style {
+        Some(style) if !finishing::is_plain(style) => {
             // un fichier par clip (morceaux d'un même clip recollés sans transition), puis finition
             let mut clip_files = vec![];
             let mut seen = vec![];
@@ -672,23 +690,59 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
             let mut card = None;
             if style["end_card"].as_bool().unwrap_or(false) {
                 let c = out_dir.join("fin.png");
-                pending::endcard_render(&tracks_all, out_w, out_h, &c, style["title"].as_str().unwrap_or(""), &credits)?;
+                // record d'angle : sessions dont l'horizon est calculé
+                let lean_stats: Vec<lean::LeanStats> = sids.iter().zip(&montage)
+                    .filter_map(|(sid, s)| app.horizon_done(sid).and_then(|h| lean::lean_stats(&h, &s.result)))
+                    .collect();
+                endcard::render(&tracks_all, out_w as usize, out_h as usize, &c, style["title"].as_str().unwrap_or(""),
+                                &credits, &lean_stats)?;
                 card = Some(c);
             }
             job.set("message", "transitions, titre, musique");
-            pending::finishing_finish(&clip_files, &final_, &style, &encoder_args(app, &q), out_w, out_h, music.as_deref(),
-                                      &q.audio, card.as_deref(), &credits, job)?;
+            let refs: Vec<&Path> = clip_files.iter().map(PathBuf::as_path).collect();
+            let info = refs.iter().map(|f| finishing::probe(f)).collect::<Result<Vec<_>>>()?;
+            let (cmd, _) = finishing::finish_command(&refs, &info, &final_, style, &encoder_args(app, &q), out_w as usize,
+                                                     out_h as usize, music.as_deref(), &q.audio, card.as_deref(), &credits);
+            run_part_process(job, &cmd, |_| {})?;
+            chapter_text = Some(montage_chapters(clips, &sessions, &parsed, style, card.is_some()));
         }
         _ => {
             let listing = out_dir.join("concat.txt");
             std::fs::write(&listing, files.iter().map(|(_, f)| format!("file '{}'\n", f.file_name().unwrap().to_string_lossy())).collect::<String>())?;
             run_checked(&["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", &listing.display().to_string(),
                           "-c", "copy", "-movflags", "+faststart", &final_.display().to_string()])?;
+            if let Some(style) = &style {
+                chapter_text = Some(montage_chapters(clips, &sessions, &parsed, style, false));
+            }
         }
     }
-    job.update(json!({"state": "done", "progress": 1.0, "message": format!("terminé ({engine})"),
-                      "output": final_.file_name().unwrap().to_string_lossy()}));
+    let mut done_state = json!({"state": "done", "progress": 1.0, "message": format!("terminé ({engine})"),
+                                "output": final_.file_name().unwrap().to_string_lossy()});
+    if let Some(text) = chapter_text {
+        // chapitres YouTube à côté de l'export (même nom, .chapitres.txt)
+        if !text.is_empty() {
+            std::fs::write(final_.with_extension("chapitres.txt"), format!("{text}\n"))?;
+        }
+        done_state["chapters"] = text.into();
+    }
+    job.update(done_state);
     Ok(())
+}
+
+/// Chapitres YouTube d'un montage (lieu de chaque clip, transitions, carte de fin) ; texte vide
+/// si YouTube les refuserait.
+fn montage_chapters(clips: &[(String, Map<String, Value>)], sessions: &[Arc<crate::app::Sess>], parsed: &[Clip],
+                    style: &Value, end_card: bool) -> String {
+    let items: Vec<(f64, String)> = clips.iter().enumerate()
+        .map(|(i, _)| (parsed[i].end - parsed[i].start, telemetry::place_at(&sessions[i].result, parsed[i].start)))
+        .collect();
+    let transition = if finishing::is_plain(style) || style["transition"] == json!("aucune") {
+        0.0
+    } else {
+        style["duration"].as_f64().unwrap_or(0.6)
+    };
+    let list = chapters::chapters(&items, transition, if end_card { finishing::END_CARD_S } else { 0.0 });
+    chapters::description(&list)
 }
 
 // ---------------------------------------------------------------- hyperlapse
@@ -726,7 +780,7 @@ fn hyperlapse_inner(app: &App, job: &Job, sid: &str, opts: HyperOpts) -> Result<
     let cap = cap.min(q.max_bitrate.unwrap_or(cap));
     let settings = app.get_settings();
     let masks = settings_masks(&settings);
-    let tel_opts = settings["telemetry"].clone();
+    let tel_opts = telemetry::Options::merged(settings["telemetry"].as_object());
     let privacy_on = settings["privacy"]["enabled"].as_bool().unwrap_or(false);
     // zones déjà analysées ou tracées dans les clips de la session, + détection image par image
     let known: Vec<Value> = if privacy_on {
@@ -751,8 +805,7 @@ fn hyperlapse_inner(app: &App, job: &Job, sid: &str, opts: HyperOpts) -> Result<
     let out_dir = exports_dir().join(sid).join(&name);
     std::fs::create_dir_all(&out_dir)?;
     job.set("engine", "GPU");
-    let result_v = serde_json::to_value(result)?;
-    let view_v = Value::Object(view.clone());
+    let lean_track = hdata.filter(|_| tel_opts.lean).map(|h| LeanTrack::new(h, &result.tilt));
     let enc = {
         let mut q2 = q.clone();
         q2.max_bitrate = Some(cap);
@@ -791,14 +844,16 @@ fn hyperlapse_inner(app: &App, job: &Job, sid: &str, opts: HyperOpts) -> Result<
             "fov": fovs[0], "fovs": fovs, "cq": q.crf, "samples": samples, "max_bitrate": cap,
             "masks": masks, "matrices": matrices.iter().map(flat).collect::<Vec<_>>(), "output": h264,
         });
-        if tel_opts["enabled"].as_bool().unwrap_or(false) && result.gps_coverage > 0.3 {
+        if tel_opts.enabled && result.gps_coverage > 0.3 {
             // incrustée par le moteur
             let out_t: Vec<f64> = (0..part_taus.len()).map(|k| k as f64 / fps).collect();
-            if let Some((sprites, overlays)) = pending::telemetry_layers(
-                &result_v, &view_v, part_taus[0], part_taus.len(), fps, out_w, out_h, &tel_opts, files.is_empty(),
-                &out_dir.join(format!("tel_{n:03}")), Some((&out_t, &part_taus)), None)? {
-                job_spec["sprites"] = sprites;
-                job_spec["overlays"] = overlays;
+            let time_map = |t: f64| interp(t, &out_t, &part_taus);
+            if let Some(l) = telemetry::layers(result, Span::from(&vclip), part_taus[0], part_taus.len(), fps,
+                                               out_w as usize, out_h as usize, &tel_opts, files.is_empty(),
+                                               &out_dir.join(format!("tel_{n:03}")), Some(&time_map), &[],
+                                               lean_track.as_ref())? {
+                job_spec["sprites"] = json!(l.sprites);
+                job_spec["overlays"] = json!(l.overlays);
             }
         }
         std::fs::write(&spec, serde_json::to_string(&job_spec)?)?;

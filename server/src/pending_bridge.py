@@ -1,5 +1,5 @@
-# Pont provisoire entre le serveur Rust et les modules Python pas encore portés
-# (telemetry, endcard, finishing, basemap, privacy). Lancé par server/src/pending.rs :
+# Pont provisoire entre le serveur Rust et le module Python pas encore porté (privacy,
+# et le suivi d'un compagnon qui repose dessus). Lancé par server/src/pending.rs :
 #   python3 -c <ce fichier> <fonction>     (PYTHONPATH = dossier du code Python)
 # Entrée : arguments JSON sur l'entrée standard. Sortie standard : lignes « @job {…} »
 # (état de la tâche), « @pid N » (processus lancé, pour l'annulation) et enfin
@@ -100,67 +100,11 @@ def _session(s):
                                               x.get("duration", 0.0)) for x in s["segments"]], s.get("parts", []))
 
 
-def _tracks(result, tracks):
-    """Analyses des sessions du montage, avec l'objet `result` lui-même pour la session courante
-    (telemetry._map_panel la reconnaît par identité : `r is not result`)."""
-    if tracks is None:
-        return None
-    return [result if t.get("id") == result.get("id") else t for t in tracks]
-
-
 def _mats(mats):
     return [np.array(m, float).reshape(3, 3) for m in mats]
 
 
 # ------------------------------------------------------------------ fonctions
-
-def minimap(a):
-    (telemetry,) = _import("telemetry")
-    from PIL import Image
-    result, clip, size = a["result"], a["clip"], a["size"]
-    panel, project, _ = telemetry._map_panel(result, clip, _tracks(result, a["tracks"]), size, size / 0.26)
-    if clip["end"] > clip["start"]:
-        lat, lon = telemetry._series(result, "lat"), telemetry._series(result, "lon")
-        if lat is not None:
-            D = max(8, int(size * 0.06)) // 2 * 2
-            x, y = project(lat[int(clip["start"])], lon[int(clip["start"])])
-            dot = telemetry._dot(D)
-            x0, y0 = int(round(x - D / 2)), int(round(y - D / 2))
-            if 0 <= x0 <= size - D and 0 <= y0 <= size - D:
-                telemetry._over(panel[y0:y0 + D, x0:x0 + D], dot)
-    Path(a["out"]).parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(np.clip(panel, 0, 255).astype(np.uint8), "RGBA").save(a["out"])
-    return a["out"]
-
-
-def telemetry_layers(a):
-    (telemetry,) = _import("telemetry")
-    tm = a.get("time_map")
-    time_map = (lambda t, ot=np.array(tm[0]), pt=np.array(tm[1]): np.interp(t, ot, pt)) if tm else None
-    return telemetry.layers(a["result"], a["clip"], a["t0"], a["n_frames"], a["fps"], a["W"], a["H"], a["opts"],
-                            a["first_part"], Path(a["workdir"]), time_map=time_map, tracks=_tracks(a["result"], a.get("tracks")))
-
-
-def telemetry_overlay(a):
-    (telemetry,) = _import("telemetry")
-    return bool(telemetry.overlay(Path(a["part"]), Path(a["out"]), a["result"], a["clip"], a["t0"], a["dur"],
-                                  a["W"], a["H"], a["opts"], first_part=a["first_part"],
-                                  encoder_args=a["encoder_args"], workdir=Path(a["workdir"]), tracks=_tracks(a["result"], a.get("tracks"))))
-
-
-def endcard_render(a):
-    (endcard,) = _import("endcard")
-    endcard.render(a["results"], a["W"], a["H"], Path(a["path"]), a.get("title", ""), a.get("credits", []))
-    return a["path"]
-
-
-def finishing_finish(a):
-    (finishing,) = _import("finishing")
-    finishing.finish([Path(f) for f in a["clip_files"]], Path(a["final"]), a["style"], a["encoder_args"], a["W"], a["H"],
-                     Path(a["music"]) if a.get("music") else None, a.get("audio_bitrate", "160k"),
-                     end_card=Path(a["end_card"]) if a.get("end_card") else None, credits=a.get("credits", []))
-    return a["final"]
-
 
 def privacy_frame_boxes(a):
     (privacy,) = _import("privacy")

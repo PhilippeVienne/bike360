@@ -10,7 +10,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use insta_core::{analyze, automontage, geometry, hyperlapse, insta360, musiclib};
+use insta_core::{analyze, automontage, finishing, geometry, hyperlapse, insta360, musiclib};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -482,7 +482,7 @@ fn put(app: &Arc<App>, full: &str, body: &Bytes) -> Result<Reply, ()> {
             masks.push(Value::Object(o));
         }
         masks.truncate(8);
-        let defaults = pending::telemetry_defaults();
+        let defaults = app::telemetry_defaults();
         let mut merged = current["telemetry"].as_object().cloned().unwrap_or_default();
         if let Some(Value::Object(t)) = cfg.get("telemetry") {
             for (k, v) in t {
@@ -543,7 +543,7 @@ fn put(app: &Arc<App>, full: &str, body: &Bytes) -> Result<Reply, ()> {
             for (k, v) in st {
                 s.insert(k.clone(), v.clone());
             }
-            proj["style"] = pending::finishing_clean(Some(&Value::Object(s)));
+            proj["style"] = finishing::clean(Some(&Value::Object(s))).map_err(|_| ())?;
         }
         write_json_indent(&app::project_path(), &proj).map_err(|_| ())?;
         return Ok(ok(json!({"ok": true})));

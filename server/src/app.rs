@@ -10,10 +10,10 @@ use anyhow::Result;
 use insta_core::analyze::{self, Analysis};
 use insta_core::horizon::{self, HorizonData};
 use insta_core::insta360::{self, Session};
-use insta_core::{automontage, paths};
+use insta_core::{automontage, finishing, paths, telemetry};
 use serde_json::{json, Map, Value};
 
-use crate::{pending, pyjson};
+use crate::pyjson;
 
 pub const PROJECT_MIN_S: usize = 60; // sans projet enregistré : sessions d'au moins une minute
 pub const HORIZON_WORKERS: usize = 3; // calculs d'horizon simultanés
@@ -427,7 +427,7 @@ impl App {
 
     pub fn get_settings(&self) -> Value {
         let cfg = read_json(&settings_path()).unwrap_or(json!({}));
-        let mut tel = pending::telemetry_defaults();
+        let mut tel = telemetry_defaults();
         if let Some(Value::Object(t)) = cfg.get("telemetry") {
             for (k, v) in t {
                 tel.insert(k.clone(), v.clone());
@@ -476,7 +476,7 @@ impl App {
             .filter(|x| x.as_str().is_some_and(|s| sessions.contains_key(s)))
             .collect();
         json!({"sessions": kept, "order": list("order"), "excluded": list("excluded"),
-               "style": pending::finishing_clean(proj.get("style"))})
+               "style": clean_style(proj.get("style"))})
     }
 
     /// Clips du montage dans l'ordre : ordre enregistré, puis les nouveaux clips chronologiquement.
@@ -540,6 +540,19 @@ impl App {
         out.sort();
         out
     }
+}
+
+/// Réglages de télémétrie par défaut (telemetry::DEFAULTS, mêmes clés que les réglages).
+pub fn telemetry_defaults() -> Map<String, Value> {
+    match serde_json::to_value(telemetry::DEFAULTS) {
+        Ok(Value::Object(m)) => m,
+        _ => Map::new(),
+    }
+}
+
+/// Style du montage validé ; un style illisible (valeur non numérique) revient aux défauts.
+pub fn clean_style(style: Option<&Value>) -> Value {
+    finishing::clean(style).unwrap_or_else(|_| finishing::defaults())
 }
 
 /// Reporte sur le bloc les clips posés sur ses morceaux avant la fusion (décalés dans le temps).
