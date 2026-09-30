@@ -17,8 +17,9 @@ const API: &str = "https://api.georide.com";
 fn conf_dir() -> PathBuf {
     let config = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config");
     let dir = config.join("bike360");
-    let old = config.join("insta-build"); // nom d'avant Bike360 : repris tel quel s'il existe seul
-    if !dir.exists() && old.exists() { old } else { dir }
+    // nom d'avant Bike360 : identifiants laissés en place tant qu'ils ne sont pas dans le nouveau dossier
+    let old = config.join("insta-build");
+    if !dir.join("georide.env").exists() && old.join("georide.env").exists() { old } else { dir }
 }
 
 fn load_env() -> Result<HashMap<String, String>> {

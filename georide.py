@@ -23,7 +23,7 @@ from pathlib import Path
 
 API = "https://api.georide.com"
 CONF_DIR = Path.home() / ".config" / "bike360"
-if not CONF_DIR.exists() and (Path.home() / ".config" / "insta-build").exists():
+if not (CONF_DIR / "georide.env").exists() and (Path.home() / ".config" / "insta-build" / "georide.env").exists():
     CONF_DIR = Path.home() / ".config" / "insta-build"   # nom d'avant Bike360
 ENV_FILE = CONF_DIR / "georide.env"
 TOKEN_FILE = CONF_DIR / "georide.token"
