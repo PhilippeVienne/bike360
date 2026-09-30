@@ -63,6 +63,7 @@
           <label><input type="checkbox" data-tel="map"> mini-carte</label>
           <label><input type="checkbox" data-tel="altitude"> altitude + profil</label>
           <label><input type="checkbox" data-tel="place"> lieu au début des clips</label>
+          <label title="Angle de la moto mesuré sur l'horizon de l'image (sessions dont l'horizon est calculé)"><input type="checkbox" data-tel="lean"> angle d'inclinaison</label>
         </div></details>
     </div>
     <details class="menu" id="hl-menu"><summary title="Toute la balade en quelques minutes, vitesse selon l'intérêt">⏩ Résumé</summary>
@@ -232,6 +233,11 @@
           <button data-a="clear-keys" title="Supprimer tous les points clés du clip">✕ tous</button></div>
         <span id="ed-follow" class="hint"></span>
         <ol id="ed-keylist"></ol>
+        <div class="ed-row"><span class="ed-label">Vitesse</span>
+          <select id="ed-speed" title="Vitesse à poser à la tête de lecture"></select>
+          <button data-a="add-speed" title="Poser un point de vitesse à la tête de lecture : la vitesse change en douceur d'un point à l'autre">⏩ Vitesse ici</button>
+          <div class="spacer"></div><span id="ed-speed-out" class="muted"></span></div>
+        <ol id="ed-speedlist"></ol>
         <div class="ed-row"><div class="spacer"></div>
           <button data-a="play">▶ Lire</button><button data-a="goto-end" title="Voir les 3 dernières secondes">Fin ▶</button>
           <button data-a="loop" id="ed-loop" title="Lecture en boucle (L)">⟲ Boucle</button>

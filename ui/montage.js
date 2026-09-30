@@ -4,7 +4,7 @@
 // Partage : montageKey, renderMontage, updateMontageMap, pollMontage.
 
 import { st } from "./state.js";
-import { $, $$, api, apiOrError, exportLink, fmt } from "./util.js";
+import { $, $$, api, apiOrError, esc, exportLink, fmt } from "./util.js";
 import { renderClips, saveClipsNow, selectClip } from "./clips.js";
 import { drawClipsOnMap } from "./map.js";
 import { loadSession } from "./session.js";
@@ -162,5 +162,10 @@ export async function pollMontage() {
     el.innerHTML = j.state === "done" ? exportLink(j.output)
       : j.state === "error" ? "⚠ " + j.message.slice(0, 200) : "";
     if (j.warning) el.insertAdjacentHTML("beforeend", ` <span class="warn">⚠ ${j.warning}</span>`);
+    if (j.state === "done" && j.chapters) {   // chapitres YouTube : à coller dans la description
+      el.insertAdjacentHTML("beforeend", `<div class="hint">Chapitres YouTube (description de la vidéo) :
+        <button id="mt-copy-chapters">copier</button></div><textarea id="mt-chapters" readonly rows="${Math.min(8, j.chapters.split("\n").length)}">${esc(j.chapters)}</textarea>`);
+      $("#mt-copy-chapters").onclick = () => { $("#mt-chapters").select(); navigator.clipboard?.writeText(j.chapters).catch(() => document.execCommand("copy")); };
+    }
   }
 }

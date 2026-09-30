@@ -5,6 +5,8 @@
 import { st, video, now, series, SKIM_THRESHOLD } from "./state.js";
 import { $, $$ } from "./util.js";
 import { followTimeline } from "./timeline.js";
+import { activeClip } from "./view.js";
+import { speedAt, speedKeys } from "./speed.js";
 
 function segmentAt(t) {
   const segs = st.s.segments;
@@ -33,9 +35,12 @@ export function seek(t, play) {
 
 export function togglePlay() { video.paused ? video.play() : video.pause(); }
 
-/** Vitesse effective : celle choisie, ou 16× sur les passages calmes en mode survol. */
+/** Vitesse effective : celle choisie (× accéléré du clip traversé, comme à l'export), ou 16×
+ *  sur les passages calmes en mode survol. */
 export function applyRate() {
   let r = st.rate;
+  const c = st.s && activeClip(now());
+  if (c) r = Math.min(16, r * speedAt(speedKeys(c), now() - c.start));
   if (st.skim && st.s && series("score", now()) < SKIM_THRESHOLD) r = 16;
   if (video.playbackRate !== r) video.playbackRate = r;
 }

@@ -9,6 +9,7 @@ import { activeClip, currentViewParams, setView, upsertKey } from "./view.js";
 import { seek } from "./playback.js";
 import { deleteSelected, editEdge, renderClips, saveClips, selectClip } from "./clips.js";
 import { setZoneEdit } from "./zones.js";
+import { SPEEDS, outputDuration, speedKeys } from "./speed.js";
 
 export function renderEditor() {
   const c = st.clips[st.sel], ed = $("#clip-editor");
@@ -21,6 +22,7 @@ export function renderEditor() {
   $("#ed-horizon").value = clipMode(c);
   $("#auto-key").checked = st.autoKey;
   renderKeyList(c);
+  renderSpeedList(c);
   $("#ed-loop").classList.toggle("active", st.loop);
 }
 
@@ -50,6 +52,35 @@ function renderKeyList(c) {
   });
 }
 
+/** Points de vitesse du clip : aller à, facteur, suppression ; durée une fois accéléré. */
+function renderSpeedList(c) {
+  const ol = $("#ed-speedlist"), keys = speedKeys(c);
+  const out = outputDuration(c);
+  $("#ed-speed-out").textContent = keys.length ? `${fmt(c.end - c.start)} → ${fmt(out)} à l'export` : "vitesse normale";
+  ol.innerHTML = "";
+  keys.forEach((k) => {
+    const li = document.createElement("li");
+    li.classList.toggle("here", Math.abs(now() - c.start - k.t) < 0.05);
+    li.innerHTML = `<button data-s="go" title="Aller à ce point">⏩ ${fmt(c.start + k.t)}.${Math.floor((k.t % 1) * 10)}</button>
+      <select data-s="speed" title="Vitesse à ce point">${SPEEDS.map((v) => `<option value="${v}" ${v === k.speed ? "selected" : ""}>×${v}</option>`).join("")}</select>
+      <button data-s="del" title="Supprimer ce point">✕</button>`;
+    li.addEventListener("click", (e) => {
+      const what = e.target.dataset.s;
+      if (what === "go") seek(c.start + k.t);
+      else if (what === "del") { c.speed_keys = keys.filter((x) => x !== k); saveClips(c); }
+    });
+    li.querySelector("select").addEventListener("change", (e) => { k.speed = +e.target.value; c.speed_keys = keys; saveClips(c); });
+    ol.appendChild(li);
+  });
+}
+
+/** Pose (ou remplace) un point de vitesse à la tête de lecture, dans le clip. */
+function addSpeedKey(c, speed) {
+  const t = Math.round(Math.min(c.end - c.start, Math.max(0, now() - c.start)) * 10) / 10;
+  c.speed_keys = [...speedKeys(c).filter((k) => Math.abs(k.t - t) > 0.05), { t, speed }].sort((a, b) => a.t - b.t);
+  saveClips(c);
+}
+
 /** Saute au point clé suivant (dir > 0) ou précédent du clip sélectionné ou traversé. */
 export function jumpKey(dir) {
   const c = st.clips[st.sel] || activeClip(now());
@@ -74,6 +105,7 @@ $("#clip-editor").addEventListener("click", (e) => {
     setZoneEdit(true, "follow");
   }
   else if (a === "add-key") upsertKey(c, now());
+  else if (a === "add-speed") addSpeedKey(c, +$("#ed-speed").value);
   else if (a === "play") selectClip(st.sel, "play");
   else if (a === "goto-end") seek(Math.max(c.start, c.end - 3), true);
   else if (a === "loop") { st.loop = !st.loop; renderEditor(); }
@@ -89,3 +121,4 @@ $("#ed-horizon").addEventListener("change", (e) => {
   saveClips(c);
 });
 $("#auto-key").addEventListener("change", (e) => (st.autoKey = e.target.checked));
+$("#ed-speed").innerHTML = SPEEDS.map((v) => `<option value="${v}" ${v === 4 ? "selected" : ""}>×${v}</option>`).join("");

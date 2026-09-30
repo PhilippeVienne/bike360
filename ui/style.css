@@ -45,6 +45,7 @@ button.icon { width: 28px; padding: 4px 0; border-radius: 50%; }
 .muted { color: var(--muted); }
 .small { font-size: 11px; }
 .spacer { flex: 1; }
+#mt-chapters { width: 100%; font: 12px/1.4 ui-monospace, monospace; margin-top: 6px; }
 .hint { font-size: 12px; color: var(--muted); white-space: normal; max-width: 260px; }
 .warn { color: var(--accent); }
 progress { width: 120px; accent-color: var(--accent); }
@@ -232,11 +233,11 @@ aside > .clips { display: flex; flex-direction: column; min-height: 0; border-to
 .ed-row button { padding: 2px 6px; font-size: 12px; }
 .ed-label { width: 52px; color: var(--muted); }
 .ed-time { min-width: 78px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
-#ed-keylist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow: auto; }
-#ed-keylist li { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center; font-size: 12px; }
-#ed-keylist li.here { color: var(--accent); }
+#ed-keylist, #ed-speedlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow: auto; }
+#ed-keylist li, #ed-speedlist li { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center; font-size: 12px; }
+#ed-keylist li.here, #ed-speedlist li.here { color: var(--accent); }
 #ed-keylist select { font-size: 11px; padding: 1px 4px; }
-#ed-keylist button { padding: 0 5px; font-size: 11px; }
+#ed-keylist button, #ed-speedlist button { padding: 0 5px; font-size: 11px; }
 
 /* ================================================================ 7. frise et sa barre de défilement */
 footer { border-top: 1px solid var(--line); background: var(--panel); }
@@ -409,7 +410,7 @@ footer { border-top: 1px solid var(--line); background: var(--panel); }
   #view-roll { width: 120px; }
 
   button, select, .menu > summary { min-height: 38px; }
-  .rates button, .ed-row button, #ed-keylist button, .mt-btns button, .pv-head button { min-height: 32px; }
+  .rates button, .ed-row button, #ed-keylist button, #ed-speedlist button, .mt-btns button, .pv-head button { min-height: 32px; }
 
   /* frise */
   #timeline { height: 150px; }
