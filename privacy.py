@@ -26,7 +26,8 @@ PLATE_MODEL = "yolo-v9-t-640-license-plate-end2end"
 DATA = analyze.DATA / "privacy"
 THUMBS = analyze.CACHE / "privacy"
 AW, AH = 1920, 1080               # rendu d'analyse (cadrage et champ du clip)
-DETECT_EVERY = 2                  # une image sur deux : le suivi comble
+DETECT_EVERY = 2                  # une image sur deux : le suivi image par image comble (à 3, et
+TILES_EVERY = 1                   # tuiles une fois sur deux, ~40 fuites de plus sur le montage test)
 FACE_SCORE, PLATE_SCORE = 0.6, 0.35
 FACE_SCALE = 0.5                  # détection des visages à mi-résolution (≈ 4× plus rapide)
 VEHICLE_MODEL = "rf-detr-nano-384-coco"   # véhicules : sert à trouver les plaques de moto
@@ -54,7 +55,24 @@ class Detector:
         self.plates = create_detector(PLATE_MODEL, conf_thresh=PLATE_SCORE, providers=providers, batch_size=5)
         self.vehicles = create_detector(VEHICLE_MODEL, conf_thresh=MOTO_SCORE, providers=providers)
 
-    def __call__(self, img):
+    def _plates(self, views):
+        """Plaques sur plusieurs vues (le modèle traite une image à la fois). Préparation par
+        OpenCV (C++) plutôt que NumPy en double précision : ~4× plus rapide."""
+        from open_image_models.detection.core.yolo_v9.inference import _split_batch_predictions
+        from open_image_models.detection.core.yolo_v9.postprocess import convert_to_detection_result
+        from open_image_models.detection.core.yolo_v9.preprocess import letterbox
+        m = self.plates
+        out = []
+        for v in views:
+            im, ratio, pad = letterbox(v, m.img_size)
+            blob = self.cv2.dnn.blobFromImage(im, 1 / 255.0, swapRB=True)
+            pred = m.model.run([m.output_name], {m.input_name: blob})[0]
+            out.append(convert_to_detection_result(predictions=_split_batch_predictions(np.asarray(pred), 1)[0],
+                                                   class_labels=m.class_labels, ratio=ratio, padding=pad,
+                                                   score_threshold=m.conf_thresh))
+        return out
+
+    def __call__(self, img, tiles=True):
         cv2 = self.cv2
         h, w = img.shape[:2]
         out = []
@@ -68,10 +86,12 @@ class Detector:
         # image entière (plaques proches, qui chevauchent deux tuiles) + tuiles 2×2 avec
         # recouvrement (plaques de moto lointaines : ~2 % de la largeur)
         ov = 100
-        views = [(0, 0, img)] + [(tx, ty, np.ascontiguousarray(img[ty:ty + h // 2 + ov, tx:tx + w // 2 + ov]))
-                                 for ty in (0, h // 2 - ov) for tx in (0, w // 2 - ov)]
+        views = [(0, 0, img)]
+        if tiles:
+            views += [(tx, ty, np.ascontiguousarray(img[ty:ty + h // 2 + ov, tx:tx + w // 2 + ov]))
+                      for ty in (0, h // 2 - ov) for tx in (0, w // 2 - ov)]
         boxes = []
-        for (tx, ty, _), dets in zip(views, self.plates.predict([v for _, _, v in views])):   # un seul lot
+        for (tx, ty, _), dets in zip(views, self._plates([v for _, _, v in views])):
             for d in dets:
                 b = d.bounding_box
                 boxes.append([b.x1 + tx, b.y1 + ty, b.width, b.height, float(d.confidence)])
@@ -492,7 +512,7 @@ def analyze_clip(render_h264, times, mats, fovs, sid, clip_id, detector, progres
                 else:
                     t["lost"] += 1
         else:
-            dets = detector(img)
+            dets = detector(img, tiles=(fi // DETECT_EVERY) % TILES_EVERY == 0)
             for kind, conf, *box in dets:   # petite vue de chaque zone, pour la vignette de revue
                 x, y, w, h = box
                 m = 0.6 * max(w, h)
