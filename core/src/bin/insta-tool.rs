@@ -5,6 +5,9 @@ use anyhow::{bail, Context, Result};
 use insta_core::{analyze, automontage, geometry, horizon, hyperlapse, insta360, musiclib, paths};
 use serde_json::json;
 
+#[path = "insta-tool/privacy.rs"]
+mod privacy_tool;
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -80,7 +83,8 @@ fn main() -> Result<()> {
             println!("{}", json!({"summary": hyperlapse::summary(&r, d), "density": hyperlapse::density(&r, d),
                                   "times": hyperlapse::frame_times(&r, d)}));
         }
-        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER... | horizon SESSION DOSSIER... | hyperlapse CACHE.json DURÉE"),
+        Some(c) if c.starts_with("privacy-") => privacy_tool::run(&args)?,
+        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER... | horizon SESSION DOSSIER... | hyperlapse CACHE.json DURÉE | privacy-… (voir insta-tool/privacy.rs)"),
     }
     Ok(())
 }
