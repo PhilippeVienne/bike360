@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use insta_core::{analyze, geometry, horizon, hyperlapse, insta360, paths};
+use insta_core::{analyze, automontage, geometry, horizon, hyperlapse, insta360, paths};
 use serde_json::json;
 
 fn main() -> Result<()> {
@@ -57,6 +57,17 @@ fn main() -> Result<()> {
             // emission IMAGE.gray : émissions processeur d'une image 1024×512 en niveaux de gris
             let img: Vec<f32> = std::fs::read(&args[2])?.iter().map(|v| *v as f32).collect();
             println!("{}", serde_json::to_string(&horizon::emission(&img, None))?);
+        }
+        Some("automontage") => {
+            // automontage DURÉE CACHE.json... : plan sans clips existants (identifiants masqués)
+            let mut results = std::collections::BTreeMap::new();
+            for p in &args[3..] {
+                let r: analyze::Analysis = serde_json::from_reader(std::fs::File::open(p)?)?;
+                results.insert(r.id.clone(), r);
+            }
+            let mut plan = automontage::plan(&results, args[2].parse()?, &Default::default(), 0.6);
+            plan.values_mut().flatten().for_each(|c| c.id = None);
+            println!("{}", serde_json::to_string(&plan)?);
         }
         Some("hyperlapse") => {
             // hyperlapse CACHE.json DURÉE : résumé et instants des images
