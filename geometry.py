@@ -54,7 +54,7 @@ def clip_horizon_mode(clip):
     return "auto" if clip.get("level") else "aucun"
 
 
-# Courbes de transition entre deux points clés (mêmes noms et formules que ui/app.js).
+# Courbes de transition entre deux points clés (mêmes noms et formules que ui/geometry.js).
 # La courbe d'un point clé s'applique au segment qui le suit (comme l'app Insta360).
 EASINGS = {
     "linear": lambda u: u,

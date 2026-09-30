@@ -1,6 +1,6 @@
 //! Géométrie de vue : rotations, redressement de l'horizon, points clés des clips.
 //!
-//! Mêmes conventions que la visionneuse WebGL (ui/app.js) et le moteur (reproject.cu) :
+//! Mêmes conventions que la visionneuse WebGL (ui/viewer.js, ui/geometry.js) et le moteur (reproject.cu) :
 //! repère caméra x droite, y haut, z devant ; vue = rotation écran → caméra.
 
 use serde::{Deserialize, Serialize};
@@ -165,7 +165,7 @@ pub fn clip_horizon_mode(clip: &Clip) -> HorizonMode {
     }
 }
 
-/// Courbes de transition entre deux points clés (mêmes noms et formules que ui/app.js).
+/// Courbes de transition entre deux points clés (mêmes noms et formules que ui/geometry.js).
 /// La courbe d'un point clé s'applique au segment qui le suit (comme l'app Insta360).
 pub fn ease(curve: &str, u: f64) -> f64 {
     match curve {
