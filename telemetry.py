@@ -149,8 +149,8 @@ def _map_panel(result, clip, tracks, S, U):
         panel = _canvas(S, S)
         panel[..., :3] = img
         panel[..., 3] = _rounded_panel(S, S, radius, alpha=1.0)[..., 3]
-        # fond clair : autres balades gris ardoise, balade courante sombre, clip en couleur ; liseré clair
-        styles = ((70, 80, 95), 0.75), ((35, 42, 55), 1.0), (255, 255, 255)
+        # fond sombre : autres balades gris clair, balade courante blanche, clip en couleur ; liseré sombre
+        styles = ((190, 196, 205), 0.7), ((255, 255, 255), 0.95), (10, 12, 16)
     else:  # hors ligne : ancien panneau sombre, même cadrage (équirectangulaire)
         ok = ~(np.isnan(lat_all) | np.isnan(lon_all))
         lat0 = math.radians(np.nanmean(lat_all[ok]))
@@ -179,16 +179,16 @@ def _map_panel(result, clip, tracks, S, U):
         if r is not result:
             px, py = project(_raw(r, "lat"), _raw(r, "lon"))
             runs = _runs(px, py, max(1, len(px) // 600))
-            layer(runs, max(3, U * 0.005), outline, 0.45)
-            layer(runs, max(2, U * 0.0025), other_c, other_a)
+            layer(runs, max(4, U * 0.006), outline, 0.6)
+            layer(runs, max(2, U * 0.003), other_c, other_a)
     px, py = project(_raw(result, "lat"), _raw(result, "lon"))
     runs = _runs(px, py, max(1, len(px) // 800))
-    layer(runs, max(4, U * 0.0075), outline, 0.6)
-    layer(runs, max(2, U * 0.004), cur_c, cur_a)
+    layer(runs, max(5, U * 0.009), outline, 0.7)
+    layer(runs, max(3, U * 0.005), cur_c, cur_a)
     a, b = int(clip["start"]), int(min(len(px) - 1, clip["end"]))
     clip_runs = _runs(px[a:b + 1], py[a:b + 1], 1)
-    layer(clip_runs, max(6, U * 0.013), (25, 25, 35), 0.7)      # liseré sombre sous la couleur du clip
-    layer(clip_runs, max(3, U * 0.008), ACCENT)
+    layer(clip_runs, max(8, U * 0.016), (10, 12, 16), 0.8)      # liseré sombre sous la couleur du clip
+    layer(clip_runs, max(4, U * 0.01), ACCENT)
     panel[..., 3] = np.minimum(panel[..., 3], _rounded_panel(S, S, radius, alpha=1.0)[..., 3])
     return panel, project, base is not None
 
@@ -240,7 +240,7 @@ def overlay(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_ar
             for k, text in enumerate(lines):
                 y = my + S - int(S * 0.04) - (len(lines) - k) * int(fs * 1.45)
                 chain.append(f"[{label}]drawtext=fontfile={FONT}:text='{_escape(text)}':fontsize={fs}"
-                             f":fontcolor=0x333333:box=1:boxcolor=white@0.7:boxborderw=2"
+                             f":fontcolor=0xdddddd:box=1:boxcolor=black@0.5:boxborderw=2"
                              f":x={mx + S - int(S * 0.05)}-tw:y={y}[m1a{k}]")
                 label = f"m1a{k}"
         D = max(8, int(U * 0.024)) // 2 * 2

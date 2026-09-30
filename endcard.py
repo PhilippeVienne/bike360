@@ -59,7 +59,7 @@ def _map(results, size):
     img, project = base
     im = Image.fromarray(img).convert("RGB")
     d = ImageDraw.Draw(im)
-    w = max(4, size // 95)
+    w = max(5, size // 80)
     ends = []
     for lat, lon in tracks:
         x, y = project(lat, lon)
@@ -89,8 +89,8 @@ def _map(results, size):
     font = ImageFont.truetype(FONT, fs)
     text = " · ".join(basemap.ATTRIBUTION)
     tw = d.textlength(text, font=font)
-    d.rectangle((size - tw - 12, size - fs - 10, size, size), fill=(255, 255, 255))
-    d.text((size - tw - 6, size - fs - 7), text, font=font, fill=(60, 60, 60))
+    d.rectangle((size - tw - 12, size - fs - 10, size, size), fill=(10, 12, 16))
+    d.text((size - tw - 6, size - fs - 7), text, font=font, fill=(200, 204, 210))
     return im
 
 

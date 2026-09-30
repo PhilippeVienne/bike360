@@ -1,4 +1,4 @@
-"""Fond de carte raster pour la mini-carte des exports (tuiles OpenTopoMap : OSM + relief).
+"""Fond de carte raster sombre pour les cartes des exports (tuiles OpenStreetMap, inversées).
 
 Les tuiles sont téléchargées à la demande et gardées dans data/cache/tiles ; l'image doit
 porter l'attribution ATTRIBUTION. Projection Web Mercator, comme les tuiles.
@@ -13,25 +13,22 @@ from PIL import Image
 
 import analyze
 
-TILE_URL = "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
+TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 TILE = 256
 MAX_ZOOM = 16
 UPSCALE = 1.4         # carte agrandie : noms de lieux lisibles une fois incrustés dans la vidéo
-CACHE = analyze.CACHE / "tiles" / "opentopomap"
-ATTRIBUTION = ("© OpenStreetMap · SRTM", "© OpenTopoMap (CC-BY-SA)")  # une ligne chacune (mini-carte étroite)
+CACHE = analyze.CACHE / "tiles" / "osm"
+ATTRIBUTION = ("© contributeurs OpenStreetMap",)  # une ligne chacune (mini-carte étroite)
 USER_AGENT = "insta-build/1.0 (outil personnel de montage)"
 
 
-def stylize(img, saturation=0.35, lighten=0.28):
-    """Fond « papier » : couleurs atténuées et éclaircies, pour que les tracés ressortent.
-
-    Le relief et les noms restent lisibles (texte sombre sur fond clair)."""
-    f = img.astype(np.float32)
-    gray = f @ np.array([0.299, 0.587, 0.114], np.float32)
-    f = gray[..., None] + (f - gray[..., None]) * saturation       # désaturation partielle
-    f = f * (1 - lighten) + 255 * lighten                            # éclaircissement
-    f = (f - 128) * 0.92 + 128 + 6                                   # contraste adouci
-    return np.clip(f, 0, 255).astype(np.uint8)
+def stylize(img, saturation=0.4, brightness=0.72):
+    """Fond sombre et sobre : carte OSM inversée, teinte retournée (l'eau reste bleue, les
+    forêts vert sombre), couleurs atténuées. Routes et noms deviennent clairs sur fond sombre."""
+    inv = 255 - img.astype(np.float32)
+    g = inv @ np.array([0.299, 0.587, 0.114], np.float32)
+    f = g[..., None] - (inv - g[..., None]) * saturation
+    return np.clip(f * brightness + 8, 0, 255).astype(np.uint8)
 
 
 def _world(lat, lon, z):
@@ -46,7 +43,7 @@ def _world(lat, lon, z):
 def _tile(z, x, y):
     path = CACHE / str(z) / str(x) / f"{y}.png"
     if not path.exists():
-        url = TILE_URL.format(s="abc"[(x + y) % 3], z=z, x=x, y=y)
+        url = TILE_URL.format(z=z, x=x, y=y)
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=20) as r:
             data = r.read()
