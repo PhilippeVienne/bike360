@@ -1737,6 +1737,50 @@ async function autoMontage(clear) {
 $("#auto-make").addEventListener("click", () => autoMontage(false));
 $("#auto-clear").addEventListener("click", () => autoMontage(true));
 
+// bibliothèque de musiques libres (CC BY) : recherche, écoute, choix
+const lib = $("#lib"), libAudio = $("#lib-audio");
+let libMood = "Driving", libTimer = null;
+async function libSearch() {
+  const q = $("#lib-q").value.trim();
+  $("#lib-list").innerHTML = "<li class='hint'>Recherche…</li>";
+  const r = await fetch(`/api/music/library?mood=${encodeURIComponent(libMood)}&q=${encodeURIComponent(q)}`).then((x) => x.json());
+  if (r.error) { $("#lib-list").innerHTML = `<li class="hint">⚠ ${esc(r.error)}</li>`; return; }
+  $("#lib-moods").innerHTML = [["", "Toutes"], ...Object.entries(r.moods)].map(([k, v]) =>
+    `<button data-mood="${k}" class="${k === libMood ? "active" : ""}">${v}</button>`).join("");
+  $("#lib-list").innerHTML = r.pieces.length ? r.pieces.map((p) => `<li data-f="${esc(p.filename)}" data-src="${esc(p.preview)}">
+      <button data-play title="Écouter">▶</button>
+      <div><div class="t">${esc(p.title)}</div><div class="m">${fmt(p.seconds)}${p.bpm ? ` · ${p.bpm} bpm` : ""} · ${esc(p.feel)}${r.credits[p.filename] ? " · ✓ déjà téléchargée" : ""}</div>
+        <div class="d" title="${esc(p.description)}">${esc(p.description || p.instruments)}</div></div>
+      <button data-use class="primary">Utiliser</button></li>`).join("") : "<li class='hint'>Aucun résultat.</li>";
+}
+$("#lib-open").addEventListener("click", () => { lib.showModal(); libSearch(); });
+lib.addEventListener("close", () => libAudio.pause());
+lib.addEventListener("click", async (e) => {
+  if (e.target === lib || e.target.closest("[data-close]")) return lib.close();
+  const mood = e.target.closest("[data-mood]");
+  if (mood) { libMood = mood.dataset.mood; return libSearch(); }
+  const li = e.target.closest("#lib-list li");
+  if (!li) return;
+  if (e.target.closest("[data-play]")) {
+    const same = libAudio.src === li.dataset.src && !libAudio.paused;
+    document.querySelectorAll("#lib-list li").forEach((x) => { x.classList.remove("playing"); x.querySelector("[data-play]") && (x.querySelector("[data-play]").textContent = "▶"); });
+    if (same) { libAudio.pause(); return; }
+    libAudio.src = li.dataset.src; libAudio.play();
+    li.classList.add("playing"); e.target.textContent = "❚❚";
+  }
+  if (e.target.closest("[data-use]")) {
+    e.target.disabled = true; e.target.textContent = "Téléchargement…";
+    const r = await fetch("/api/music/library", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                  body: JSON.stringify({ filename: li.dataset.f }) }).then((x) => x.json());
+    if (r.error) { e.target.textContent = "⚠ échec"; $("#fin-status").textContent = "⚠ " + r.error; return; }
+    await api("PUT", "/api/project", { style: { music: r.name } });
+    st.project.style = { ...st.project.style, music: r.name };
+    $("#fin-status").textContent = `✓ ${r.name} — crédit ajouté à la fin du montage`;
+    libAudio.pause(); lib.close(); renderFinish();
+  }
+});
+$("#lib-q").addEventListener("input", () => { clearTimeout(libTimer); libTimer = setTimeout(libSearch, 350); });
+
 async function saveMontage(clips) {
   st.project.clips = clips;
   renderMontage();

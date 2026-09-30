@@ -94,15 +94,15 @@ def _map(results, size):
     return im
 
 
-def render(results, W, H, path, title=""):
-    """Image W×H de la carte de fin → `path`."""
+def render(results, W, H, path, title="", credits=()):
+    """Image W×H de la carte de fin → `path` ; `credits` : lignes (musique) en bas de l'image."""
     s = summary(results)
     im = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(im)
     U = min(W, H)
     landscape = W > H * 1.2   # 16:9 : carte à gauche, chiffres à droite ; carré et vertical : l'un sous l'autre
     square = not landscape and H < W * 1.2
-    msize = int(H * 0.78) if landscape else int(W * (0.52 if square else 0.82))
+    msize = int(H * 0.78) if landscape else int(W * ((0.42 if credits else 0.52) if square else 0.82))
     k = 0.8 if square else 1.0 if landscape else 1.2   # taille du texte selon la place disponible
     mp = _map(results, msize)
     if landscape:
@@ -139,5 +139,16 @@ def render(results, W, H, path, title=""):
         vw = d.textlength(value + "  ", font=mid)
         d.text((tx + vw, y + int(U * 0.016 * k)), label, font=small, fill=(220, 224, 230))
         y += int(U * 0.075 * k)
+    if credits:   # crédit de la musique (licence CC BY) : sous les chiffres, discret mais lisible
+        size = int(U * 0.024 * k)
+        cf = ImageFont.truetype(FONT, max(12, size))
+        room = W - tx - int(U * 0.04)
+        while size > 12 and max(d.textlength(line, font=cf) for line in credits) > room:   # tient dans la colonne
+            size -= 1
+            cf = ImageFont.truetype(FONT, size)
+        y += int(U * 0.05 * k)
+        for line in credits:
+            d.text((tx, y), line, font=cf, fill=(160, 166, 176))
+            y += int(size * 1.45)
     im.save(path)
     return s

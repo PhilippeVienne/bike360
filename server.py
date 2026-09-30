@@ -27,6 +27,7 @@ import geometry
 import horizon
 import hyperlapse
 import insta360
+import musiclib
 import privacy
 import telemetry
 
@@ -577,13 +578,14 @@ def run_export(key, clips, quality, opts):
                                 "-i", str(out_dir / f"clip_{i:03d}.txt"), "-c", "copy", str(joined)], check=True)
                 clip_files.append(joined)
             music = MUSIC / style["music"] if style["music"] in music_files() else None
+            credits = musiclib.credit_lines(style["music"]) if music else []
             card = None
             if style["end_card"]:
                 card = out_dir / "fin.png"
-                endcard.render([state["sessions"][x][1] for x in sids], out_w, out_h, card, style["title"])
+                endcard.render([state["sessions"][x][1] for x in sids], out_w, out_h, card, style["title"], credits)
             job["message"] = "transitions, titre, musique"
             finishing.finish(clip_files, final, style, encoder_args(q), out_w, out_h, music, q.get("audio", "160k"),
-                             end_card=card)
+                             end_card=card, credits=credits)
         else:
             listing = out_dir / "concat.txt"
             listing.write_text("".join(f"file '{f.name}'\n" for _, f in files))
@@ -1108,6 +1110,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(privacy.THUMBS / Path(parts[1]).name, "image/jpeg")
         if path == "/api/music":
             return self._json(music_files())
+        if path == "/api/music/library":
+            from urllib.parse import parse_qs
+            qs = {k: v[0] for k, v in parse_qs(self.path.partition("?")[2]).items()}
+            try:
+                return self._json({"moods": musiclib.MOODS, "credits": musiclib.credits(),
+                                   "pieces": musiclib.search(qs.get("q", ""), qs.get("mood", ""))})
+            except Exception as e:
+                return self._json({"error": f"catalogue indisponible : {e}"}, 502)
         if path == "/api/sources":
             return self._json({"scan": state["scan"], "folders": [
                 {"path": f, "present": Path(f).is_dir(), "removable": f != state["dcim"],
@@ -1177,6 +1187,13 @@ class Handler(BaseHTTPRequestHandler):
         parts = self.path.strip("/").split("/")
         if parts == ["api", "sources"]:
             return self._sources(self._body() or {})
+        if parts == ["api", "music", "library"]:
+            body = self._body() or {}
+            try:
+                name = musiclib.download(str(body.get("filename", "")))
+            except Exception as e:
+                return self._json({"error": f"téléchargement impossible : {e}"}, 502)
+            return self._json({"ok": True, "name": name})
         if parts[:2] == ["api", "music"]:
             return self._music_upload()
         if parts == ["api", "montage"]:

@@ -39,7 +39,7 @@ def _probe(path):
 
 
 def finish(clip_files, final, style, encoder_args, W, H, music_path=None, audio_bitrate="160k", run=subprocess.run,
-           end_card=None):
+           end_card=None, credits=()):
     """Assemble les clips (dans l'ordre) avec transitions, titre et musique → `final`.
 
     `end_card` : image de fin (PNG W×H) affichée END_CARD_S secondes après le dernier clip.
@@ -92,6 +92,16 @@ def finish(clip_files, final, style, encoder_args, W, H, music_path=None, audio_
                          f":alpha='{alpha}':shadowcolor=black@0.55:shadowx=3:shadowy=3"
                          f":x=(w-tw)/2:y=h*0.42-th/2+{dy:.0f}:enable='lt(t,5.3)'[t{k}]")
             v = f"t{k}"
+
+    if credits and not end_card:   # crédit de la musique incrusté sur les dernières secondes
+        U = min(W, H)
+        fs, lh = max(14, int(U * 0.026)), int(U * 0.036)
+        for k, line in enumerate(credits):
+            y = H - int(U * 0.05) - lh * (len(credits) - k)
+            graph.append(f"[{v}]drawtext=fontfile={FONT}:text='{_escape(line)}':fontsize={fs}:fontcolor=white"
+                         f":shadowcolor=black@0.7:shadowx=2:shadowy=2:x=(w-tw)/2:y={y}"
+                         f":enable='gte(t,{max(0.0, total - 6):.2f})'[c{k}]")
+            v = f"c{k}"
 
     if music_path:
         m = n

@@ -379,3 +379,20 @@ main > aside { grid-column: 3; }
 .auto-row select { flex: 1 1 0; min-width: 0; font-size: 12px; padding: 2px 4px; }
 .auto-row button { padding: 2px 8px; font-size: 12px; }
 .badge.auto { border-color: #a78bfa; color: #a78bfa; }
+
+/* bibliothèque de musiques libres */
+#lib { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
+  width: min(640px, calc(100vw - 16px)); max-height: 85vh; padding: 12px 14px; }
+#lib::backdrop { background: rgba(0,0,0,.55); }
+#lib[open] { display: flex; flex-direction: column; gap: 8px; }
+.lib-moods { display: flex; flex-wrap: wrap; gap: 4px; }
+.lib-moods button { padding: 2px 10px; border-radius: 999px; font-size: 12px; }
+#lib-q { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+#lib-list { list-style: none; margin: 0; padding: 0; overflow: auto; display: flex; flex-direction: column; gap: 4px; min-height: 120px; }
+#lib-list li { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 6px;
+  border: 1px solid var(--line); border-radius: 8px; }
+#lib-list li.playing { border-color: var(--accent); }
+#lib-list .t { font-weight: 600; }
+#lib-list .m { font-size: 11px; color: var(--muted); }
+#lib-list .d { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#lib-list button { padding: 2px 8px; }

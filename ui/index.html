@@ -120,6 +120,7 @@
           <label>Musique
             <select data-style="music" id="fin-music"><option value="">aucune</option></select>
             <label class="upload" title="Envoyer un fichier audio (mp3, m4a, wav…)">＋<input type="file" id="fin-upload" accept="audio/*" hidden></label></label>
+          <button id="lib-open" title="Musiques libres (CC BY) de Kevin MacLeod, créditées à la fin du montage">🎵 Bibliothèque libre</button>
           <label class="slider" title="Volume de la musique">musique <input data-style="music_volume" type="range" min="0" max="1.5" step="0.05"></label>
           <label class="slider" title="Son d'origine (moteur, vent) sous la musique">son d'origine <input data-style="original_volume" type="range" min="0" max="1.5" step="0.05"></label>
           <label title="Carte des balades et statistiques (km, dénivelé, durée, vitesse max) pendant 5 s à la fin"><input type="checkbox" data-style="end_card"> carte de fin + stats</label>
@@ -268,6 +269,14 @@
       <p>glisser les bords d'un clip pour l'ajuster</p><p>glisser un ◆ pour déplacer un point clé</p>
       <p>molette : zoom · <kbd>0</kbd> : tout afficher</p></section>
   </div>
+</dialog>
+<dialog id="lib">
+  <div class="help-head"><strong>Musiques libres (CC BY 4.0)</strong><div class="spacer"></div><button data-close>✕</button></div>
+  <p class="hint">Catalogue de Kevin MacLeod (incompetech.com). Le crédit exigé par la licence est ajouté automatiquement à la fin du montage.</p>
+  <div id="lib-moods" class="lib-moods"></div>
+  <input id="lib-q" type="search" placeholder="Chercher (guitare, rock, piano…)" spellcheck="false">
+  <ol id="lib-list"></ol>
+  <audio id="lib-audio" preload="none"></audio>
 </dialog>
 <video id="video" playsinline crossorigin="anonymous" preload="auto"></video>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
