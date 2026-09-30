@@ -355,3 +355,23 @@ main > aside { grid-column: 3; }
   .export > button, .export > details { flex: 1 1 auto; }
 }
 @media (max-width: 820px) { #sync-badge { display: none; } }
+
+/* barre de défilement de la frise (souris et doigt) */
+.tl-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px 6px; }
+.tl-bar button { padding: 0 10px; min-width: 32px; }
+#tl-scroll { position: relative; flex: 1; height: 16px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); touch-action: none; cursor: grab; }
+#tl-thumb { position: absolute; top: 1px; bottom: 1px; border-radius: 7px; background: var(--muted); opacity: .6; min-width: 14px; }
+#tl-scroll:hover #tl-thumb, #tl-scroll.dragging #tl-thumb { opacity: .9; }
+#drawer-backdrop { display: none; }
+@media (max-width: 820px) {
+  #tl-scroll { height: 26px; border-radius: 13px; }
+  #tl-thumb { border-radius: 12px; }
+  .tl-bar button { min-height: 34px; }
+  /* ☰ : le panneau Projet devient un tiroir à gauche, par-dessus la page */
+  #project, body.no-project #project { display: none; }
+  body.project-open #project { display: flex; position: fixed; z-index: 3000; left: 0; top: 0; bottom: 0;
+    width: min(88vw, 380px); overflow: auto; background: var(--bg); border-right: 1px solid var(--line);
+    box-shadow: 8px 0 30px rgba(0,0,0,.5); }
+  body.project-open #drawer-backdrop { display: block; position: fixed; inset: 0; z-index: 2999; background: rgba(0,0,0,.5); }
+  body.project-open #project-toggle { border-color: var(--accent); color: var(--accent); }
+}

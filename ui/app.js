@@ -641,7 +641,46 @@ function heat(v) {  // 0 → sombre, 1 → ambre vif
   return `rgba(245,165,36,${(a * a).toFixed(3)})`;
 }
 
+// barre de défilement : partie visible de la frise ; glisser = défiler, appui ailleurs = y centrer
+function updateTlScroll() {
+  if (!st.s) return;
+  const n = st.s.duration, th = $("#tl-thumb");
+  th.style.left = (st.tl.v0 / n * 100) + "%";
+  th.style.width = ((st.tl.v1 - st.tl.v0) / n * 100) + "%";
+}
+function panTimeline(v0) {
+  const span = st.tl.v1 - st.tl.v0;
+  v0 = Math.max(0, Math.min(st.s.duration - span, v0));
+  st.tl = { v0, v1: v0 + span };
+}
+function zoomTimeline(k, center) {
+  const span = Math.max(30, Math.min(st.s.duration, (st.tl.v1 - st.tl.v0) * k));
+  const v0 = Math.max(0, Math.min(st.s.duration - span, center - span / 2));
+  st.tl = { v0, v1: v0 + span };
+}
+{
+  const bar = $("#tl-scroll");
+  let grab = null;
+  const tAt = (e) => (e.clientX - bar.getBoundingClientRect().left) / bar.clientWidth * st.s.duration;
+  bar.addEventListener("pointerdown", (e) => {
+    if (!st.s) return;
+    const t = tAt(e);
+    if (t < st.tl.v0 || t > st.tl.v1) panTimeline(t - (st.tl.v1 - st.tl.v0) / 2);   // appui hors du curseur
+    grab = { dt: t - st.tl.v0 };
+    bar.classList.add("dragging");
+    bar.setPointerCapture(e.pointerId);
+  });
+  bar.addEventListener("pointermove", (e) => { if (grab) panTimeline(tAt(e) - grab.dt); });
+  const end = () => { grab = null; bar.classList.remove("dragging"); };
+  bar.addEventListener("pointerup", end);
+  bar.addEventListener("pointercancel", end);
+  $("#tl-zoom-in").addEventListener("click", () => st.s && zoomTimeline(0.5, now()));
+  $("#tl-zoom-out").addEventListener("click", () => st.s && zoomTimeline(2, (st.tl.v0 + st.tl.v1) / 2));
+  $("#tl-all").addEventListener("click", () => st.s && (st.tl = { v0: 0, v1: st.s.duration }));
+}
+
 function drawTimeline() {
+  updateTlScroll();
   const w = tl.clientWidth, h = tl.clientHeight, dpr = devicePixelRatio;
   if (tl.width !== w * dpr || tl.height !== h * dpr) { tl.width = w * dpr; tl.height = h * dpr; }
   tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1440,8 +1479,13 @@ $("#file-list").addEventListener("click", async (e) => {
     return refreshSessions();
   }
   if (!st.s || card.dataset.sid !== st.s.id) await loadSession(card.dataset.sid);
+  if (narrow()) closeDrawer();
 });
+const narrow = () => matchMedia("(max-width: 820px)").matches;
+const closeDrawer = () => document.body.classList.remove("project-open");
+$("#drawer-backdrop").addEventListener("click", closeDrawer);
 $("#project-toggle").addEventListener("click", () => {
+  if (narrow()) { document.body.classList.toggle("project-open"); return; }   // téléphone : tiroir
   document.body.classList.toggle("no-project");
   try { localStorage.setItem("noProject", document.body.classList.contains("no-project") ? "1" : ""); } catch (e) { /* stockage indisponible */ }
 });
