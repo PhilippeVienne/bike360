@@ -60,7 +60,7 @@ pub fn tilt_matrix(tilt: Option<&Tilt>) -> Mat3 {
 pub fn min_rotation(up: [f64; 3]) -> Mat3 {
     let n = (up[0] * up[0] + up[1] * up[1] + up[2] * up[2]).sqrt();
     let u = up.map(|x| x / n);
-    let axis = [-u[2], 0.0, u[0]]; // y × u
+    let axis = [u[2], 0.0, -u[0]]; // y × u
     let s = (axis[0] * axis[0] + axis[2] * axis[2]).sqrt();
     let c = u[1];
     if s < 1e-9 {

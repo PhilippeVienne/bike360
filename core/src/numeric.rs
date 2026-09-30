@@ -20,7 +20,9 @@ pub fn smooth(x: &[f64], n: usize) -> Vec<f64> {
             let k = i + shift; // indice dans la convolution complète (longueur m + n − 1)
             let lo = k.saturating_sub(n - 1);
             let hi = k.min(m - 1);
-            (lo..=hi).map(|j| x[j]).sum::<f64>() * w
+            // produits puis somme dans l'ordre, comme np.convolve (au bit près jusqu'à ~16 termes ;
+            // au-delà NumPy passe par BLAS vectorisé : écarts de l'ordre de l'ulp)
+            (lo..=hi).fold(0.0, |s, j| s + x[j] * w)
         })
         .collect()
 }
@@ -101,7 +103,9 @@ pub fn interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
     if x == x1 {
         return fp[j];
     }
-    fp[j - 1] + (fp[j] - fp[j - 1]) * (x - x0) / (x1 - x0)
+    // même ordre d'opérations que NumPy (pente, puis décalage)
+    let slope = (fp[j] - fp[j - 1]) / (x1 - x0);
+    slope * (x - x0) + fp[j - 1]
 }
 
 /// Déroulement d'angles en radians (np.unwrap).
