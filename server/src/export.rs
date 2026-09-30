@@ -18,7 +18,8 @@ use insta_core::{chapters, draw, endcard, finishing, hyperlapse, musiclib, ramp}
 use serde_json::{json, Map, Value};
 
 use crate::app::{exports_dir, music_dir, render_bin, thumbs_dir, App, Job};
-use crate::{pending, pyjson};
+use crate::{privacy, pyjson};
+use insta_core::privacy::Track;
 
 /// Objectifs X5 : ~195° utiles par fisheye (v360 dfisheye : yaw 0 = moitié droite du .lrv).
 pub const LENS_FOV: f64 = 195.0;
@@ -254,7 +255,7 @@ fn source_size(path: &Path, source: &str) -> Result<(u32, u32)> {
 }
 
 /// Cadence d'une vidéo : fraction réduite (texte comme `str(Fraction)`) et valeur.
-fn source_fps(path: &Path) -> Result<(String, f64)> {
+pub(crate) fn source_fps(path: &Path) -> Result<(String, f64)> {
     let o = Command::new("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0"])
         .arg(path).output()?;
@@ -297,7 +298,7 @@ pub fn level_matrix_at(clip: &Clip, result: &Analysis, horizon_data: Option<&Hor
 }
 
 /// (t relatif au morceau, rotation écran → caméra, champ horizontal °) pour chaque image.
-fn part_targets(clip: &Clip, result: &Analysis, horizon_data: Option<&HorizonData>, seg_offset: f64, ss: f64, dur: f64,
+pub(crate) fn part_targets(clip: &Clip, result: &Analysis, horizon_data: Option<&HorizonData>, seg_offset: f64, ss: f64, dur: f64,
                 fd: f64) -> Vec<(f64, Mat3, f64)> {
     let n = (dur / fd).ceil() as usize + 1;
     (0..n).map(|i| {
@@ -358,12 +359,12 @@ pub fn clip_parts<'a>(session: &'a Session, result: &Analysis, start: f64, end: 
     }).collect()
 }
 
-fn seg_offset(result: &Analysis, seg: &Segment) -> Result<f64> {
+pub(crate) fn seg_offset(result: &Analysis, seg: &Segment) -> Result<f64> {
     result.segments.iter().find(|x| x.index == seg.index).map(|x| x.offset).context("segment inconnu")
 }
 
 /// Lance un processus d'export et suit sa progression (lignes de sa sortie standard).
-fn run_part_process(job: &Job, cmd: &[String], mut on_line: impl FnMut(&str)) -> Result<()> {
+pub(crate) fn run_part_process(job: &Job, cmd: &[String], mut on_line: impl FnMut(&str)) -> Result<()> {
     let mut child = Command::new(&cmd[0]).args(&cmd[1..]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
         .with_context(|| format!("lancement de {}", cmd[0]))?;
     let pid = child.id();
@@ -442,7 +443,7 @@ fn export_part_ffmpeg(app: &App, job: &Job, clip: &Clip, result: &Analysis, hori
 /// (zones floutées, incrustations) ; `accéléré` : temps non linéaires (points de vitesse).
 type Effects<'a> = &'a dyn Fn(&[f64], &[Mat3], &[f64], f64, bool) -> Result<Map<String, Value>>;
 
-fn flat(m: &Mat3) -> Vec<f64> {
+pub(crate) fn flat(m: &Mat3) -> Vec<f64> {
     m.iter().flatten().copied().collect()
 }
 
@@ -612,20 +613,6 @@ fn settings_masks(settings: &Value) -> Vec<[f64; 4]> {
         .collect()
 }
 
-fn enabled_tracks(sid: &str, clip_id: Option<&Value>) -> Vec<Value> {
-    let data = pending::privacy_load(sid);
-    let entry = clip_id.and_then(|id| data.get(&pyjson::py_str(id)));
-    pending::privacy_all_tracks(entry)
-}
-
-/// Clips jamais analysés, ou dont le cadrage a changé depuis l'analyse.
-fn privacy_pending(clips: &[(String, Map<String, Value>)]) -> Vec<(String, Map<String, Value>)> {
-    clips.iter().filter(|(sid, c)| {
-        let data = pending::privacy_load(sid);
-        let key = c.get("id").and_then(|id| data.get(&pyjson::py_str(id))).and_then(|e| e.get("key")).cloned();
-        key != Some(Value::String(pending::privacy_view_key(c)))
-    }).cloned().collect()
-}
 
 /// Exporte une liste de clips [(session, clip)] dans l'ordre donné (une session ou un montage).
 pub fn run_export(app: Arc<App>, job: Arc<Job>, key: String, clips: Vec<(String, Map<String, Value>)>, quality: String,
@@ -662,10 +649,9 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
     job.set("engine", engine);
     if blur_on {
         // floutage demandé : aucun clip ne doit échapper à l'analyse (ajouté ou recadré depuis)
-        let todo = privacy_pending(clips);
+        let todo = privacy::pending(clips);
         if !todo.is_empty() {
-            pending::analyze_privacy(app, job, &todo, false,
-                                     &format!("confidentialité ({} clip(s) à analyser) · ", todo.len()))?;
+            privacy::analyze(app, job, &todo, false, &format!("confidentialité ({} clip(s) à analyser) · ", todo.len()))?;
         }
     }
     let out_dir = exports_dir().join(key).join(&name);
@@ -708,8 +694,8 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
         job.set("message", format!("clip {}/{n_clips} ({engine})", i + 1));
         let base = done;
         let report = |t: f64| job.set("progress", ((base + t) / total).min(1.0));
-        let tracks: Vec<Value> = if blur_on {
-            enabled_tracks(sid, raw.get("id")).into_iter().filter(|t| t.get("enabled").is_none_or(telemetry::truthy)).collect()
+        let tracks: Vec<Track> = if blur_on {
+            privacy::clip_tracks(sid, raw.get("id")).into_iter().filter(Track::is_enabled).collect()
         } else {
             vec![]
         };
@@ -721,7 +707,7 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
             let effects = |times: &[f64], mats: &[Mat3], fovs: &[f64], fps: f64, ramped: bool| -> Result<Map<String, Value>> {
                 let mut extra = Map::new();
                 if !tracks.is_empty() {
-                    extra.insert("blur".into(), pending::privacy_frame_boxes(times, mats, fovs, &tracks, out_w, out_h)?);
+                    extra.insert("blur".into(), privacy::frame_boxes(times, mats, fovs, &tracks, out_w, out_h));
                 }
                 if tel_on {
                     // accéléré : temps de session de chaque image de sortie (interpolé)
@@ -753,12 +739,12 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
         let views = export_part_ffmpeg(app, job, clip, result, hdata, seg, ss, dur, &src, &q, &masks, sizes[&src], out_w,
                                        out_h, &out, &report)?;
         if blur_on {
-            let tracks = enabled_tracks(sid, raw.get("id"));
-            if tracks.iter().any(|t| t.get("enabled").is_none_or(telemetry::truthy)) {
+            let tracks = privacy::clip_tracks(sid, raw.get("id"));
+            if tracks.iter().any(Track::is_enabled) {
                 job.set("message", format!("clip {}/{n_clips} : floutage", i + 1));
                 let blurred = out.with_file_name(format!("part_{n:03}_flou.mp4"));
-                pending::privacy_blur_video(&out, &blurred, &views.0, &views.1, &views.2, &tracks, out_w, out_h,
-                                            &encoder_args(app, &q), false, job, |_| {})?;
+                privacy::blur_video(&out, &blurred, &views.0, &views.1, &views.2, &tracks, out_w, out_h,
+                                    &encoder_args(app, &q), false, job, |_| {})?;
                 std::fs::rename(&blurred, &out)?;
             }
         }
@@ -911,8 +897,8 @@ fn hyperlapse_inner(app: &App, job: &Job, sid: &str, opts: HyperOpts) -> Result<
     let tel_opts = telemetry::Options::merged(settings["telemetry"].as_object());
     let privacy_on = settings["privacy"]["enabled"].as_bool().unwrap_or(false);
     // zones déjà analysées ou tracées dans les clips de la session, + détection image par image
-    let known: Vec<Value> = if privacy_on {
-        pending::privacy_load(sid).values().flat_map(|e| pending::privacy_all_tracks(Some(e))).collect()
+    let known: Vec<Track> = if privacy_on {
+        privacy::load(sid).values().flat_map(|e| insta_core::privacy::all_tracks(Some(e))).collect()
     } else {
         vec![]
     };
@@ -1003,8 +989,8 @@ fn hyperlapse_inner(app: &App, job: &Job, sid: &str, opts: HyperOpts) -> Result<
             job.set("message", format!("fichier {}/{nseg} : floutage visages et plaques", n + 1));
             let blurred = out.with_file_name(format!("part_{n:03}_flou.mp4"));
             let count = sel.len() as f64;
-            pending::privacy_blur_video(&out, &blurred, &part_taus, &matrices, &fovs, &known, out_w, out_h, &enc, true,
-                                        job, |f| job.set("progress", ((base as f64 + f * count) / total).min(1.0)))?;
+            privacy::blur_video(&out, &blurred, &part_taus, &matrices, &fovs, &known, out_w, out_h, &enc, true, job,
+                                |f| job.set("progress", ((base as f64 + f * count) / total).min(1.0)))?;
             std::fs::rename(&blurred, &out)?;
         }
         done += sel.len();
@@ -1028,7 +1014,7 @@ fn hyperlapse_inner(app: &App, job: &Job, sid: &str, opts: HyperOpts) -> Result<
 
 /// Tâche d'analyse de confidentialité (bouton « Analyser les clips »).
 pub fn run_privacy(app: Arc<App>, job: Arc<Job>, items: Vec<(String, Map<String, Value>)>, force: bool) {
-    let r = pending::analyze_privacy(&app, &job, &items, force, "").map(|(found, skipped)| {
+    let r = privacy::analyze(&app, &job, &items, force, "").map(|(found, skipped)| {
         let mut msg = format!("{found} zone(s) détectée(s)");
         if skipped > 0 {
             msg += &format!(", {skipped} clip(s) déjà à jour");
@@ -1038,11 +1024,11 @@ pub fn run_privacy(app: Arc<App>, job: Arc<Job>, items: Vec<(String, Map<String,
     job.finish(r);
 }
 
-/// Zone tracée à la main (suivie ou fixe) : voir pending::privacy_manual_zone.
+/// Zone tracée à la main (suivie ou fixe) : voir privacy::manual_zone.
 #[allow(clippy::too_many_arguments)]
 pub fn run_manual_zone(app: Arc<App>, job: Arc<Job>, sid: String, clip: Map<String, Value>, t0: f64, d0: [f64; 3], ax: f64,
                        ay: f64, track_it: bool) {
-    let r = pending::privacy_manual_zone(&app, &job, &sid, &clip, t0, d0, ax, ay, track_it)
+    let r = privacy::manual_zone(&app, &job, &sid, &clip, t0, d0, ax, ay, track_it)
         .map(|msg| job.update(json!({"state": "done", "progress": 1.0, "message": msg})));
     job.finish(r);
 }
@@ -1069,7 +1055,7 @@ fn follow_inner(app: &App, job: &Job, sid: &str, clip_id: &str, t0: f64, d0: [f6
         .find(|c| c.get("id").and_then(Value::as_str) == Some(clip_id))
         .ok_or_else(|| anyhow!("clip introuvable"))?;
     let clip = to_clip(&raw)?;
-    let track = pending::follow_track(app, job, sid, t0, d0, ax, ay, clip.start, clip.end)?;
+    let track = privacy::track_sphere(app, job, sid, t0, d0, ax, ay, clip.start, clip.end)?;
     if track.is_empty() {
         bail!("suivi vide");
     }

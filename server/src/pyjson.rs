@@ -152,13 +152,6 @@ pub fn dumps_indent(v: &Value, n: usize) -> String {
     s
 }
 
-/// `json.dumps(v, sort_keys=True)`.
-pub fn dumps_sorted(v: &Value) -> String {
-    let mut s = String::new();
-    write(v, None, true, 0, &mut s);
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,7 +170,6 @@ mod tests {
     fn dumps_like_python() {
         let v = json!({"b": [1, 2.5, "é"], "a": {}, "c": []});
         assert_eq!(dumps(&v), r#"{"b": [1, 2.5, "\u00e9"], "a": {}, "c": []}"#);
-        assert_eq!(dumps_sorted(&v), r#"{"a": {}, "b": [1, 2.5, "\u00e9"], "c": []}"#);
         assert_eq!(dumps_indent(&json!([{"x": 1}]), 1), "[\n {\n  \"x\": 1\n }\n]");
     }
 }

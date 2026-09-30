@@ -889,9 +889,11 @@ pub fn write_jpeg(img: &Image, path: &Path) -> Result<()> {
 /// (VitTrack), et chaque détection recale son suiveur. Le flou suit donc le mouvement de près
 /// et tient l'objet quand la détection le rate un instant (bord d'image, cahots, flou).
 /// Retourne les pistes (avec vignette de la meilleure détection, écrite dans `thumbs_dir`).
+/// `progress(f)` (0 à 1) est appelé à chaque image ; une erreur qu'il retourne (annulation)
+/// interrompt l'analyse.
 #[allow(clippy::too_many_arguments)]
 pub fn analyze_clip(render: &Path, times: &[f64], mats: &[Mat3], fovs: &[f64], sid: &str, clip_id: &str,
-                    detector: &mut Detector, progress: Option<&dyn Fn(f64)>) -> Result<Vec<Track>> {
+                    detector: &mut Detector, progress: Option<&dyn Fn(f64) -> Result<()>>) -> Result<Vec<Track>> {
     let n = times.len();
     let fps = if n > 1 { (n - 1) as f64 / (times[n - 1] - times[0]).max(1e-6) } else { 30.0 };
     let keep = (TRACK_KEEP_S * fps) as usize;
@@ -1004,7 +1006,7 @@ pub fn analyze_clip(render: &Path, times: &[f64], mats: &[Mat3], fovs: &[f64], s
             }
         }
         if let Some(p) = progress {
-            p(fi as f64 / n as f64);
+            p(fi as f64 / n as f64)?;
         }
     }
     drop(reader);
@@ -1090,11 +1092,12 @@ fn frame_rate(src: &Path) -> String {
 ///
 /// Avec `detector` (résumé hyperlapse : images trop espacées pour un suivi), chaque image est
 /// aussi analysée et ses détections floutées, avec celles des images voisines.
-/// Retourne le nombre d'images modifiées. Le son est recopié tel quel.
+/// Retourne le nombre d'images modifiées. Le son est recopié tel quel. `progress(f)` (0 à 1) :
+/// une erreur qu'il retourne (annulation) interrompt le floutage.
 #[allow(clippy::too_many_arguments)]
 pub fn blur_video(src: &Path, dst: &Path, times: &[f64], mats: &[Mat3], fovs: &[f64], tracks: &[Track], w: usize,
                   h: usize, encoder_args: &[String], mut detector: Option<&mut Detector>,
-                  progress: Option<&dyn Fn(f64)>) -> Result<usize> {
+                  progress: Option<&dyn Fn(f64) -> Result<()>>) -> Result<usize> {
     let rate = frame_rate(src);
     let mut dec = FrameReader::open(src, w, h)?;
     let mut enc = Command::new("ffmpeg")
@@ -1169,7 +1172,12 @@ pub fn blur_video(src: &Path, dst: &Path, times: &[f64], mats: &[Mat3], fovs: &[
             head += 1;
         }
         if let (Some(p), true) = (progress, n > 0) {
-            p((fi as f64 / n as f64).min(1.0));
+            if let Err(e) = p((fi as f64 / n as f64).min(1.0)) {
+                drop(stdin);
+                let _ = enc.kill();
+                let _ = enc.wait();
+                return Err(e);
+            }
         }
     }
     while head < fi {

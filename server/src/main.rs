@@ -5,12 +5,11 @@
 
 mod app;
 mod export;
-mod pending;
+mod privacy;
 mod pyjson;
 mod routes;
 
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -39,8 +38,7 @@ struct Args {
 async fn main() -> Result<()> {
     let a = Args::parse();
     let app = App::new(a.dcim.clone());
-    let nvenc = app.nvenc_available();
-    pending::NVENC.store(nvenc, Ordering::SeqCst);
+    app.nvenc_available();
     println!("Analyse des sessions…");
     {
         let app = app.clone();
