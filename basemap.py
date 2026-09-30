@@ -22,6 +22,18 @@ ATTRIBUTION = ("© OpenStreetMap · SRTM", "© OpenTopoMap (CC-BY-SA)")  # une l
 USER_AGENT = "insta-build/1.0 (outil personnel de montage)"
 
 
+def stylize(img, saturation=0.35, lighten=0.28):
+    """Fond « papier » : couleurs atténuées et éclaircies, pour que les tracés ressortent.
+
+    Le relief et les noms restent lisibles (texte sombre sur fond clair)."""
+    f = img.astype(np.float32)
+    gray = f @ np.array([0.299, 0.587, 0.114], np.float32)
+    f = gray[..., None] + (f - gray[..., None]) * saturation       # désaturation partielle
+    f = f * (1 - lighten) + 255 * lighten                            # éclaircissement
+    f = (f - 128) * 0.92 + 128 + 6                                   # contraste adouci
+    return np.clip(f, 0, 255).astype(np.uint8)
+
+
 def _world(lat, lon, z):
     """Coordonnées pixel (monde) Web Mercator au zoom z."""
     n = TILE * 2 ** z
@@ -45,10 +57,12 @@ def _tile(z, x, y):
     return Image.alpha_composite(bg, im).convert("RGB")
 
 
-def render(lats, lons, out_size, pad=0.12):
+def render(lats, lons, out_size, pad=0.12, max_fill=1.0):
     """Carte carrée de `out_size` px englobant les points (lat, lon) ; None si tuiles indisponibles.
 
     Retourne (image RGB uint8 out_size², project(lat, lon) → (x, y) pixels dans l'image).
+    `max_fill` > 1 : agrandit encore jusqu'à ce facteur pour que les tracés remplissent la carte
+    (le zoom des tuiles est entier : sans cela la carte peut être deux fois trop large).
     """
     size = int(round(out_size / UPSCALE))
     lats, lons = np.asarray(lats, float), np.asarray(lons, float)
@@ -64,6 +78,8 @@ def render(lats, lons, out_size, pad=0.12):
             break
         z -= 1
     x, y = _world(lats, lons, z)
+    fill = max(1.0, min(max_fill, usable / max(np.ptp(x), np.ptp(y), 1e-9)))
+    size = max(16, int(round(size / fill)))
     cx, cy = (x.min() + x.max()) / 2, (y.min() + y.max()) / 2
     x0, y0 = cx - size / 2, cy - size / 2
     tx0, ty0 = int(x0 // TILE), int(y0 // TILE)
@@ -80,7 +96,7 @@ def render(lats, lons, out_size, pad=0.12):
         mosaic.paste(im, ((tx - tx0) * TILE, (ty - ty0) * TILE))
     ox, oy = int(round(x0 - tx0 * TILE)), int(round(y0 - ty0 * TILE))
     crop = mosaic.crop((ox, oy, ox + size, oy + size)).resize((out_size, out_size), Image.LANCZOS)
-    img = np.asarray(crop)
+    img = stylize(np.asarray(crop))
     k = out_size / size
 
     def project(lat, lon):

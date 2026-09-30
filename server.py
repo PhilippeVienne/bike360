@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 
 import analyze
+import endcard
 import finishing
 import geometry
 import horizon
@@ -575,8 +576,13 @@ def run_export(key, clips, quality, opts):
                                 "-i", str(out_dir / f"clip_{i:03d}.txt"), "-c", "copy", str(joined)], check=True)
                 clip_files.append(joined)
             music = MUSIC / style["music"] if style["music"] in music_files() else None
+            card = None
+            if style["end_card"]:
+                card = out_dir / "fin.png"
+                endcard.render([state["sessions"][x][1] for x in sids], out_w, out_h, card, style["title"])
             job["message"] = "transitions, titre, musique"
-            finishing.finish(clip_files, final, style, encoder_args(q), out_w, out_h, music, q.get("audio", "160k"))
+            finishing.finish(clip_files, final, style, encoder_args(q), out_w, out_h, music, q.get("audio", "160k"),
+                             end_card=card)
         else:
             listing = out_dir / "concat.txt"
             listing.write_text("".join(f"file '{f.name}'\n" for _, f in files))

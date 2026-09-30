@@ -11,7 +11,8 @@ from telemetry import FONT, FONT_BOLD, _escape
 
 TRANSITIONS = {"aucune": None, "fondu": "fade", "noir": "fadeblack", "glisse": "slideleft"}
 DEFAULTS = {"transition": "fondu", "duration": 0.6, "title": "", "subtitle": "",
-            "music": "", "music_volume": 0.8, "original_volume": 0.35}
+            "music": "", "music_volume": 0.8, "original_volume": 0.35, "end_card": True}
+END_CARD_S = 5.0
 
 
 def clean(style):
@@ -22,12 +23,13 @@ def clean(style):
     s["music_volume"] = max(0.0, min(1.5, float(s["music_volume"])))
     s["original_volume"] = max(0.0, min(1.5, float(s["original_volume"])))
     s["title"], s["subtitle"], s["music"] = (str(s[k])[:120] for k in ("title", "subtitle", "music"))
+    s["end_card"] = bool(s["end_card"])
     return s
 
 
 def is_plain(style):
     """Rien à faire au-delà d'un simple assemblage (copie sans réencodage)."""
-    return TRANSITIONS[style["transition"]] is None and not style["title"] and not style["music"]
+    return TRANSITIONS[style["transition"]] is None and not style["title"] and not style["music"] and not style["end_card"]
 
 
 def _probe(path):
@@ -36,15 +38,26 @@ def _probe(path):
     return float(out["format"]["duration"]), any(s["codec_type"] == "audio" for s in out.get("streams", []))
 
 
-def finish(clip_files, final, style, encoder_args, W, H, music_path=None, audio_bitrate="160k", run=subprocess.run):
-    """Assemble les clips (dans l'ordre) avec transitions, titre et musique → `final`."""
+def finish(clip_files, final, style, encoder_args, W, H, music_path=None, audio_bitrate="160k", run=subprocess.run,
+           end_card=None):
+    """Assemble les clips (dans l'ordre) avec transitions, titre et musique → `final`.
+
+    `end_card` : image de fin (PNG W×H) affichée END_CARD_S secondes après le dernier clip.
+    """
     info = [_probe(f) for f in clip_files]
-    n = len(clip_files)
+    if end_card:
+        info.append((END_CARD_S, False))
+    n = len(info)
     kind = TRANSITIONS[style["transition"]]
+    if end_card and not kind:   # coupe franche entre les clips, mais fondu vers la carte de fin
+        kind = "fade"
     T = min(style["duration"], min(d for d, _ in info) / 2) if kind and n > 1 else 0.0
     inputs, graph = [], []
-    for k, (f, (d, has_audio)) in enumerate(zip(clip_files, info)):
-        inputs += ["-i", str(f)]
+    for k, (f, (d, has_audio)) in enumerate(zip([*clip_files, *([end_card] if end_card else [])], info)):
+        if end_card and k == n - 1:
+            inputs += ["-loop", "1", "-framerate", "30000/1001", "-t", f"{d:.3f}", "-i", str(f)]
+        else:
+            inputs += ["-i", str(f)]
         graph.append(f"[{k}:v]fps=30000/1001,format=yuv420p,setsar=1,settb=AVTB[v{k}]")
         if has_audio:
             graph.append(f"[{k}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{k}]")

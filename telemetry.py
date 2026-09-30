@@ -149,7 +149,8 @@ def _map_panel(result, clip, tracks, S, U):
         panel = _canvas(S, S)
         panel[..., :3] = img
         panel[..., 3] = _rounded_panel(S, S, radius, alpha=1.0)[..., 3]
-        styles = ((255, 255, 255), 0.8), ((255, 255, 255), 1.0), (25, 25, 35)
+        # fond clair : autres balades gris ardoise, balade courante sombre, clip en couleur ; liseré clair
+        styles = ((70, 80, 95), 0.75), ((35, 42, 55), 1.0), (255, 255, 255)
     else:  # hors ligne : ancien panneau sombre, même cadrage (équirectangulaire)
         ok = ~(np.isnan(lat_all) | np.isnan(lon_all))
         lat0 = math.radians(np.nanmean(lat_all[ok]))
@@ -186,7 +187,7 @@ def _map_panel(result, clip, tracks, S, U):
     layer(runs, max(2, U * 0.004), cur_c, cur_a)
     a, b = int(clip["start"]), int(min(len(px) - 1, clip["end"]))
     clip_runs = _runs(px[a:b + 1], py[a:b + 1], 1)
-    layer(clip_runs, max(5, U * 0.012), outline, 0.55)          # liseré sombre : lisible sur la carte claire
+    layer(clip_runs, max(6, U * 0.013), (25, 25, 35), 0.7)      # liseré sombre sous la couleur du clip
     layer(clip_runs, max(3, U * 0.008), ACCENT)
     panel[..., 3] = np.minimum(panel[..., 3], _rounded_panel(S, S, radius, alpha=1.0)[..., 3])
     return panel, project, base is not None

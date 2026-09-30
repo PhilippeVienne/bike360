@@ -1580,20 +1580,24 @@ async function renderFinish() {
   const sel = $("#fin-music");
   sel.innerHTML = `<option value="">aucune</option>` + music.map((m) => `<option>${esc(m)}</option>`).join("");
   document.querySelectorAll("[data-style]").forEach((el) => {
-    if (document.activeElement !== el) el.value = style[el.dataset.style] ?? "";
+    if (document.activeElement === el) return;
+    if (el.type === "checkbox") el.checked = !!style[el.dataset.style];
+    else el.value = style[el.dataset.style] ?? "";
   });
   if (style.duration !== undefined) $('[data-style="duration"]').value = String(+style.duration);
   const parts = [];
   if (style.transition && style.transition !== "aucune") parts.push($('[data-style="transition"]').selectedOptions[0].text);
   if (style.title) parts.push("titre");
   if (style.music) parts.push("musique");
+  if (style.end_card) parts.push("carte de fin");
   $("#fin-summary").textContent = parts.length ? "· " + parts.join(", ") : "· aucune";
 }
 let styleTimer = null;
 $("#mt-finish").addEventListener("input", (e) => {
   const key = e.target.dataset.style;
   if (!key) return;
-  const v = e.target.type === "range" || key === "duration" ? +e.target.value : e.target.value;
+  const v = e.target.type === "checkbox" ? e.target.checked
+    : e.target.type === "range" || key === "duration" ? +e.target.value : e.target.value;
   st.project.style = { ...st.project.style, [key]: v };
   clearTimeout(styleTimer);
   styleTimer = setTimeout(async () => { await api("PUT", "/api/project", { style: { [key]: v } }); renderFinish(); }, 400);
