@@ -661,6 +661,117 @@ def run_privacy(items, force=False):
         job.pop("proc", None)
 
 
+def render_local(job, session, result, a, b, M, fov, size):
+    """Rendu (moteur GPU) d'une vue carrée fixe M entre a et b (temps session), une image sur
+    MANUAL_STEP : (images BGR, temps session, cadence source)."""
+    work = analyze.CACHE / "privacy_render"
+    work.mkdir(parents=True, exist_ok=True)
+    frames, times, fps = [], [], 30000 / 1001
+    for k, (seg, ss, dur) in enumerate(clip_parts(session, result, {"start": a, "end": b})):
+        if not seg.insv:
+            raise ValueError("fichier .insv manquant")
+        fps = float(source_fps(seg.insv))
+        seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
+        h264, spec = work / f"local_{k}.h264", work / f"local_{k}.json"
+        spec.write_text(json.dumps({"source": seg.insv, "start": ss, "duration": dur, "width": size, "height": size,
+                                    "fov": fov, "fovs": [fov], "cq": 23, "masks": [],
+                                    "matrices": [[float(v) for v in M.flatten()]], "output": str(h264)}))
+        run_part_process(job, [str(RENDER_BIN), str(spec)], lambda _: None)
+        part = privacy.decode(h264, size, privacy.MANUAL_STEP)
+        times += [seg_offset + ss + i * privacy.MANUAL_STEP / fps for i in range(len(part))]
+        frames += part
+        h264.unlink(missing_ok=True)
+        spec.unlink(missing_ok=True)
+    return frames, times, fps
+
+
+FOLLOW_CHUNK_S = 3.0      # suivi d'un compagnon : vue locale recentrée toutes les 3 s
+FOLLOW_KEY_S = 0.5        # un point clé toutes les 0,5 s
+FOLLOW_SMOOTH_S = 0.6     # lissage des angles (pas de tremblement du cadrage)
+
+
+def track_sphere(job, session, result, t0, d0, ax, ay, a, b):
+    """Suit un objet sur la sphère entre a et b depuis t0 : {t: direction}.
+
+    Par tranches de FOLLOW_CHUNK_S, la vue locale est recentrée sur la dernière position :
+    l'objet peut faire le tour de la moto sans sortir de la vue."""
+    import cv2  # noqa: F401  (chargé par privacy.follow)
+    size, fov = privacy.MANUAL_SIZE, privacy.local_fov(ax, ay)
+    track = {t0: np.asarray(d0, float)}
+    total = max(b - a, 1e-6)
+    for direction in (+1, -1):
+        d, sx, sy, t = np.asarray(d0, float), ax, ay, t0
+        while (t < b - 0.1) if direction > 0 else (t > a + 0.1):
+            c0, c1 = (t, min(b, t + FOLLOW_CHUNK_S)) if direction > 0 else (max(a, t - FOLLOW_CHUNK_S), t)
+            M = privacy.local_view(d)
+            frames, times, fps = render_local(job, session, result, c0, c1, M, fov, size)
+            if len(frames) < 2:
+                break
+            k0 = int(np.argmin(np.abs(np.array(times) - t)))
+            boxes = privacy.follow(frames, k0, privacy.tight_box(d, sx, sy, M, fov, size), direction, fps)
+            for k, box in boxes.items():
+                dk, bx, by = privacy.box_to_sphere(box, M, fov, size, size)
+                track[times[k]] = dk
+            kend = max(boxes) if direction > 0 else min(boxes)
+            reached_end = kend == (len(frames) - 1 if direction > 0 else 0)
+            d, sx, sy = privacy.box_to_sphere(boxes[kend], M, fov, size, size)
+            t = times[kend]
+            job["progress"] = min(1.0, len(track) * privacy.MANUAL_STEP / fps / total)
+            job["message"] = f"suivi : {min(track):.0f}–{max(track):.0f} s"
+            if not reached_end:   # objet perdu : on s'arrête dans ce sens
+                break
+    return dict(sorted(track.items()))
+
+
+def run_follow(sid, clip_id, t0, d0, ax, ay, view0):
+    """Cadrage qui suit un compagnon : points clés du clip générés depuis le suivi."""
+    job = state["jobs"]["follow"]
+    try:
+        if not gpu_engine_available():
+            raise ValueError("le suivi demande le moteur GPU (render/ + NVENC)")
+        session, result = state["sessions"][sid]
+        clip = next(c for c in get_selections(sid) if c["id"] == clip_id)
+        track = track_sphere(job, session, result, t0, d0, ax, ay, clip["start"], clip["end"])
+        full = state["horizon"].get(sid, {})
+        horizon_data = full.get("data") if full.get("status") == "done" else None
+        ts = np.array(list(track))
+        ang = []
+        for t, d in track.items():   # angles de l'objet dans le repère redressé du clip
+            L = level_matrix_at(clip, result, horizon_data, t)
+            v = d if L is None else L.T @ d
+            ang.append((math.degrees(math.atan2(v[0], v[2])), math.degrees(math.asin(max(-1.0, min(1.0, v[1]))))))
+        yaw = np.degrees(np.unwrap(np.radians([a for a, _ in ang])))
+        pitch = np.array([p for _, p in ang])
+        # composition gardée : décalage entre l'objet et le centre de la vue au moment du tracé
+        k0 = int(np.argmin(np.abs(ts - t0)))
+        dyaw, dpitch = view0["yaw"] - yaw[k0], view0["pitch"] - pitch[k0]
+        grid = np.arange(ts[0], ts[-1] + 1e-6, FOLLOW_KEY_S)
+        sig = FOLLOW_SMOOTH_S
+        keys = []
+        for t in grid:
+            w = np.exp(-((ts - t) / sig) ** 2 / 2)
+            y, p = float((w * yaw).sum() / w.sum()) + dyaw, float((w * pitch).sum() / w.sum()) + dpitch
+            keys.append({"t": round(float(t - clip["start"]), 2), "yaw": round((y + 180) % 360 - 180, 2),
+                         "pitch": round(max(-89.0, min(89.0, p)), 2), "roll": round(float(view0.get("roll", 0)), 2),
+                         "fov": round(float(view0["fov"]), 1), "curve": "linear"})
+        with lock:
+            clips = get_selections(sid)
+            c = next(c for c in clips if c["id"] == clip_id)
+            c["keyframes"] = keys
+            c.pop("roll_keys", None)
+            c.pop("auto", None)
+            selections_path(sid).write_text(json.dumps(clips, indent=1))
+        span = ts[-1] - ts[0]
+        job.update(state="done", progress=1.0, clip=clip_id, sid=sid,
+                   message=f"cadrage suivi sur {span:.1f} s ({len(keys)} points clés)"
+                           + ("" if span >= clip["end"] - clip["start"] - 0.5 else " — objet perdu avant la fin du clip"))
+    except Exception as e:
+        traceback.print_exc()
+        job.update(state="error", message=str(e))
+    finally:
+        job.pop("proc", None)
+
+
 def run_manual_zone(sid, clip, t0, d0, ax, ay, track_it):
     """Zone tracée à la main à l'instant t0 : suivie dans le temps (VitTrack) ou fixe sur le clip."""
     job = state["jobs"]["privacy"]
@@ -678,23 +789,8 @@ def run_manual_zone(sid, clip, t0, d0, ax, ay, track_it):
             M = privacy.local_view(d0)
             a = max(clip["start"], t0 - privacy.MANUAL_WINDOW_S)
             b = min(clip["end"], t0 + privacy.MANUAL_WINDOW_S)
-            work = analyze.CACHE / "privacy_render"
-            work.mkdir(parents=True, exist_ok=True)
-            frames, times = [], []
-            for k, (seg, ss, dur) in enumerate(clip_parts(session, result, {"start": a, "end": b})):
-                fps = float(source_fps(seg.insv))
-                seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
-                h264, spec = work / f"manual_{k}.h264", work / f"manual_{k}.json"
-                spec.write_text(json.dumps({"source": seg.insv, "start": ss, "duration": dur, "width": size, "height": size,
-                                            "fov": fov, "fovs": [fov], "cq": 23, "masks": [],
-                                            "matrices": [[float(v) for v in M.flatten()]], "output": str(h264)}))
-                job["message"] = "rendu autour de la zone"
-                run_part_process(job, [str(RENDER_BIN), str(spec)], lambda _: None)
-                part = privacy.decode(h264, size, privacy.MANUAL_STEP)
-                times += [seg_offset + ss + i * privacy.MANUAL_STEP / fps for i in range(len(part))]
-                frames += part
-                h264.unlink(missing_ok=True)
-                spec.unlink(missing_ok=True)
+            job["message"] = "rendu autour de la zone"
+            frames, times, fps = render_local(job, session, result, a, b, M, fov, size)
             if not frames:
                 raise ValueError("aucune image rendue autour de la zone")
             job["message"] = "suivi de la zone"
@@ -1110,6 +1206,29 @@ class Handler(BaseHTTPRequestHandler):
             added = [c for v in plan.values() for c in v]
             return self._json({"removed": removed, "added": len(added),
                                "seconds": round(sum(c["end"] - c["start"] for c in added), 1)})
+        if parts == ["api", "follow"]:
+            body = self._body() or {}
+            sid = body.get("sid")
+            clip = next((c for c in get_selections(sid) if c["id"] == body.get("clip")), None) \
+                if sid in state["sessions"] else None
+            if clip is None:
+                return self._json({"error": "place la tête de lecture dans un clip"}, 400)
+            if state["jobs"].get("follow", {}).get("state") == "running":
+                return self._json({"error": "un suivi est déjà en cours"}, 409)
+            try:
+                v = body["view"]
+                M = geometry.view_matrix(float(v["yaw"]), float(v["pitch"]),
+                                         np.array(v["level"], float).reshape(3, 3), float(v.get("roll", 0)))
+                x, y, w, h = (float(q) for q in body["box"])
+                W, H = 1000 * float(body["aspect"]), 1000.0
+                d, ax, ay = privacy.box_to_sphere((x * W, y * H, w * W, h * H), M, float(v["fov"]), W, H)
+                view0 = {k: float(v.get(k, 0)) for k in ("yaw", "pitch", "roll", "fov")}
+            except (KeyError, TypeError, ValueError):
+                return self._json({"error": "zone invalide"}, 400)
+            state["jobs"]["follow"] = {"state": "running", "progress": 0.0, "message": "démarrage du suivi"}
+            threading.Thread(target=run_follow, daemon=True,
+                             args=(sid, clip["id"], float(body["t"]), d.tolist(), ax, ay, view0)).start()
+            return self._json({"ok": True})
         if parts == ["api", "privacy", "manual"]:
             body = self._body() or {}
             sid = body.get("sid")
@@ -1145,7 +1264,7 @@ class Handler(BaseHTTPRequestHandler):
             state["jobs"]["privacy"] = {"state": "running", "progress": 0.0, "message": "démarrage"}
             threading.Thread(target=run_privacy, args=(items, bool(body.get("force"))), daemon=True).start()
             return self._json({"ok": True})
-        if len(parts) == 3 and parts[:2] == ["api", "export"] and parts[2] in ("montage", "privacy") \
+        if len(parts) == 3 and parts[:2] == ["api", "export"] and parts[2] in ("montage", "privacy", "follow") \
                 and (self._body() or {}).get("cancel"):
             job = state["jobs"].get(parts[2], {})
             job["cancelled"] = True

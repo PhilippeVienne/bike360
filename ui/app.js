@@ -412,20 +412,25 @@ async function loadPrivacyTracks() {
 }
 
 // tracé d'une zone à la main (élément raté par la détection)
-function setZoneEdit(on) {
+// tracé d'un rectangle sur la vidéo : zone à flouter (mode « privacy ») ou compagnon à suivre (« follow »)
+function setZoneEdit(on, mode = "privacy") {
   st.zoneEdit = on;
-  $("#pv-draw").classList.toggle("active", on);
-  $("#pv-draw").textContent = on ? "Annuler le tracé" : "＋ Zone à la main";
+  st.zoneMode = mode;
+  $("#pv-draw").classList.toggle("active", on && mode === "privacy");
+  $("#pv-draw").textContent = on && mode === "privacy" ? "Annuler le tracé" : "＋ Zone à la main";
   $("#gl").classList.toggle("zoning", on);
   if (on) {
     video.pause();
     if (st.view.raw) setView({ raw: false });
-    $("#pv-status").textContent = "Trace un rectangle sur la vidéo autour de l'élément à flouter.";
+    if (mode === "privacy") $("#pv-status").textContent = "Trace un rectangle sur la vidéo autour de l'élément à flouter.";
+    else $("#ed-follow").textContent = "Trace un rectangle autour du motard ou de la voiture à suivre (Échap pour annuler).";
   }
 }
 async function sendZone(z) {
   const { L, t, clip } = currentView();
+  const mode = st.zoneMode;
   setZoneEdit(false);
+  if (mode === "follow") return sendFollow(z, L, t, clip);
   if (!clip) { $("#pv-status").textContent = "⚠ Place la tête de lecture dans un clip."; return; }
   const v = st.view;
   const r = await fetch("/api/privacy/manual", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -434,6 +439,36 @@ async function sendZone(z) {
       view: { yaw: v.yaw, pitch: v.pitch, roll: v.roll || 0, fov: v.fov, level: L } }) }).then((x) => x.json());
   if (r.error) { $("#pv-status").textContent = "⚠ " + r.error; return; }
   renderPrivacy();
+}
+
+// suivi d'un compagnon : le serveur suit l'objet et remplace les points clés du clip
+async function sendFollow(z, L, t, clip) {
+  if (!clip) { $("#ed-follow").textContent = "⚠ Place la tête de lecture dans le clip."; return; }
+  const v = st.view;
+  const r = await fetch("/api/follow", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sid: st.s.id, clip: clip.id, t, box: [z.x, z.y, z.w, z.h],
+      aspect: gl.canvas.clientWidth / gl.canvas.clientHeight,
+      view: { yaw: v.yaw, pitch: v.pitch, roll: v.roll || 0, fov: v.fov, level: L } }) }).then((x) => x.json());
+  if (r.error) { $("#ed-follow").textContent = "⚠ " + r.error; return; }
+  pollFollow(st.s.id, clip.id);
+}
+async function pollFollow(sid, clipId) {
+  const j = await api("GET", "/api/export/follow");
+  if (j.state === "running") {
+    $("#ed-follow").textContent = `🎯 ${Math.round((j.progress || 0) * 100)} % · ${j.message}`;
+    return setTimeout(() => pollFollow(sid, clipId), 1000);
+  }
+  if (j.state === "error") { $("#ed-follow").textContent = "⚠ " + j.message; return; }
+  if (st.s && st.s.id === sid) {   // points clés écrits par le serveur : on recharge les clips
+    const s2 = await api("GET", `/api/session/${sid}`);
+    st.clips = s2.selections || [];
+    const k = st.clips.findIndex((c) => c.id === clipId);
+    st.sel = k >= 0 ? k : null;
+    st.viewOverride = false;
+    renderClips(); drawClipsOnMap();
+    if (k >= 0) seek(st.clips[k].start);
+  }
+  $("#ed-follow").textContent = "✓ " + j.message;
 }
 
 let horizonTimer = null;
@@ -1140,6 +1175,10 @@ $("#clip-editor").addEventListener("click", (e) => {
   else if (edge) editEdge(edge, c[edge] + +d);
   else if (a === "view") { Object.assign(c, currentViewParams(), { horizon: clipMode(c) }); saveClips(c); }
   else if (a === "clear-keys") { delete c.roll_keys; delete c.keyframes; saveClips(c); }
+  else if (a === "follow") {
+    if (now() < c.start || now() > c.end) seek(c.start + Math.min(2, (c.end - c.start) / 2), false);
+    setZoneEdit(true, "follow");
+  }
   else if (a === "add-key") upsertKey(c, now());
   else if (a === "play") selectClip(st.sel, "play");
   else if (a === "goto-end") seek(Math.max(c.start, c.end - 3), true);
