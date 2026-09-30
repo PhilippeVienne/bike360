@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use insta_core::{analyze, automontage, geometry, horizon, hyperlapse, insta360, musiclib, paths};
+use insta_core::{analyze, automontage, geometry, horizon, hyperlapse, insta360, lean, musiclib, paths};
 use serde_json::json;
 
 fn main() -> Result<()> {
@@ -72,6 +72,14 @@ fn main() -> Result<()> {
         Some("music") => {
             // music REQUÊTE AMBIANCE : recherche dans le catalogue en cache
             println!("{}", serde_json::to_string(&musiclib::search(&args[2], &args[3], 60, 60)?)?);
+        }
+        Some("lean") => {
+            // lean CACHE.json HORIZON.json : série d'angle (10 Hz), angle GPS et statistiques
+            let r: analyze::Analysis = serde_json::from_reader(std::fs::File::open(&args[2])?)?;
+            let h: horizon::HorizonData = serde_json::from_reader(std::fs::File::open(&args[3])?)?;
+            let series = lean::lean_series(&h, &r.tilt);
+            let (_, gps_lean) = horizon::gps_prior_inputs(&r, series.len());
+            println!("{}", json!({"lean": series, "gps": gps_lean, "stats": lean::lean_stats(&h, &r)}));
         }
         Some("hyperlapse") => {
             // hyperlapse CACHE.json DURÉE : résumé et instants des images
