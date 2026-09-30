@@ -2,8 +2,8 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use insta_core::{analyze, automontage, geometry, horizon, hyperlapse, insta360, musiclib, paths};
-use serde_json::json;
+use insta_core::{analyze, automontage, basemap, endcard, finishing, geometry, horizon, hyperlapse, insta360, musiclib, paths, telemetry};
+use serde_json::{json, Value};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -80,7 +80,12 @@ fn main() -> Result<()> {
             println!("{}", json!({"summary": hyperlapse::summary(&r, d), "density": hyperlapse::density(&r, d),
                                   "times": hyperlapse::frame_times(&r, d)}));
         }
-        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER... | horizon SESSION DOSSIER... | hyperlapse CACHE.json DURÉE"),
+        Some(cmd @ ("basemap" | "mappanel" | "layers" | "overlay" | "endcard" | "finishing")) => {
+            // CMD SPEC.json : sorties à comparer avec la version Python (voir les champs lus ci-dessous)
+            let spec: Value = serde_json::from_reader(std::fs::File::open(&args[2])?)?;
+            println!("{}", serde_json::to_string(&port_check(cmd, &spec)?)?);
+        }
+        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER... | horizon SESSION DOSSIER... | hyperlapse CACHE.json DURÉE | basemap|mappanel|layers|overlay|endcard|finishing SPEC.json"),
     }
     Ok(())
 }
@@ -99,4 +104,80 @@ fn load_blocks(dirs: &[String]) -> Vec<insta360::Session> {
         .map(|s| (s.id.clone(), s.segments.iter().filter_map(|x| x.lrv.as_ref()).map(|p| analyze::file_duration(p)).sum()))
         .collect();
     insta360::merge_continuous(sessions, |s| durations[&s.id])
+}
+
+fn load(path: &Value) -> Result<analyze::Analysis> {
+    let p = path.as_str().context("chemin d'analyse")?;
+    Ok(serde_json::from_reader(std::fs::File::open(p).with_context(|| p.to_string())?)?)
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
+}
+
+/// Vérifications des modules de rendu (basemap, telemetry, endcard, finishing).
+fn port_check(cmd: &str, spec: &Value) -> Result<Value> {
+    let f = |k: &str| spec[k].as_f64().unwrap_or(0.0);
+    let results: Vec<analyze::Analysis> = spec["caches"].as_array().map(|a| a.iter().map(load).collect()).transpose()?.unwrap_or_default();
+    let refs: Vec<&analyze::Analysis> = results.iter().collect();
+    let out = |k: &str| Path::new(spec[k].as_str().unwrap_or_default()).to_path_buf();
+    Ok(match cmd {
+        "basemap" => {
+            let lats: Vec<f64> = refs.iter().flat_map(|r| telemetry::raw(r, "lat")).collect();
+            let lons: Vec<f64> = refs.iter().flat_map(|r| telemetry::raw(r, "lon")).collect();
+            match basemap::render(&lats, &lons, f("size") as u32, f("pad"), f("max_fill")) {
+                None => Value::Null,
+                Some((img, p)) => {
+                    img.save(out("out"))?;
+                    let pts: Vec<(f64, f64)> = (0..lats.len()).step_by(37).map(|i| p.project(lats[i], lons[i])).collect();
+                    json!({"points": pts})
+                }
+            }
+        }
+        "mappanel" => {
+            let r = load(&spec["result"])?;
+            let clip = telemetry::Span { start: f("start"), end: f("end") };
+            let (panel, p, attribution) = telemetry::map_panel(&r, clip, &refs, f("S") as usize, f("U"));
+            panel.save_png(&out("out"))?;
+            let (lat, lon) = (telemetry::raw(&r, "lat"), telemetry::raw(&r, "lon"));
+            let pts: Vec<(f64, f64)> = (0..lat.len()).step_by(37).map(|i| p.project(lat[i], lon[i])).collect();
+            json!({"attribution": attribution, "points": pts})
+        }
+        "layers" | "overlay" => {
+            let r = load(&spec["result"])?;
+            let clip = telemetry::Span { start: f("start"), end: f("end") };
+            let opts = telemetry::Options::merged(spec["opts"].as_object());
+            let (t0, speedup) = (f("t0"), f("speedup"));
+            let tm = move |t: f64| t0 + speedup * t;
+            let time_map: Option<&dyn Fn(f64) -> f64> = if speedup > 0.0 { Some(&tm) } else { None };
+            let (w, h) = (f("W") as usize, f("H") as usize);
+            let first = spec["first_part"].as_bool().unwrap_or(false);
+            if cmd == "layers" {
+                let l = telemetry::layers(&r, clip, t0, f("n_frames") as usize, f("fps"), w, h, &opts, first, &out("workdir"),
+                                          time_map, &refs)?;
+                serde_json::to_value(l)?
+            } else {
+                let c = telemetry::overlay_command(&out("part"), &out("out"), &r, clip, t0, f("dur"), w, h, &opts, first,
+                                                   &strings(&spec["encoder_args"]), &out("workdir"), time_map, &refs)?;
+                json!({"cmd": c, "cmdfile": std::fs::read_to_string(out("workdir").join("telemetry.cmd")).ok()})
+            }
+        }
+        "endcard" => {
+            let credits = strings(&spec["credits"]);
+            let s = endcard::render(&refs, f("W") as usize, f("H") as usize, &out("out"), spec["title"].as_str().unwrap_or(""), &credits)?;
+            json!({"summary": s, "label": endcard::date_label(&s.days)})
+        }
+        _ => {   // finishing
+            let style = finishing::clean(spec.get("style"))?;
+            let clips: Vec<(String, f64, bool)> = serde_json::from_value(spec["clips"].clone())?;
+            let files: Vec<&Path> = clips.iter().map(|c| Path::new(&c.0)).collect();
+            let info: Vec<(f64, bool)> = clips.iter().map(|c| (c.1, c.2)).collect();
+            let opt = |k: &str| spec[k].as_str().map(Path::new);
+            let (cmd, total) = finishing::finish_command(&files, &info, &out("final"), &style, &strings(&spec["encoder_args"]),
+                                                         f("W") as usize, f("H") as usize, opt("music"),
+                                                         spec["audio_bitrate"].as_str().unwrap_or("160k"), opt("end_card"),
+                                                         &strings(&spec["credits"]));
+            json!({"clean": style, "plain": finishing::is_plain(&style), "cmd": cmd, "total": total})
+        }
+    })
 }
