@@ -382,12 +382,30 @@ def analyze_clip(render_h264, times, mats, fovs, sid, clip_id, detector, progres
 
 # ------------------------------------------------------------------ floutage à l'export
 
-def blur_video(src, dst, times, mats, fovs, tracks, W, H, encoder_args):
+AUTO_NEIGHBORS = 2   # mode détection directe : zones des 2 images voisines ajoutées (pas de clignotement)
+
+
+def _blur(img, boxes, W, H):
+    import cv2
+    for box in boxes:
+        x0, y0 = int(max(0, box[0])), int(max(0, box[1]))
+        x1, y1 = int(min(W, box[0] + box[2])), int(min(H, box[1] + box[3]))
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            continue
+        roi = img[y0:y1, x0:x1]
+        k_size = max(3, (max(x1 - x0, y1 - y0) // 3) | 1)
+        img[y0:y1, x0:x1] = cv2.GaussianBlur(cv2.GaussianBlur(roi, (k_size, k_size), 0), (k_size, k_size), 0)
+
+
+def blur_video(src, dst, times, mats, fovs, tracks, W, H, encoder_args, detector=None, progress=None):
     """Floute les zones des pistes dans `src` (une entrée times/mats/fovs par image) → `dst`.
 
+    Avec `detector` (résumé hyperlapse : images trop espacées pour un suivi), chaque image est
+    aussi analysée et ses détections floutées, avec celles des images voisines.
     Retourne le nombre d'images modifiées. Le son est recopié tel quel.
     """
     import cv2
+    from collections import deque
     rate = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
                            "-of", "csv=p=0", str(src)], capture_output=True, text=True).stdout.strip() or "30000/1001"
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(src), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
@@ -396,30 +414,52 @@ def blur_video(src, dst, times, mats, fovs, tracks, W, H, encoder_args):
                             "-r", rate, "-i", "-", "-i", str(src), "-map", "0:v", "-map", "1:a?",
                             *encoder_args, "-c:a", "copy", "-movflags", "+faststart", str(dst)],
                            stdin=subprocess.PIPE)
-    size, touched, fi = W * H * 3, 0, 0
+    size, touched = W * H * 3, 0
+    scale = min(1.0, AW / W)   # détection sur une image ≤ 1920 px de large
+    n = len(times)
+    window = deque()           # (indice, image, boîtes détectées) : attente des voisines
+
+    def detect(img):
+        if detector is None:
+            return []
+        small = img if scale == 1.0 else cv2.resize(img, (int(W * scale), int(H * scale)))
+        out = []
+        for _, _, x, y, w, h in detector(small):
+            cx, cy, hw, hh = (x + w / 2) / scale, (y + h / 2) / scale, w / scale * (1 + PAD) / 2, h / scale * (1 + PAD) / 2
+            out.append((cx - hw, cy - hh, 2 * hw, 2 * hh))
+        return out
+
+    def emit(k, img):
+        nonlocal touched
+        j = min(k, n - 1)
+        boxes = [b for d, ax, ay in regions_at(tracks, times[j])
+                 if (b := sphere_to_box(d, ax, ay, mats[j], fovs[j], W, H)) is not None]
+        boxes += [b for i, _, dets in window if abs(i - k) <= AUTO_NEIGHBORS for b in dets]
+        if boxes:
+            img = img.copy()
+            _blur(img, boxes, W, H)
+            touched += 1
+        enc.stdin.write(img.tobytes())
+
+    fi, head = 0, 0
     while True:
         buf = dec.stdout.read(size)
         if len(buf) < size:
             break
-        k = min(fi, len(times) - 1)
-        regions = regions_at(tracks, times[k])
-        if regions:
-            img = np.frombuffer(buf, np.uint8).reshape(H, W, 3).copy()
-            for d, ax, ay in regions:
-                box = sphere_to_box(d, ax, ay, mats[k], fovs[k], W, H)
-                if box is None:
-                    continue
-                x0, y0 = int(max(0, box[0])), int(max(0, box[1]))
-                x1, y1 = int(min(W, box[0] + box[2])), int(min(H, box[1] + box[3]))
-                if x1 - x0 < 2 or y1 - y0 < 2:
-                    continue
-                roi = img[y0:y1, x0:x1]
-                k_size = max(3, (max(x1 - x0, y1 - y0) // 3) | 1)
-                img[y0:y1, x0:x1] = cv2.GaussianBlur(cv2.GaussianBlur(roi, (k_size, k_size), 0), (k_size, k_size), 0)
-            buf = img.tobytes()
-            touched += 1
-        enc.stdin.write(buf)
+        img = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
+        window.append((fi, img, detect(img)))
         fi += 1
+        while window and window[0][0] < fi - 2 * AUTO_NEIGHBORS - 1:
+            window.popleft()
+        # l'image « head » a toutes ses voisines suivantes : on l'écrit
+        while head <= fi - 1 - AUTO_NEIGHBORS:
+            emit(head, next(x[1] for x in window if x[0] == head))
+            head += 1
+        if progress and n:
+            progress(min(1.0, fi / n))
+    while head < fi:
+        emit(head, next(x[1] for x in window if x[0] == head))
+        head += 1
     dec.stdout.close()
     dec.wait()
     enc.stdin.close()

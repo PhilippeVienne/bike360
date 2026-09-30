@@ -754,6 +754,10 @@ def run_hyperlapse(sid, opts):
         cap = min(cap, q.get("max_bitrate", cap))
         settings = get_settings()
         masks, tel_opts = settings["masks"], settings["telemetry"]
+        detector = None
+        if settings["privacy"]["enabled"]:
+            # zones déjà analysées ou tracées dans les clips de la session, + détection image par image
+            known = [t for e in privacy.load(sid).values() for t in privacy.all_tracks(e)]
         view = {"start": 0.0, "end": result["duration"], **opts["view"]}
         full = state["horizon"].get(sid, {})
         horizon_data = full.get("data") if full.get("status") == "done" else None
@@ -796,6 +800,18 @@ def run_hyperlapse(sid, opts):
             run_part_process(job, ["ffmpeg", "-v", "error", "-y", "-framerate", str(fps), "-i", str(h264),
                                    "-c:v", "copy", "-movflags", "+faststart", str(out)], lambda _: None)
             h264.unlink(missing_ok=True)
+            if settings["privacy"]["enabled"]:
+                job["message"] = f"fichier {n + 1}/{len(session.segments)} : floutage visages et plaques"
+                if detector is None:
+                    detector = privacy.Detector()
+                blurred = out.with_name(out.stem + "_flou.mp4")
+
+                def blur_progress(f, base=done, count=len(sel)):
+                    job["progress"] = min(1.0, (base + f * count) / len(taus))
+                privacy.blur_video(out, blurred, [float(t) for t in part_taus],
+                                   [np.array(m).reshape(3, 3) for m in matrices], fovs, known, out_w, out_h,
+                                   encoder_args({**q, "max_bitrate": cap}), detector, blur_progress)
+                blurred.replace(out)
             if tel_opts["enabled"] and result.get("gps_coverage", 0) > 0.3:
                 job["message"] = f"fichier {n + 1}/{len(session.segments)} : télémétrie"
                 out_t = np.arange(len(part_taus)) / float(fps)
