@@ -1522,6 +1522,56 @@ $("#file-list").addEventListener("click", async (e) => {
   if (narrow()) closeDrawer();
 });
 const narrow = () => matchMedia("(max-width: 820px)").matches;
+
+// largeur des panneaux latéraux : poignées à glisser (mémorisées dans ce navigateur)
+{
+  const main = $("main");
+  const place = () => {
+    const pw = $("#project").getBoundingClientRect().width, aw = $("main > aside").getBoundingClientRect().width;
+    $("#split-left").style.left = pw + "px";
+    $("#split-right").style.left = (main.clientWidth - aw) + "px";
+  };
+  const setW = (name, px) => { main.style.setProperty(name, Math.round(px) + "px"); place(); };
+  try {
+    const saved = JSON.parse(localStorage.getItem("panelWidths") || "{}");
+    if (saved.project) setW("--project-w", saved.project);
+    if (saved.aside) setW("--aside-w", saved.aside);
+  } catch (e) { /* stockage indisponible */ }
+  for (const [id, name, side] of [["#split-left", "--project-w", "left"], ["#split-right", "--aside-w", "right"]]) {
+    const el = $(id);
+    el.addEventListener("pointerdown", (e) => {
+      el.setPointerCapture(e.pointerId);
+      el.classList.add("dragging");
+      const move = (ev) => {
+        const r = main.getBoundingClientRect(), W = r.width;
+        let px = side === "left" ? ev.clientX - r.left : r.right - ev.clientX;
+        const other = side === "left" ? $("main > aside").getBoundingClientRect().width : $("#project").getBoundingClientRect().width;
+        px = Math.max(side === "left" ? 180 : 240, Math.min(px, W - other - 420));   // la vidéo garde ≥ 420 px
+        setW(name, px);
+      };
+      const up = (ev) => {
+        if (ev && ev.type === "pointerup") move(ev);   // position finale, même sans dernier « move »
+        el.classList.remove("dragging");
+        el.removeEventListener("pointermove", move);
+        try {
+          const saved = JSON.parse(localStorage.getItem("panelWidths") || "{}");
+          saved[side === "left" ? "project" : "aside"] = parseInt(main.style.getPropertyValue(name));
+          localStorage.setItem("panelWidths", JSON.stringify(saved));
+        } catch (e) { /* idem */ }
+        if (typeof map !== "undefined") map.invalidateSize();
+      };
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", up, { once: true });
+      el.addEventListener("pointercancel", up, { once: true });
+    });
+    el.addEventListener("dblclick", () => {   // double-clic : largeur par défaut
+      main.style.removeProperty(name); place();
+      try { const s2 = JSON.parse(localStorage.getItem("panelWidths") || "{}"); delete s2[side === "left" ? "project" : "aside"]; localStorage.setItem("panelWidths", JSON.stringify(s2)); } catch (e) { /* idem */ }
+    });
+  }
+  new ResizeObserver(place).observe(main);
+  new ResizeObserver(place).observe($("#project"));
+}
 const closeDrawer = () => document.body.classList.remove("project-open");
 $("#drawer-backdrop").addEventListener("click", closeDrawer);
 $("#project-toggle").addEventListener("click", () => {

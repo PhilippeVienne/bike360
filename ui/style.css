@@ -39,7 +39,7 @@ header { border-bottom: 1px solid var(--line); background: var(--panel); flex-wr
 #export-status a { color: var(--accent); }
 progress { width: 120px; accent-color: var(--accent); }
 
-main { display: grid; grid-template-columns: var(--project-w, 250px) minmax(0, 1fr) clamp(280px, 26vw, 400px); min-height: 0; overflow: hidden; }
+main { display: grid; grid-template-columns: var(--project-w, 250px) minmax(0, 1fr) var(--aside-w, clamp(280px, 26vw, 400px)); min-height: 0; overflow: hidden; position: relative; }
 body.no-project main { --project-w: 0px; }
 body.no-project #project { display: none; }
 .viewer { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; min-width: 0; }
@@ -407,3 +407,25 @@ main > aside { grid-column: 3; }
 #mt-list { min-height: 140px; max-height: 45vh; overflow: auto; }
 .auto-row select { flex: 1 1 40%; }
 .auto-row button { flex: 1 1 40%; }
+
+/* poignées de redimensionnement des panneaux (glisser à la souris ou au doigt) */
+.splitter { position: absolute; top: 0; bottom: 0; width: 10px; margin-left: -5px; z-index: 50; cursor: col-resize; touch-action: none; }
+.splitter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px; background: transparent; transition: background .15s; }
+.splitter:hover::after, .splitter.dragging::after { background: var(--accent); }
+body.no-project #split-left { display: none; }
+@media (max-width: 820px) { .splitter { display: none; } }
+/* panneau Projet plus large : vignettes et lignes plus aérées */
+#project { container-type: inline-size; }
+@container (min-width: 330px) {
+  .mt-item { grid-template-columns: 14px 120px minmax(0, 1fr) auto; padding: 6px; font-size: 13px; }
+  .mt-item img { width: 120px; }
+  .mt-btns { flex-direction: row; }
+  .file-card { grid-template-columns: 150px 1fr; }
+  .file-card img { width: 150px; height: 100%; }
+}
+@container (min-width: 460px) {
+  .mt-item { grid-template-columns: 14px 170px minmax(0, 1fr) auto; }
+  .mt-item img { width: 170px; }
+}
+.mt-map img { max-width: 280px; margin: 0 auto; }   /* panneau élargi : l'aperçu de carte ne grandit pas sans fin */
+.mt-map { display: flex; justify-content: center; }
