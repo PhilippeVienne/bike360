@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Result};
-use insta_core::insta360;
+use insta_core::{geometry, insta360};
 use serde_json::json;
 
 fn main() -> Result<()> {
@@ -16,7 +16,23 @@ fn main() -> Result<()> {
                                   "acc_mean": mean(&imu.acc), "gyro_mean": mean(&imu.gyro)}));
         }
         Some("scan") => println!("{}", serde_json::to_string(&insta360::scan(Path::new(&args[2])))?),
-        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER"),
+        Some("views") => {
+            // views CLIPS.json TILT_PITCH TILT_ROLL : cadrage, matrice et angles v360 à 40 instants par clip
+            let clips: Vec<geometry::Clip> = serde_json::from_reader(std::fs::File::open(&args[2])?)?;
+            let tilt = geometry::Tilt { pitch: args[3].parse()?, roll: args[4].parse()? };
+            let l = geometry::tilt_matrix(Some(&tilt));
+            let mut out = vec![];
+            for c in &clips {
+                for k in 0..40 {
+                    let t = (c.end - c.start) * k as f64 / 39.0;
+                    let v = geometry::clip_view_at(c, t);
+                    let m = geometry::view_matrix(v.yaw, v.pitch, Some(&l), v.roll);
+                    out.push(json!({"v": [v.yaw, v.pitch, v.roll, v.fov], "m": m, "a": geometry::v360_angles(&m)}));
+                }
+            }
+            println!("{}", serde_json::to_string(&out)?);
+        }
+        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL"),
     }
     Ok(())
 }
