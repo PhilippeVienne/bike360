@@ -37,6 +37,11 @@ struct Blur {
     gw: i32,
     gh: i32,
     cells: u64,
+    ix0: f32,
+    iy0: f32,
+    ix1: f32,
+    iy1: f32,
+    feather: f32,
 }
 
 #[repr(C)]
@@ -121,11 +126,14 @@ impl PostFx {
     /// Applique les effets de l'image de sortie `idx` (avant encodage).
     pub fn apply(&self, f: Frame, idx: usize) -> Result<()> {
         for b in self.blur.get(idx).map(Vec::as_slice).unwrap_or(&[]) {
-            // zone bornée à l'image, coordonnées paires (chrominance en 2×2)
-            let x0 = (b[0].max(0.0) as i32) & !1;
-            let y0 = (b[1].max(0.0) as i32) & !1;
-            let x1 = ((b[0] + b[2]).min(f.w as f32) as i32 + 1).min(f.w) & !1;
-            let y1 = ((b[1] + b[3]).min(f.h as f32) as i32 + 1).min(f.h) & !1;
+            // fondu autour de la zone (¼ du petit côté) : la zone reste entièrement floutée,
+            // le flou s'estompe au-delà au lieu de s'arrêter net
+            let feather = (0.25 * b[2].min(b[3])).max(4.0);
+            // zone + fondu, bornée à l'image, coordonnées paires (chrominance en 2×2)
+            let x0 = ((b[0] - feather).max(0.0) as i32) & !1;
+            let y0 = ((b[1] - feather).max(0.0) as i32) & !1;
+            let x1 = ((b[0] + b[2] + feather).min(f.w as f32) as i32 + 1).min(f.w) & !1;
+            let y1 = ((b[1] + b[3] + feather).min(f.h as f32) as i32 + 1).min(f.h) & !1;
             let (w, h) = (x1 - x0, y1 - y0);
             if w < 4 || h < 4 {
                 continue;
@@ -135,7 +143,8 @@ impl PostFx {
             while ((w + cell - 1) / cell) as usize * ((h + cell - 1) / cell) as usize > MAX_CELLS {
                 cell += 2;
             }
-            let p = Blur { x: x0, y: y0, w, h, cell, gw: (w + cell - 1) / cell, gh: (h + cell - 1) / cell, cells: self.cells };
+            let p = Blur { x: x0, y: y0, w, h, cell, gw: (w + cell - 1) / cell, gh: (h + cell - 1) / cell, cells: self.cells,
+                           ix0: b[0], iy0: b[1], ix1: b[0] + b[2], iy1: b[1] + b[3], feather };
             let cfg = |gx: i32, gy: i32| LaunchConfig {
                 grid_dim: ((gx as u32).div_ceil(16), (gy as u32).div_ceil(16), 1),
                 block_dim: (16, 16, 1),

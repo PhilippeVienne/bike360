@@ -149,7 +149,9 @@ class Detector:
             if best:
                 bx, by, bw, bh, _ = best
                 out.append(("plaque", 0.5, float(x + bx), float(y + by), float(bw), float(bh)))
-            elif h >= 1.5 * MOTO_MIN_H:
+            elif h >= 1.5 * MOTO_MIN_H and h >= 0.9 * w:
+                # zone de secours seulement pour une moto vue de face ou de dos (plus haute que
+                # large) : de profil, la plaque n'est pas lisible et on flouterait la moto entière
                 out.append(("plaque", 0.35, x + 0.3 * w, y + 0.35 * h, 0.4 * w, 0.3 * h))
         return out
 

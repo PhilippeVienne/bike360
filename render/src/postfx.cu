@@ -12,11 +12,21 @@ struct Frame {
 // ---------------------------------------------------------------- floutage
 
 struct Blur {
-    int x, y, w, h;     // zone (pixels, déjà bornée à l'image, coordonnées paires)
+    int x, y, w, h;     // zone traitée (pixels, bornée à l'image, coordonnées paires) : zone + fondu
     int cell;           // taille d'une cellule (pixels de luminance, pair)
     int gw, gh;         // grille de cellules
     float* cells;       // gw × gh × 3 (Y, U, V moyens)
+    float ix0, iy0, ix1, iy1;   // zone à couvrir entièrement (flou complet)
+    float feather;              // largeur du fondu autour (pixels) : pas de rectangle net
 };
+
+// Poids du flou : 1 dans la zone, décroissance douce jusqu'à 0 à `feather` pixels (coins arrondis).
+__device__ float blur_weight(const Blur& B, float px, float py) {
+    float dx = fmaxf(fmaxf(B.ix0 - px, px - B.ix1), 0.f);
+    float dy = fmaxf(fmaxf(B.iy0 - py, py - B.iy1), 0.f);
+    float t = fminf(sqrtf(dx * dx + dy * dy) / fmaxf(B.feather, 1.f), 1.f);
+    return 1.f - t * t * (3.f - 2.f * t);
+}
 
 // Passe 1 : un fil par cellule, moyenne de Y (pleine résolution) et de U, V (demi-résolution).
 extern "C" __global__ void blur_cells(Frame F, Blur B) {
@@ -59,12 +69,16 @@ extern "C" __global__ void blur_apply(Frame F, Blur B) {
     for (int dy = 0; dy < 2; dy++)
         for (int dx = 0; dx < 2; dx++) {
             int px = x + dx, py = y + dy;
-            if (px < B.x + B.w && py < B.y + B.h)
-                F.y[py * F.pitch + px] = (unsigned char)(cell_at(B, px - B.x + 0.5f, py - B.y + 0.5f, 0) + 0.5f);
+            if (px < B.x + B.w && py < B.y + B.h) {
+                float w = blur_weight(B, px + 0.5f, py + 0.5f);
+                unsigned char* o = F.y + py * F.pitch + px;
+                *o = (unsigned char)(*o * (1.f - w) + cell_at(B, px - B.x + 0.5f, py - B.y + 0.5f, 0) * w + 0.5f);
+            }
         }
+    float w = blur_weight(B, x + 1.f, y + 1.f);
     unsigned char* p = F.uv + (y / 2) * F.pitch + 2 * (x / 2);
-    p[0] = (unsigned char)(cell_at(B, x - B.x + 1.f, y - B.y + 1.f, 1) + 0.5f);
-    p[1] = (unsigned char)(cell_at(B, x - B.x + 1.f, y - B.y + 1.f, 2) + 0.5f);
+    p[0] = (unsigned char)(p[0] * (1.f - w) + cell_at(B, x - B.x + 1.f, y - B.y + 1.f, 1) * w + 0.5f);
+    p[1] = (unsigned char)(p[1] * (1.f - w) + cell_at(B, x - B.x + 1.f, y - B.y + 1.f, 2) * w + 0.5f);
 }
 
 // ---------------------------------------------------------------- incrustation d'images
