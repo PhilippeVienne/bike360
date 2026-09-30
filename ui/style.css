@@ -399,3 +399,11 @@ main > aside { grid-column: 3; }
 #lib-list .m { font-size: 11px; color: var(--muted); }
 #lib-list .d { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #lib-list button { padding: 2px 8px; }
+/* panneau Montage : tout le panneau défile ; la liste des clips garde une hauteur utile même
+   quand Finition et Confidentialité sont ouverts */
+#p-montage { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+#p-montage[hidden] { display: none; }
+#p-montage > * { flex: none; }
+#mt-list { min-height: 140px; max-height: 45vh; overflow: auto; }
+.auto-row select { flex: 1 1 40%; }
+.auto-row button { flex: 1 1 40%; }
