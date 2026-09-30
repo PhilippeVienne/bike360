@@ -94,6 +94,14 @@
         <img id="mt-map" alt="">
         <figcaption>© contributeurs OpenStreetMap</figcaption>
       </figure>
+      <div class="auto-row">
+        <select id="auto-duration" title="Durée visée du montage automatique">
+          <option value="60">1 min</option><option value="120" selected>2 min</option><option value="180">3 min</option><option value="300">5 min</option>
+        </select>
+        <select id="auto-scope" title="Sessions utilisées"><option value="day">ce jour</option><option value="project">tout le projet</option></select>
+        <button id="auto-make" class="primary" title="Ajouter les meilleurs moments (tes clips sont conservés)">✨ Auto</button>
+        <button id="auto-clear" title="Retirer les clips créés automatiquement">✕ auto</button>
+      </div>
       <div id="mt-total" class="hint"></div>
       <ol id="mt-list"></ol>
       <div class="mt-foot">

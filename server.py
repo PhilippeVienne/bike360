@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 
 import analyze
+import automontage
 import endcard
 import finishing
 import geometry
@@ -977,7 +978,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/project":
             proj = get_project()
             return self._json({**proj, "clips": [
-                {"sid": sid, "id": c["id"], "start": c["start"], "end": c["end"], "excluded": ex,
+                {"sid": sid, "id": c["id"], "start": c["start"], "end": c["end"], "excluded": ex, "auto": bool(c.get("auto")),
                  "yaw": c.get("yaw", 0), "pitch": c.get("pitch", 0), "fov": c.get("fov", 100),
                  "utc": state["sessions"][sid][1]["utc_t0"] + c["start"]}
                 for sid, c, ex in montage_items(proj, with_excluded=True)]})
@@ -1084,6 +1085,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._music_upload()
         if parts == ["api", "montage"]:
             return self._montage(self._body() or {})
+        if parts == ["api", "automontage"]:
+            body = self._body() or {}
+            sids = [x for x in body.get("sids") or get_project()["sessions"] if x in state["sessions"]]
+            target = max(20.0, min(900.0, float(body.get("duration", 120))))
+            with lock:
+                removed = 0
+                existing = {}
+                for sid in sids:   # les clips auto précédents sont remplacés ; les tiens restent
+                    clips = get_selections(sid)
+                    keep = [c for c in clips if not c.get("auto")]
+                    if len(keep) != len(clips):
+                        removed += len(clips) - len(keep)
+                        selections_path(sid).write_text(json.dumps(keep, indent=1))
+                    existing[sid] = keep
+                if body.get("clear"):
+                    return self._json({"removed": removed, "added": 0})
+                style = get_project()["style"]
+                plan = automontage.plan({sid: state["sessions"][sid][1] for sid in sids}, target, existing,
+                                        style["duration"] if style["transition"] != "aucune" else 0.0)
+                SELECTIONS.mkdir(parents=True, exist_ok=True)
+                for sid, clips in plan.items():
+                    selections_path(sid).write_text(json.dumps(sorted(existing[sid] + clips, key=lambda c: c["start"]), indent=1))
+            added = [c for v in plan.values() for c in v]
+            return self._json({"removed": removed, "added": len(added),
+                               "seconds": round(sum(c["end"] - c["start"] for c in added), 1)})
         if parts == ["api", "privacy", "manual"]:
             body = self._body() or {}
             sid = body.get("sid")

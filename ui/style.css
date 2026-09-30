@@ -375,3 +375,7 @@ main > aside { grid-column: 3; }
   body.project-open #drawer-backdrop { display: block; position: fixed; inset: 0; z-index: 2999; background: rgba(0,0,0,.5); }
   body.project-open #project-toggle { border-color: var(--accent); color: var(--accent); }
 }
+.auto-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.auto-row select { flex: 1 1 0; min-width: 0; font-size: 12px; padding: 2px 4px; }
+.auto-row button { padding: 2px 8px; font-size: 12px; }
+.badge.auto { border-color: #a78bfa; color: #a78bfa; }

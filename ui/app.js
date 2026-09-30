@@ -981,6 +981,7 @@ const fmtPrecise = (t) => localClock(t) + "." + Math.floor((t % 1) * 10);
 
 let saveTimer = null;
 function saveClips(keep) {
+  if (keep && keep.auto) delete keep.auto;   // clip auto retouché : il devient le tien (plus remplacé)
   const sel = st.clips[st.sel];
   st.clips.sort((a, b) => a.start - b.start);
   st.sel = sel ? st.clips.indexOf(keep ?? sel) : null;
@@ -1088,7 +1089,7 @@ function renderClips() {
     li.classList.toggle("selected", k === st.sel);
     li.innerHTML = `<input type="checkbox" class="chk" ${st.checked.has(c) ? "checked" : ""}>
       <span class="n">${k + 1}</span>
-      <div><div>${localClock(c.start)} → ${localClock(c.end)} <span class="muted">(${fmt(c.end - c.start)})</span></div>
+      <div><div>${localClock(c.start)} → ${localClock(c.end)} <span class="muted">(${fmt(c.end - c.start)})</span>${c.auto ? '<span class="badge auto" title="Créé par le montage automatique">auto</span>' : ""}</div>
       <div class="meta">yaw ${c.yaw}° · pitch ${c.pitch}° · champ ${c.fov}° · horizon ${clipMode(c)}${clipKeys(c).length ? ` · ◆ ${clipKeys(c).length}` : ""}</div></div>
       <div class="act"><button data-a="play" title="Lire le clip">▶</button></div>`;
     li.addEventListener("click", (e) => {
@@ -1547,7 +1548,7 @@ function renderMontage() {
     const t = (c.start + Math.min(2, (c.end - c.start) / 2)).toFixed(1);
     li.innerHTML = `<span class="grip">⋮⋮</span>
       <img loading="lazy" alt="" src="/thumb/${c.sid}.jpg?t=${t}&yaw=${c.yaw}&pitch=${c.pitch}&fov=${c.fov}">
-      <div><span class="n">${c.excluded ? "–" : ++n}</span>${when}<div class="muted">${fmt(c.end - c.start)}</div></div>
+      <div><span class="n">${c.excluded ? "–" : ++n}</span>${when}<div class="muted">${fmt(c.end - c.start)}${c.auto ? ' <span class="badge auto">auto</span>' : ""}</div></div>
       <div class="mt-btns"><button data-mv="-1" title="Monter">↑</button><button data-ex title="${c.excluded ? "Inclure" : "Exclure"} du montage">${c.excluded ? "◌" : "👁"}</button><button data-mv="1" title="Descendre">↓</button></div>`;
     ul.appendChild(li);
   });
@@ -1677,6 +1678,25 @@ $("#pv-list").addEventListener("click", async (e) => {
   await api("PUT", `/api/privacy/${clip.dataset.sid}/${clip.dataset.clip}`, body);
   renderPrivacy();
 });
+
+// montage automatique : meilleurs moments du jour affiché (ou du projet), clips marqués « auto »
+async function autoMontage(clear) {
+  const scope = $("#auto-scope").value;
+  const sids = scope === "day" && st.s ? st.sessions.filter((x) => x.date === st.s.date).map((x) => x.id) : null;
+  $("#mt-total").textContent = clear ? "Retrait des clips auto…" : "Recherche des meilleurs moments…";
+  const r = await api("POST", "/api/automontage", { duration: +$("#auto-duration").value, sids, clear });
+  if (st.s) {   // la session affichée a pu changer : on recharge ses clips
+    const s2 = await api("GET", `/api/session/${st.s.id}`);
+    st.clips = s2.selections || [];
+    st.sel = null;
+    renderClips(); drawClipsOnMap();
+  }
+  await refreshSessions();
+  $("#mt-total").textContent = clear ? `${r.removed} clip(s) auto retiré(s)`
+    : `✨ ${r.added} clip(s) ajouté(s) (${fmt(r.seconds)})` + (r.removed ? `, ${r.removed} ancien(s) remplacé(s)` : "");
+}
+$("#auto-make").addEventListener("click", () => autoMontage(false));
+$("#auto-clear").addEventListener("click", () => autoMontage(true));
 
 async function saveMontage(clips) {
   st.project.clips = clips;
