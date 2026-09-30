@@ -1,9 +1,9 @@
 //! Client minimal de l'API GeoRide (https://api.georide.com).
 //!
-//! Identifiants lus depuis ~/.config/insta-build/georide.env (chmod 600) :
+//! Identifiants lus depuis ~/.config/bike360/georide.env (chmod 600) :
 //!     GEORIDE_EMAIL=...
 //!     GEORIDE_PASSWORD=...
-//! Le jeton obtenu est mis en cache dans ~/.config/insta-build/georide.token.
+//! Le jeton obtenu est mis en cache dans ~/.config/bike360/georide.token.
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
@@ -15,7 +15,10 @@ use serde_json::Value;
 const API: &str = "https://api.georide.com";
 
 fn conf_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config").join("insta-build")
+    let config = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config");
+    let dir = config.join("bike360");
+    let old = config.join("insta-build"); // nom d'avant Bike360 : repris tel quel s'il existe seul
+    if !dir.exists() && old.exists() { old } else { dir }
 }
 
 fn load_env() -> Result<HashMap<String, String>> {

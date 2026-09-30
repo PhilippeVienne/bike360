@@ -169,6 +169,50 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "bike360-core"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "chrono",
+ "image",
+ "ort",
+ "regex",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "bike360-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cudarc",
+ "mp4",
+ "nvidia-video-codec-sdk",
+ "png 0.17.16",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "bike360-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bike360-core",
+ "clap",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha1_smol",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -655,50 +699,6 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown",
-]
-
-[[package]]
-name = "insta-core"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "anyhow",
- "chrono",
- "image",
- "ort",
- "regex",
- "serde",
- "serde_json",
- "ureq",
-]
-
-[[package]]
-name = "insta-render"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cudarc",
- "mp4",
- "nvidia-video-codec-sdk",
- "png 0.17.16",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "insta-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "insta-core",
- "libc",
- "serde",
- "serde_json",
- "sha1_smol",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]

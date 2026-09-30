@@ -1,17 +1,17 @@
 [package]
-name = "insta-server"
+name = "bike360-server"
 version = "0.1.0"
 edition.workspace = true
 
 [[bin]]
-name = "insta-server"
+name = "bike360-server"
 path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
-insta-core = { path = "../core" }
+bike360-core = { path = "../core" }
 libc = "0.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order", "float_roundtrip"] }

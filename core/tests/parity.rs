@@ -3,9 +3,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use insta_core::analyze::{self, Analysis, Gps};
-use insta_core::geometry::{self, Clip, Tilt};
-use insta_core::{automontage, horizon, hyperlapse, numeric::*};
+use bike360_core::analyze::{self, Analysis, Gps};
+use bike360_core::geometry::{self, Clip, Tilt};
+use bike360_core::{automontage, horizon, hyperlapse, numeric::*};
 use serde_json::{json, Value};
 
 fn fixture(name: &str) -> Value {

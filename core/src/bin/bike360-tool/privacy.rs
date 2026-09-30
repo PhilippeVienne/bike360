@@ -14,8 +14,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
-use insta_core::geometry::Mat3;
-use insta_core::privacy::{self, imgproc, Detector, FrameReader, Image};
+use bike360_core::geometry::Mat3;
+use bike360_core::privacy::{self, imgproc, Detector, FrameReader, Image};
 use serde_json::{json, Value};
 
 fn views(path: &str) -> Result<(Vec<f64>, Vec<Mat3>, Vec<f64>)> {
@@ -91,7 +91,7 @@ pub fn run(args: &[String]) -> Result<()> {
             println!("{}", serde_json::to_string(&b)?);
         }
         "privacy-roundtrip" => {
-            // privacy-roundtrip SESSION : load puis save (racine $INSTA_BUILD_ROOT) : aucune perte attendue
+            // privacy-roundtrip SESSION : load puis save (racine $BIKE360_ROOT) : aucune perte attendue
             let data = privacy::load(a(2)?)?;
             privacy::save(a(2)?, &data)?;
             println!("{}", data.len());

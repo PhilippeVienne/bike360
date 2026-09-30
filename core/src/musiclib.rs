@@ -16,7 +16,7 @@ use crate::paths;
 
 const CATALOG_URL: &str = "https://incompetech.com/music/royalty-free/pieces.json";
 const MP3_URL: &str = "https://incompetech.com/music/royalty-free/mp3-royaltyfree/";
-const USER_AGENT: &str = "insta-build/1.0 (outil personnel de montage)";
+const USER_AGENT: &str = "bike360/1.0 (outil personnel de montage)";
 const CATALOG_MAX_AGE: Duration = Duration::from_secs(7 * 86400);
 const ARTIST: &str = "Kevin MacLeod";
 const LICENSE: &str = "CC BY 4.0";

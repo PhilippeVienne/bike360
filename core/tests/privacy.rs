@@ -1,8 +1,8 @@
 //! Non-régression du module de confidentialité : résultats identiques à privacy.py et OpenCV sur
 //! des données synthétiques (références : tests/gen_privacy_fixtures.py). Sans modèle ni GPU.
 
-use insta_core::geometry::Mat3;
-use insta_core::privacy::{self, imgproc, Image, Track};
+use bike360_core::geometry::Mat3;
+use bike360_core::privacy::{self, imgproc, Image, Track};
 use serde_json::Value;
 
 fn fixture() -> Value {

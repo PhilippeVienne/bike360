@@ -1,5 +1,5 @@
 # Service utilisateur systemd du serveur Rust (installé par packaging/install.sh).
-# Réglages locaux (dossier DCIM, adresse, port) : ~/.config/insta-build/server.env
+# Réglages locaux (dossier DCIM, adresse, port) : ~/.config/bike360/server.env
 [Unit]
 Description=Tri et montage des balades Insta360 (serveur local)
 After=network-online.target
@@ -7,11 +7,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=%h/.config/insta-build/server.env
-ExecStart=%h/.local/bin/insta-server ${DCIM} --host ${HOST} --port ${PORT}
+EnvironmentFile=%h/.config/bike360/server.env
+ExecStart=%h/.local/bin/bike360-server ${DCIM} --host ${HOST} --port ${PORT}
 Restart=on-failure
 RestartSec=5
-# le moteur GPU (insta-render) est cherché à côté de l'exécutable
+# le moteur GPU (bike360-render) est cherché à côté de l'exécutable
 Nice=5
 
 [Install]

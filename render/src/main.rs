@@ -1,6 +1,6 @@
 //! Moteur de rendu GPU des clips Insta360 X5 : NVDEC → reprojection CUDA → NVENC.
 //!
-//! Usage : `insta-render job.json` (rendu) ou `insta-render horizon job.json` (analyse d'horizon, cf. horizon.rs). Le travail décrit un morceau de fichier .insv à
+//! Usage : `bike360-render job.json` (rendu) ou `bike360-render horizon job.json` (analyse d'horizon, cf. horizon.rs). Le travail décrit un morceau de fichier .insv à
 //! rendre en vue plane ; les rotations image par image (vue, horizon, inclinaison de
 //! la caméra) sont calculées côté serveur et fournies telles quelles.
 //! Sortie : un flux H.264 Annex-B (`output`), à multiplexer avec le son par ffmpeg.
@@ -110,9 +110,9 @@ fn lens(f: &nvdec::Frame) -> LensPtr {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("horizon") => horizon::run(args.get(2).context("usage : insta-render horizon job.json")?),
+        Some("horizon") => horizon::run(args.get(2).context("usage : bike360-render horizon job.json")?),
         Some(path) => render(path),
-        None => bail!("usage : insta-render job.json | insta-render horizon job.json"),
+        None => bail!("usage : bike360-render job.json | bike360-render horizon job.json"),
     }
 }
 

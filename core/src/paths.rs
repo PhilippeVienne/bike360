@@ -1,9 +1,9 @@
 //! Emplacements des données (même arborescence que la version Python).
 use std::path::PathBuf;
 
-/// Racine du projet : $INSTA_BUILD_ROOT, sinon le dossier du dépôt compilé.
+/// Racine du projet : $BIKE360_ROOT, sinon le dossier du dépôt compilé.
 pub fn root() -> PathBuf {
-    std::env::var_os("INSTA_BUILD_ROOT")
+    std::env::var_os("BIKE360_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/..")))
 }

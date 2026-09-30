@@ -240,9 +240,9 @@ pub fn gps_prior_inputs(result: &Analysis, n_total: usize) -> (Vec<f64>, Vec<f64
 /// Moteur CUDA : à côté de l'exécutable courant, sinon dans target/release du dépôt.
 fn render_bin() -> PathBuf {
     std::env::current_exe().ok()
-        .and_then(|p| Some(p.parent()?.join("insta-render")))
+        .and_then(|p| Some(p.parent()?.join("bike360-render")))
         .filter(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/release/insta-render")))
+        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/release/bike360-render")))
 }
 
 /// Émissions calculées par le moteur CUDA (render/) ; None si indisponible ou en échec.
@@ -289,7 +289,7 @@ pub fn emissions_gpu(lrv: &Path, start: f64, duration: f64, base: &Mat3, progres
 }
 
 fn tempdir() -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("insta-horizon-{}-{}", std::process::id(),
+    let dir = std::env::temp_dir().join(format!("bike360-horizon-{}-{}", std::process::id(),
                                                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)

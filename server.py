@@ -43,7 +43,7 @@ MUSIC = analyze.DATA / "music"  # musiques de fond envoyées depuis l'interface
 MUSIC_EXT = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus", ".flac"}
 MUSIC_MAX_BYTES = 60 * 1024 * 1024
 PROJECT_MIN_S = 60  # sans projet enregistré : sessions d'au moins une minute
-RENDER_BIN = ROOT / "target" / "release" / "insta-render"
+RENDER_BIN = ROOT / "target" / "release" / "bike360-render"
 
 # Objectifs X5 : ~195° utiles par fisheye. Dans ffmpeg v360 (dfisheye), yaw 0 = moitié
 # droite du .lrv = objectif avant ; pitch négatif = vers le bas.

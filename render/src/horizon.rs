@@ -1,6 +1,6 @@
 //! Analyse d'horizon sur GPU (portage de horizon.py, étape « émissions » du Viterbi).
 //!
-//! Usage : `insta-render horizon job.json`. Décode un .lrv (NVDEC), et pour chaque instant
+//! Usage : `bike360-render horizon job.json`. Décode un .lrv (NVDEC), et pour chaque instant
 //! start + j/hz : image équirect → contours → score de chaque orientation candidate.
 //! Sortie : flottants f32 little-endian, `states.len()` par instant (scores bruts, non
 //! normalisés), une ligne `frame=j` par instant sur la sortie standard.

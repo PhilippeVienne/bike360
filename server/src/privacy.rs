@@ -1,4 +1,4 @@
-//! Confidentialité côté serveur : orchestration autour de `insta_core::privacy` (portage des
+//! Confidentialité côté serveur : orchestration autour de `bike360_core::privacy` (portage des
 //! fonctions de server.py qui l'utilisent).
 //!
 //! - analyse des clips dans leur cadrage : rendu GPU en 1920×1080, détection et suivi, pistes
@@ -16,12 +16,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{bail, Context, Result};
-use insta_core::geometry::{self, Mat3};
-use insta_core::insta360::Session;
-use insta_core::analyze::Analysis;
-use insta_core::paths;
-use insta_core::privacy::nets::{self, VitNet};
-use insta_core::privacy::{self, Detector, Image, SessionData, Track};
+use bike360_core::geometry::{self, Mat3};
+use bike360_core::insta360::Session;
+use bike360_core::analyze::Analysis;
+use bike360_core::paths;
+use bike360_core::privacy::nets::{self, VitNet};
+use bike360_core::privacy::{self, Detector, Image, SessionData, Track};
 use serde_json::{json, Map, Value};
 
 use crate::app::{render_bin, App, Job};
@@ -163,7 +163,7 @@ pub fn analyze(app: &App, job: &Job, items: &[(String, Map<String, Value>)], for
         let range;
         let mut hdata = full.as_deref();
         if geometry::clip_horizon_mode(&clip) == geometry::HorizonMode::Auto && hdata.is_none() {
-            range = insta_core::horizon::compute_range(session, result, clip.start - 3.0, clip.end + 3.0);
+            range = bike360_core::horizon::compute_range(session, result, clip.start - 3.0, clip.end + 3.0);
             hdata = range.as_ref();
         }
         let mut tracks: Vec<Track> = vec![];
@@ -262,7 +262,7 @@ fn nearest(times: &[f64], t: f64) -> usize {
 
 /// Six caractères hexadécimaux aléatoires (`secrets.token_hex(3)`).
 fn token_hex3() -> String {
-    insta_core::automontage::new_id()[..6].to_string()
+    bike360_core::automontage::new_id()[..6].to_string()
 }
 
 /// Zone tracée à la main à l'instant t0 : suivie dans le temps (VitTrack) ou fixe sur le clip

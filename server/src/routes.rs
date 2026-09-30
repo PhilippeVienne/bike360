@@ -10,7 +10,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use insta_core::{analyze, automontage, finishing, geometry, hyperlapse, insta360, musiclib};
+use bike360_core::{analyze, automontage, finishing, geometry, hyperlapse, insta360, musiclib};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -18,7 +18,7 @@ use crate::app::{self, exports_dir, music_dir, overrides_path, read_json, source
                  write_json_indent, App, Sess, MUSIC_EXT};
 use crate::export::{self, float_of, int_of, HyperOpts, FORMATS, HEIGHTS};
 use crate::{privacy, pyjson};
-use insta_core::privacy as core_privacy;
+use bike360_core::privacy as core_privacy;
 
 const MUSIC_MAX_BYTES: usize = 60 * 1024 * 1024;
 
@@ -309,7 +309,7 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                 let clips_s: f64 = clips.iter().map(|c| float_of(c.get("end"), 0.0) - float_of(c.get("start"), 0.0)).sum();
                 json!({"id": r.id, "date": r.date, "time": r.time, "duration": r.duration,
                        "gps_coverage": r.gps_coverage, "candidates": r.candidates.len(), "clips": clips.len(),
-                       "clips_s": insta_core::numeric::round_nd(clips_s, 1),
+                       "clips_s": bike360_core::numeric::round_nd(clips_s, 1),
                        "folder": r.extra.get("folder").cloned().unwrap_or(Value::Null),
                        "parts": r.extra.get("parts").cloned().unwrap_or(json!(1))})
             }).collect();
@@ -740,7 +740,7 @@ fn post(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Result
                     if f.is_nan() {
                         return Err(());
                     }
-                    ov.insert(sid.clone(), json!(insta_core::numeric::round_nd(f, 2)));
+                    ov.insert(sid.clone(), json!(bike360_core::numeric::round_nd(f, 2)));
                 }
             }
             write_json_indent(&overrides_path(), &Value::Object(ov.clone())).map_err(|_| ())?;
@@ -935,5 +935,5 @@ fn automontage_route(app: &Arc<App>, b: &Value) -> Result<Reply, ()> {
         app.write_selections(sid, &all).map_err(|_| ())?;
     }
     Ok(ok(json!({"removed": removed, "added": added.len(),
-                 "seconds": insta_core::numeric::round_nd(added.iter().sum(), 1)})))
+                 "seconds": bike360_core::numeric::round_nd(added.iter().sum(), 1)})))
 }

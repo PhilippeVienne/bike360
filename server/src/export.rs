@@ -7,19 +7,19 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use insta_core::analyze::Analysis;
-use insta_core::geometry::{self, Clip, HorizonMode, Mat3};
-use insta_core::horizon::{self, HorizonData};
-use insta_core::insta360::{Segment, Session};
-use insta_core::numeric::{interp, round_nd, unwrap};
-use insta_core::lean::{self, LeanTrack};
-use insta_core::telemetry::{self, Span};
-use insta_core::{chapters, draw, endcard, finishing, hyperlapse, musiclib, ramp};
+use bike360_core::analyze::Analysis;
+use bike360_core::geometry::{self, Clip, HorizonMode, Mat3};
+use bike360_core::horizon::{self, HorizonData};
+use bike360_core::insta360::{Segment, Session};
+use bike360_core::numeric::{interp, round_nd, unwrap};
+use bike360_core::lean::{self, LeanTrack};
+use bike360_core::telemetry::{self, Span};
+use bike360_core::{chapters, draw, endcard, finishing, hyperlapse, musiclib, ramp};
 use serde_json::{json, Map, Value};
 
 use crate::app::{exports_dir, music_dir, render_bin, thumbs_dir, App, Job};
 use crate::{privacy, pyjson};
-use insta_core::privacy::Track;
+use bike360_core::privacy::Track;
 
 /// Objectifs X5 : ~195° utiles par fisheye (v360 dfisheye : yaw 0 = moitié droite du .lrv).
 pub const LENS_FOV: f64 = 195.0;
@@ -898,7 +898,7 @@ fn hyperlapse_inner(app: &App, job: &Job, sid: &str, opts: HyperOpts) -> Result<
     let privacy_on = settings["privacy"]["enabled"].as_bool().unwrap_or(false);
     // zones déjà analysées ou tracées dans les clips de la session, + détection image par image
     let known: Vec<Track> = if privacy_on {
-        privacy::load(sid).values().flat_map(|e| insta_core::privacy::all_tracks(Some(e))).collect()
+        privacy::load(sid).values().flat_map(|e| bike360_core::privacy::all_tracks(Some(e))).collect()
     } else {
         vec![]
     };

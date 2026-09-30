@@ -1,6 +1,6 @@
 //! Serveur local de l'outil de tri : UI, streaming des proxys .lrv, sélections, export.
 //!
-//! Usage : insta-server [DCIM] [--port 8360] [--host 127.0.0.1]
+//! Usage : bike360-server [DCIM] [--port 8360] [--host 127.0.0.1]
 //! Portage Rust de server.py : mêmes routes, mêmes JSON, mêmes fichiers de data/.
 
 mod app;

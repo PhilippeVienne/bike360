@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Client minimal de l'API GeoRide (https://api.georide.com).
 
-Identifiants lus depuis ~/.config/insta-build/georide.env (chmod 600) :
+Identifiants lus depuis ~/.config/bike360/georide.env (chmod 600) :
     GEORIDE_EMAIL=...
     GEORIDE_PASSWORD=...
-Le token obtenu est mis en cache dans ~/.config/insta-build/georide.token.
+Le token obtenu est mis en cache dans ~/.config/bike360/georide.token.
 
 Usage :
     python3 georide.py trackers
@@ -22,7 +22,9 @@ import urllib.request
 from pathlib import Path
 
 API = "https://api.georide.com"
-CONF_DIR = Path.home() / ".config" / "insta-build"
+CONF_DIR = Path.home() / ".config" / "bike360"
+if not CONF_DIR.exists() and (Path.home() / ".config" / "insta-build").exists():
+    CONF_DIR = Path.home() / ".config" / "insta-build"   # nom d'avant Bike360
 ENV_FILE = CONF_DIR / "georide.env"
 TOKEN_FILE = CONF_DIR / "georide.token"
 

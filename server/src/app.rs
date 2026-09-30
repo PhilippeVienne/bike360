@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
 use anyhow::Result;
-use insta_core::analyze::{self, Analysis};
-use insta_core::horizon::{self, HorizonData};
-use insta_core::insta360::{self, Session};
-use insta_core::{automontage, finishing, paths, telemetry};
+use bike360_core::analyze::{self, Analysis};
+use bike360_core::horizon::{self, HorizonData};
+use bike360_core::insta360::{self, Session};
+use bike360_core::{automontage, finishing, paths, telemetry};
 use serde_json::{json, Map, Value};
 
 use crate::pyjson;
@@ -69,14 +69,14 @@ pub fn ui_file(rel: &str) -> Option<UiFile> {
     UI_FILES.iter().find(|(name, _)| *name == rel).map(|(_, data)| UiFile::Embedded(data))
 }
 
-/// Moteur GPU : à côté de ce binaire, sinon <racine>/target/release/insta-render.
+/// Moteur GPU : à côté de ce binaire, sinon <racine>/target/release/bike360-render.
 pub fn render_bin() -> PathBuf {
-    if let Some(p) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("insta-render"))) {
+    if let Some(p) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("bike360-render"))) {
         if p.exists() {
             return p;
         }
     }
-    paths::root().join("target/release/insta-render")
+    paths::root().join("target/release/bike360-render")
 }
 
 /// Écrit un fichier JSON au format de Python (`json.dumps(v, indent=1)`).
@@ -584,7 +584,7 @@ fn migrate_block_selections(block_id: &str, members: &[(String, f64)]) -> Result
         for mut c in clips {
             for k in ["start", "end"] {
                 let v = c.get(k).and_then(Value::as_f64).unwrap_or(0.0);
-                c.insert(k.into(), insta_core::numeric::round_nd(v + offset, 2).into());
+                c.insert(k.into(), bike360_core::numeric::round_nd(v + offset, 2).into());
             }
             moved.push(c);
         }

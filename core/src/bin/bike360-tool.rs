@@ -2,10 +2,10 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use insta_core::{analyze, automontage, basemap, endcard, finishing, geometry, horizon, hyperlapse, insta360, lean, musiclib, paths, telemetry};
+use bike360_core::{analyze, automontage, basemap, endcard, finishing, geometry, horizon, hyperlapse, insta360, lean, musiclib, paths, telemetry};
 use serde_json::{json, Value};
 
-#[path = "insta-tool/privacy.rs"]
+#[path = "bike360-tool/privacy.rs"]
 mod privacy_tool;
 
 fn main() -> Result<()> {
@@ -97,7 +97,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&port_check(cmd, &spec)?)?);
         }
         Some(c) if c.starts_with("privacy-") => privacy_tool::run(&args)?,
-        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER... | horizon SESSION DOSSIER... | hyperlapse CACHE.json DURÉE | lean CACHE.json HORIZON.json | basemap|mappanel|layers|overlay|endcard|finishing SPEC.json | privacy-… (voir insta-tool/privacy.rs)"),
+        _ => bail!("usage : bike360-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER... | horizon SESSION DOSSIER... | hyperlapse CACHE.json DURÉE | lean CACHE.json HORIZON.json | basemap|mappanel|layers|overlay|endcard|finishing SPEC.json | privacy-… (voir bike360-tool/privacy.rs)"),
     }
     Ok(())
 }

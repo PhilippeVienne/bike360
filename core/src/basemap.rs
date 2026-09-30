@@ -28,7 +28,7 @@ pub const MAX_ZOOM: u32 = 16;
 pub const UPSCALE: f64 = 1.4;
 /// Une ligne chacune (mini-carte étroite).
 pub const ATTRIBUTION: &[&str] = &["© contributeurs OpenStreetMap"];
-pub const USER_AGENT: &str = "insta-build/1.0 (outil personnel de montage)";
+pub const USER_AGENT: &str = "bike360/1.0 (outil personnel de montage)";
 
 /// Dossier des tuiles en cache.
 pub fn cache_dir() -> PathBuf {

@@ -19,7 +19,7 @@ MAX_ZOOM = 16
 UPSCALE = 1.4         # carte agrandie : noms de lieux lisibles une fois incrustés dans la vidéo
 CACHE = analyze.CACHE / "tiles" / "osm"
 ATTRIBUTION = ("© contributeurs OpenStreetMap",)  # une ligne chacune (mini-carte étroite)
-USER_AGENT = "insta-build/1.0 (outil personnel de montage)"
+USER_AGENT = "bike360/1.0 (outil personnel de montage)"
 
 
 def stylize(img, saturation=0.4, brightness=0.72):

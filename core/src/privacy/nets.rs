@@ -53,7 +53,7 @@ static INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 fn init() -> Result<()> {
     INIT.get_or_init(|| {
         let lib = ort_library().ok_or("bibliothèque onnxruntime introuvable (pip install onnxruntime-gpu==1.26.0)")?;
-        ort::init_from(&lib).map_err(|e| format!("{}: {e}", lib.display()))?.with_name("insta-privacy").commit();
+        ort::init_from(&lib).map_err(|e| format!("{}: {e}", lib.display()))?.with_name("bike360-privacy").commit();
         Ok(())
     })
     .clone()
