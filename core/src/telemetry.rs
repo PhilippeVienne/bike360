@@ -10,14 +10,14 @@
 //! Tailles proportionnelles au petit côté de la sortie.
 //!
 //! API :
-//! - [`Options`] / [`DEFAULTS`] (clés « enabled, speed, map, altitude, place »), [`Options::merged`].
+//! - [`Options`] / [`DEFAULTS`] (clés « enabled, speed, map, altitude, place, lean »), [`Options::merged`].
 //! - [`series`]`(r, key) -> Option<Vec<f64>>` (trous interpolés), [`raw`]`(r, key) -> Vec<f64>` (NaN),
 //!   [`runs`]`(xs, ys, step)`, [`place_at`]`(r, t_session) -> String`, [`escape`]`(text)`.
 //! - [`map_panel`]`(result, clip, tracks, S, U) -> (Canvas, MapProjection, attribution: bool)`.
 //! - [`layers`]`(result, clip, t0, n_frames, fps, W, H, opts, first_part, workdir, time_map, tracks)
 //!   -> Result<Option<Layers>>`.
 //! - [`overlay`]`(part, out, result, clip, t0, dur, W, H, opts, first_part, encoder_args, workdir,
-//!   time_map, tracks) -> Result<bool>`.
+//!   time_map, tracks) -> Result<bool>` (sans jauge d'inclinaison).
 //!
 //! `clip` : [`Span`] (début, fin en secondes de session) ; `time_map(t_sortie) → t_session` pour
 //! un temps non linéaire (hyperlapse), par défaut t0 + t ; `tracks` : analyses des sessions du
@@ -35,6 +35,7 @@ use serde_json::{Map, Value};
 use crate::analyze::Analysis;
 use crate::basemap::{self, Projector};
 use crate::draw::{self, Canvas, ACCENT, FONT, FONT_BOLD};
+use crate::lean::LeanTrack;
 use crate::numeric::interp;
 use crate::paths;
 
@@ -49,10 +50,12 @@ pub struct Options {
     pub map: bool,
     pub altitude: bool,
     pub place: bool,
+    /// Jauge d'angle d'inclinaison (horizon mesuré ; absente sans horizon).
+    pub lean: bool,
 }
 
-pub const DEFAULTS: Options = Options { enabled: false, speed: true, map: true, altitude: true, place: true };
-pub const KEYS: [&str; 5] = ["enabled", "speed", "map", "altitude", "place"];
+pub const DEFAULTS: Options = Options { enabled: false, speed: true, map: true, altitude: true, place: true, lean: true };
+pub const KEYS: [&str; 6] = ["enabled", "speed", "map", "altitude", "place", "lean"];
 
 impl Default for Options {
     fn default() -> Self {
@@ -72,6 +75,7 @@ impl Options {
                 "map" => o.map = b,
                 "altitude" => o.altitude = b,
                 "place" => o.place = b,
+                "lean" => o.lean = b,
                 _ => {}
             }
         }
@@ -334,6 +338,24 @@ fn profile(alt: &[f64], clip: Span, s: usize, ph: usize, u: f64) -> Canvas {
     prof
 }
 
+/// Jauge d'inclinaison : cadran (graduations tous les 15°) et aiguille penchée comme la moto.
+fn lean_gauge(deg: i64, w: usize, h: usize, u: f64) -> Result<Canvas> {
+    let mut img = draw::rounded_panel(w, h, h as f64 * 0.18, 0.45);
+    let (cx, cy, r) = (w as f64 / 2.0, h as f64 * 0.74, h as f64 * 0.56);
+    let polar = |a: f64, k: f64| (cx + r * k * a.to_radians().sin(), cy - r * k * a.to_radians().cos());
+    for a in (-45..=45).step_by(15) {
+        let (c, alpha) = if a == 0 { ([255.0; 3], 0.9) } else { ([200.0; 3], 0.7) };
+        img.polyline(&[polar(a as f64, 0.8), polar(a as f64, 1.0)], 2f64.max(u * 0.0025), c, alpha);
+    }
+    img.polyline(&[polar(deg as f64, -0.12), polar(deg as f64, 0.95)], 3f64.max(u * 0.006), ACCENT, 1.0);
+    img.disc(cx, cy, 3f64.max(u * 0.006), [255.0; 3], 1.0);
+    let label = format!("{}°", deg.abs());
+    let fs = (h as f64 * 0.2).round();
+    let tw = draw::text_length(FONT_BOLD, fs, &label)?;
+    draw::draw_text(&mut img, cx - tw / 2.0, cy + h as f64 * 0.02, &label, FONT_BOLD, fs, [255.0; 3], 1.0)?;
+    Ok(quantize(&img))
+}
+
 fn cursor(u: usize, ph: usize) -> Canvas {
     Canvas::filled(2.max((u as f64 * 0.003) as usize), ph, [255.0, 255.0, 255.0, 230.0])
 }
@@ -383,8 +405,8 @@ fn quantize(img: &Canvas) -> Canvas {
 /// None sans GPS (latitude ou vitesse).
 #[allow(clippy::too_many_arguments)]
 pub fn layers(result: &Analysis, clip: Span, t0: f64, n_frames: usize, fps: f64, w: usize, h: usize, opts: &Options,
-              first_part: bool, workdir: &Path, time_map: Option<&dyn Fn(f64) -> f64>, tracks: &[&Analysis])
-              -> Result<Option<Layers>> {
+              first_part: bool, workdir: &Path, time_map: Option<&dyn Fn(f64) -> f64>, tracks: &[&Analysis],
+              lean: Option<&LeanTrack>) -> Result<Option<Layers>> {
     let (Some(lat), Some(lon), Some(speed)) = (series(result, "lat"), series(result, "lon"), series(result, "speed")) else {
         return Ok(None);
     };
@@ -475,6 +497,18 @@ pub fn layers(result: &Analysis, clip: Span, t0: f64, n_frames: usize, fps: f64,
             let label = round_even(at_index(&speed, times[k])).max(0).to_string();
             let i = sprite(&format!("spd\0{label}"), &mut || text_sprite(&label, FONT_BOLD, fs, [255.0; 3], false))?;
             frames[k].push([i as f64, bx + (bw as f64 * 0.08) as usize as f64, by + (bh as f64 * 0.06) as usize as f64, 1.0]);
+        }
+    }
+    if let (true, Some(track)) = (opts.lean, lean) {
+        // à droite du compteur de vitesse, même hauteur ; une image par degré (créée à la demande)
+        let bh = (0.13 * uf) as usize;
+        let gw = (bh as f64 * 1.25) as usize;
+        let gx = (m + if opts.speed { (0.22 * uf) as usize + (0.015 * uf) as usize } else { 0 }) as f64;
+        let gy = (h - bottom - bh) as f64;
+        for k in 0..n_frames {
+            let deg = track.at(times[k]).round().clamp(-crate::lean::LIMIT_DEG, crate::lean::LIMIT_DEG) as i64;
+            let i = sprite(&format!("lean\0{deg}"), &mut || lean_gauge(deg, gw, bh, uf))?;
+            frames[k].push([i as f64, gx, gy, 1.0]);
         }
     }
     if opts.place && first_part {

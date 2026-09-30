@@ -161,8 +161,16 @@ fn port_check(cmd: &str, spec: &Value) -> Result<Value> {
             let (w, h) = (f("W") as usize, f("H") as usize);
             let first = spec["first_part"].as_bool().unwrap_or(false);
             if cmd == "layers" {
+                // « horizon » (facultatif) : cache <session>_horizon.json → jauge d'inclinaison
+                let track = match spec["horizon"].as_str() {
+                    Some(p) => {
+                        let hd: horizon::HorizonData = serde_json::from_reader(std::fs::File::open(p)?)?;
+                        Some(lean::LeanTrack::new(&hd, &r.tilt))
+                    }
+                    None => None,
+                };
                 let l = telemetry::layers(&r, clip, t0, f("n_frames") as usize, f("fps"), w, h, &opts, first, &out("workdir"),
-                                          time_map, &refs)?;
+                                          time_map, &refs, track.as_ref())?;
                 serde_json::to_value(l)?
             } else {
                 let c = telemetry::overlay_command(&out("part"), &out("out"), &r, clip, t0, f("dur"), w, h, &opts, first,
@@ -172,7 +180,8 @@ fn port_check(cmd: &str, spec: &Value) -> Result<Value> {
         }
         "endcard" => {
             let credits = strings(&spec["credits"]);
-            let s = endcard::render(&refs, f("W") as usize, f("H") as usize, &out("out"), spec["title"].as_str().unwrap_or(""), &credits)?;
+            let s = endcard::render(&refs, f("W") as usize, f("H") as usize, &out("out"), spec["title"].as_str().unwrap_or(""), &credits,
+                                  &serde_json::from_value::<Vec<lean::LeanStats>>(spec["lean"].clone()).unwrap_or_default())?;
             json!({"summary": s, "label": endcard::date_label(&s.days)})
         }
         _ => {   // finishing

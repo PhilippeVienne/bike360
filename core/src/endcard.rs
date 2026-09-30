@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::analyze::Analysis;
+use crate::lean::{LeanStats, LIMIT_DEG};
 use crate::basemap;
 use crate::draw::{self, Canvas, ACCENT, FONT, FONT_BOLD};
 use crate::telemetry::raw;
@@ -35,6 +36,10 @@ pub struct Summary {
     pub climb_m: f64,
     pub max_speed_kmh: Option<f64>,
     pub alt_max_m: Option<f64>,
+    /// Angle d'inclinaison maximal (°) des sessions dont l'horizon est calculé, et s'il atteint
+    /// la limite de mesure (affiché « ≥ 44° »).
+    pub lean_max_deg: Option<f64>,
+    pub lean_at_limit: bool,
 }
 
 /// Entier avec espaces fines insécables (U+202F) entre milliers, comme la version Python.
@@ -63,7 +68,7 @@ pub fn summary(results: &[&Analysis]) -> Summary {
     days.sort();
     days.dedup();
     Summary { days, distance_km: tot("distance_km"), moving_s: tot("moving_s"), climb_m: tot("climb_m"),
-              max_speed_kmh: top("max_speed_kmh"), alt_max_m: top("alt_max_m") }
+              max_speed_kmh: top("max_speed_kmh"), alt_max_m: top("alt_max_m"), lean_max_deg: None, lean_at_limit: false }
 }
 
 /// Date ou période du montage, en toutes lettres.
@@ -149,9 +154,15 @@ pub fn map(results: &[&Analysis], size: usize) -> Option<Canvas> {
     Some(im)
 }
 
-/// Image W×H de la carte de fin → `path` ; `credits` : lignes (musique) en bas de l'image.
-pub fn render(results: &[&Analysis], w: usize, h: usize, path: &Path, title: &str, credits: &[String]) -> Result<Summary> {
-    let s = summary(results);
+/// Image W×H de la carte de fin → `path` ; `credits` : lignes (musique) en bas de l'image ;
+/// `lean` : statistiques d'inclinaison des sessions qui en ont (record d'angle, sinon absent).
+pub fn render(results: &[&Analysis], w: usize, h: usize, path: &Path, title: &str, credits: &[String],
+              lean: &[LeanStats]) -> Result<Summary> {
+    let mut s = summary(results);
+    if let Some(best) = lean.iter().map(|l| l.max_left_deg.max(l.max_right_deg)).reduce(f64::max).filter(|v| *v > 0.0) {
+        s.lean_max_deg = Some(best);
+        s.lean_at_limit = lean.iter().any(|l| l.at_limit);
+    }
     let mut im = Canvas::filled(w, h, [BG[0], BG[1], BG[2], 255.0]);
     let (wf, hf) = (w as f64, h as f64);
     let u = wf.min(hf);
@@ -209,6 +220,10 @@ pub fn render(results: &[&Analysis], w: usize, h: usize, path: &Path, title: &st
     }
     if let Some(v) = s.max_speed_kmh.filter(|v| *v != 0.0) {
         lines.push((format!("{v:.0} km/h"), "vitesse max"));
+    }
+    if let Some(a) = s.lean_max_deg {
+        let v = if s.lean_at_limit && a >= LIMIT_DEG - 0.5 { format!("≥ {LIMIT_DEG:.0}°") } else { format!("{a:.0}°") };
+        lines.push((v, "d'angle max"));
     }
     for (value, label) in &lines {
         draw::draw_text(&mut im, tx, y, value, FONT_BOLD, mid, ACCENT, 1.0)?;

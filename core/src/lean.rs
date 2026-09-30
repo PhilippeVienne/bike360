@@ -5,7 +5,7 @@
 //! signe près (positif = penché à droite). À basse vitesse l'estimation est lâche (a priori
 //! large, guidon braqué) : les statistiques ne comptent que les passages roulants.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::analyze::Analysis;
 use crate::geometry::{self, Tilt};
@@ -41,7 +41,7 @@ pub fn lean_at(series: &[f64], h: &HorizonData, t: f64) -> f64 {
     series[i] + (series[j] - series[i]) * (x - i as f64)
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LeanStats {
     /// Angles maximaux (°, lissés sur ~1 s) à gauche et à droite, en roulant.
     pub max_left_deg: f64,
@@ -87,4 +87,30 @@ pub fn lean_stats(h: &HorizonData, result: &Analysis) -> Option<LeanStats> {
         t_right: round_nd(best_r.1, 1),
         at_limit: best_l.0.max(best_r.0) >= LIMIT_DEG - 0.5,
     })
+}
+
+/// Angle lissé prêt à incruster (jauge de la télémétrie).
+#[derive(Debug, Clone)]
+pub struct LeanTrack {
+    series: Vec<f64>,
+    t0: f64,
+    hz: f64,
+}
+
+impl LeanTrack {
+    /// Lissage d'environ ¼ s : la jauge ne tremble pas d'une image à l'autre.
+    pub fn new(h: &HorizonData, tilt: &Tilt) -> Self {
+        LeanTrack { series: gauss(&lean_series(h, tilt), h.hz as f64 / 4.0), t0: h.t0.unwrap_or(0.0), hz: h.hz as f64 }
+    }
+
+    /// Angle (°, positif = à droite) à l'instant t (temps de session).
+    pub fn at(&self, t: f64) -> f64 {
+        if self.series.is_empty() {
+            return 0.0;
+        }
+        let x = ((t - self.t0) * self.hz).clamp(0.0, (self.series.len() - 1) as f64);
+        let i = x.floor() as usize;
+        let j = (i + 1).min(self.series.len() - 1);
+        self.series[i] + (self.series[j] - self.series[i]) * (x - i as f64)
+    }
 }
