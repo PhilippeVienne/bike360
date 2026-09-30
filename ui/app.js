@@ -491,13 +491,23 @@ function userView(p) {
     const r = cv.getBoundingClientRect();
     return { x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) };
   };
+  const fingers = new Map();   // pincement à deux doigts = champ (zoom)
+  const spread = () => { const [a, b] = [...fingers.values()]; return Math.hypot(a.x - b.x, a.y - b.y) || 1; };
   cv.addEventListener("pointerdown", (e) => {
+    fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (fingers.size === 2 && !st.zoneEdit && !st.maskEdit) {
+      drag = { pinch: { d: spread(), fov: st.view.fov } };
+      st.dragging = true;
+      return;
+    }
     drag = { x: e.clientX, y: e.clientY, q: texCoord(e), rotate: e.ctrlKey || e.metaKey, a: angleAt(e), z: st.zoneEdit ? canvasPos(e) : null };
     st.dragging = true;
     cv.classList.toggle("rotating", drag.rotate);
     cv.setPointerCapture(e.pointerId);
   });
-  cv.addEventListener("pointerup", () => {
+  const release = (e) => {
+    fingers.delete(e.pointerId);
+    if (drag && drag.pinch) { if (!fingers.size) { drag = null; st.dragging = false; } return; }
     cv.classList.remove("rotating");
     st.dragging = false;
     if (drag && drag.z) {
@@ -509,8 +519,15 @@ function userView(p) {
     const m = st.maskDraft;
     st.maskDraft = null; drag = null;
     if (m && m.w > .005 && m.h > .01) { st.masks.push(m); saveSettings(); }
-  });
+  };
+  cv.addEventListener("pointerup", release);
+  cv.addEventListener("pointercancel", release);
   cv.addEventListener("pointermove", (e) => {
+    if (fingers.has(e.pointerId)) fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (drag && drag.pinch) {
+      if (fingers.size === 2) userView({ fov: drag.pinch.fov * drag.pinch.d / spread() });
+      return;
+    }
     if (drag && drag.z) {
       const q = canvasPos(e);
       st.zoneDraft = { x: Math.min(q.x, drag.z.x), y: Math.min(q.y, drag.z.y), w: Math.abs(q.x - drag.z.x), h: Math.abs(q.y - drag.z.y) };
@@ -765,8 +782,18 @@ function edgeAt(x) {
   return null;
 }
 let tlDrag = null;
-tl.addEventListener("mousedown", (e) => {
+// Pointeurs (souris et doigts) : bords de clip, points clés, balayage (glisser dans le vide),
+// pincement à deux doigts = zoom de la frise.
+const tlTouches = new Map();
+tl.addEventListener("pointerdown", (e) => {
+  tlTouches.set(e.pointerId, e.clientX);
+  if (tlTouches.size === 2) {   // début d'un pincement : on abandonne le glisser en cours
+    const [a, b] = [...tlTouches.values()];
+    tlDrag = { pinch: { d: Math.abs(a - b) || 1, span: st.tl.v1 - st.tl.v0, mid: tOf((a + b) / 2 - tl.getBoundingClientRect().left) } };
+    return;
+  }
   if (!st.s || e.offsetX <= LABEL_W) return;
+  tl.setPointerCapture(e.pointerId);
   const kh = keyAt(e.offsetX, e.offsetY);
   if (kh) {
     const c = st.clips[kh.k];
@@ -776,11 +803,22 @@ tl.addEventListener("mousedown", (e) => {
     return;
   }
   const hit = edgeAt(e.offsetX);
-  if (hit) { tlDrag = { ...hit, moved: false }; st.sel = hit.k; renderEditor(); e.preventDefault(); }
+  if (hit) { tlDrag = { ...hit, moved: false }; st.sel = hit.k; renderEditor(); e.preventDefault(); return; }
+  if (e.pointerType !== "mouse") tlDrag = { scrub: true, moved: false };   // au doigt : balayage
 });
-window.addEventListener("mousemove", (e) => {
+tl.addEventListener("pointermove", (e) => {
+  if (tlTouches.has(e.pointerId)) tlTouches.set(e.pointerId, e.clientX);
   if (!tlDrag) return;
   const r = tl.getBoundingClientRect();
+  if (tlDrag.pinch) {
+    if (tlTouches.size < 2) return;
+    const [a, b] = [...tlTouches.values()], p = tlDrag.pinch;
+    const span = Math.max(30, Math.min(st.s.duration, p.span * p.d / Math.max(10, Math.abs(a - b))));
+    const v0 = Math.max(0, Math.min(st.s.duration - span, p.mid - span / 2));
+    st.tl = { v0, v1: v0 + span };
+    return;
+  }
+  if (tlDrag.scrub) { tlDrag.moved = true; seek(tOf(Math.max(LABEL_W, e.clientX - r.left))); return; }
   const c = st.clips[tlDrag.k], t = tOf(e.clientX - r.left);
   if (tlDrag.key) {   // déplacement d'un point clé dans le clip
     tlDrag.key.t = +Math.max(0, Math.min(c.end - c.start, t - c.start)).toFixed(2);
@@ -797,13 +835,18 @@ window.addEventListener("mousemove", (e) => {
   seek(c[tlDrag.edge]);                 // on voit l'image du bord pendant le réglage
   renderEditor();
 });
-window.addEventListener("mouseup", () => {
+const tlRelease = (e) => {
+  tlTouches.delete(e.pointerId);
   if (!tlDrag) return;
+  if (tlDrag.pinch) { if (!tlTouches.size) setTimeout(() => (tlDrag = null), 0); return; }
+  if (tlDrag.scrub) { const moved = tlDrag.moved; setTimeout(() => (tlDrag = null), 0); if (moved) return; tlDrag = null; return; }
   const c = st.clips[tlDrag.k];
   if (tlDrag.key && !tlDrag.moved) { st.viewOverride = false; seek(c.start + tlDrag.key.t); }
   if (tlDrag.moved) saveClips(c);
   setTimeout(() => (tlDrag = null), 0);  // évite le clic « seek » qui suit le relâchement
-});
+};
+tl.addEventListener("pointerup", tlRelease);
+tl.addEventListener("pointercancel", tlRelease);
 tl.addEventListener("mousemove", (e) => {
   st.hover = e.offsetX > LABEL_W ? tOf(e.offsetX) : null;
   tl.style.cursor = tlDrag || (st.s && (edgeAt(e.offsetX) || keyAt(e.offsetX, e.offsetY))) ? "ew-resize" : "crosshair";
@@ -1272,6 +1315,7 @@ document.addEventListener("click", (e) => {
 document.querySelectorAll("details.menu").forEach((d) => d.addEventListener("toggle", () => {
   if (d.open) document.querySelectorAll("details.menu[open]").forEach((o) => { if (o !== d) o.open = false; });
 }));
+$("#export-toggle").addEventListener("click", () => document.body.classList.toggle("show-export"));
 const helpDlg = $("#help");
 $("#help-open").addEventListener("click", () => helpDlg.showModal());
 helpDlg.addEventListener("click", (e) => { if (e.target === helpDlg || e.target.closest("[data-close]")) helpDlg.close(); });
