@@ -36,7 +36,7 @@ PITCHES = np.arange(-18, 19, 3.0)    # tangage résiduel candidat (°)
 EMISSION_WEIGHT = 4.0
 TRANSITION_SIGMA = 3.0   # ° par pas de 0,1 s
 CACHE_VERSION = 6          # 6 : vitesse GeoRide convertie des nœuds en km/h (a priori)
-RENDER_BIN = Path(__file__).resolve().parent / "render" / "target" / "release" / "insta-render"
+RENDER_BIN = Path(__file__).resolve().parent / "target" / "release" / "insta-render"
 EDGE_FILTER = {"lat_min": -15.0, "lat_max": 55.0, "excl_lon": [125.0, 235.0], "grad_min": 12.0, "weight_cap": 60.0}
 
 
