@@ -617,6 +617,54 @@ pub fn follow(net: &mut VitNet, frames: &[Image], k0: usize, bbox: [i32; 4], dir
     Ok(out)
 }
 
+/// Zone fixe dans le repère caméra (élément solidaire de la moto) : un échantillon toutes les
+/// 0,5 s sur [start, end + 0,5[ (comme server.run_manual_zone).
+pub fn fixed_zone_samples(start: f64, end: f64, d0: &[f64; 3], ax: f64, ay: f64) -> Vec<Sample> {
+    let n = norm(d0);
+    let d = d0.map(|v| v / n);
+    let count = ((end + 0.5 - start) / 0.5).ceil().max(0.0) as usize;
+    (0..count)
+        .map(|i| {
+            let t = start + i as f64 * 0.5;
+            [round_nd(t, 3), round_nd(d[0], 5), round_nd(d[1], 5), round_nd(d[2], 5), round_nd(ax, 5), round_nd(ay, 5)]
+        })
+        .collect()
+}
+
+/// Zone tracée à la main à l'instant t0, suivie dans la vue locale (`frames` rendues avec la
+/// vue `m` et le champ `fov`, une image sur MANUAL_STEP, instants `times`) : échantillons sphère
+/// et vignette (comme server.run_manual_zone).
+#[allow(clippy::too_many_arguments)]
+pub fn track_manual_zone(net: &mut VitNet, frames: &[Image], times: &[f64], fps: f64, t0: f64, d0: &[f64; 3], ax: f64,
+                         ay: f64, m: &Mat3, fov: f64) -> Result<(Vec<Sample>, Option<Image>)> {
+    if frames.is_empty() {
+        bail!("aucune image rendue autour de la zone");
+    }
+    let size = frames[0].w;
+    let mut k0 = 0;
+    for (k, t) in times.iter().enumerate() {
+        if (t - t0).abs() < (times[k0] - t0).abs() {
+            k0 = k;
+        }
+    }
+    let box0 = tight_box(d0, ax, ay, m, fov, size).context("zone derrière la vue locale")?;
+    let mut boxes = follow(net, frames, k0, box0, -1, fps)?;
+    boxes.extend(follow(net, frames, k0, box0, 1, fps)?);
+    let s = size as f64;
+    let samples = boxes.iter()
+        .map(|(k, b)| {
+            let (d, bx, by) = box_to_sphere(&b.map(|v| v as f64), m, fov, s, s);
+            [round_nd(times[*k], 3), round_nd(d[0], 5), round_nd(d[1], 5), round_nd(d[2], 5), round_nd(bx, 5), round_nd(by, 5)]
+        })
+        .collect();
+    let [x, y, w, h] = box0;
+    let mm = w.max(h);
+    let crop = frames[k0].crop((x - mm).max(0) as i64, (y - mm).max(0) as i64, (x + w + mm) as i64, (y + h + mm) as i64);
+    let thumb = (!crop.is_empty())
+        .then(|| resize_linear(&crop, 120, ((120 * crop.h) as f64 / crop.w as f64).max(1.0) as usize));
+    Ok((samples, thumb))
+}
+
 // ------------------------------------------------------------------ fichiers
 
 pub fn path(sid: &str) -> PathBuf {
@@ -859,7 +907,7 @@ pub fn analyze_clip(render: &Path, times: &[f64], mats: &[Mat3], fovs: &[f64], s
                 }
             }
         } else {
-            let dets = detector.detect(&img, (fi / DETECT_EVERY) % TILES_EVERY == 0)?;
+            let dets = detector.detect(&img, (fi / DETECT_EVERY).is_multiple_of(TILES_EVERY))?;
             for d in &dets {
                 // petite vue de chaque zone, pour la vignette de revue
                 if let Some(c) = thumb_crop(&img, &d.bbox) {

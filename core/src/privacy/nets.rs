@@ -538,8 +538,13 @@ fn vit_crop(img: &Image, b: [i32; 4], factor: i32) -> (Image, i32) {
     if rw <= 0 || rh <= 0 {
         return (Image::new(0, 0, 3), crop_sz);
     }
-    let roi = img.crop(rx as i64, ry as i64, (rx + rw) as i64, (ry + rh) as i64);
-    (roi.border(y1p as usize, y2p as usize, x1p as usize, x2p as usize, 0), crop_sz)
+    // copyMakeBorder reçoit une sous-matrice : sans BORDER_ISOLATED, OpenCV prend les vrais pixels
+    // voisins pour la bordure tant qu'il y en a (ici la dernière colonne/ligne écartée par le
+    // « + 1 » des marges droite et basse), puis des zéros : le recadrage vaut donc l'image sur
+    // [x1, x2) × [y1, y2) complétée de zéros hors du cadre.
+    let (ex, ey) = ((img.w as i32 - rx - rw).min(x2p), (img.h as i32 - ry - rh).min(y2p));
+    let roi = img.crop(rx as i64, ry as i64, (rx + rw + ex) as i64, (ry + rh + ey) as i64);
+    (roi.border(y1p as usize, (y2p - ey) as usize, x1p as usize, (x2p - ex) as usize, 0), crop_sz)
 }
 
 fn vit_blob(img: &Image, size: usize) -> Vec<f32> {

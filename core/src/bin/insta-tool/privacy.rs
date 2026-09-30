@@ -6,7 +6,8 @@
 //! privacy-boxes PISTES.json CLIP VUES.json L H : zones par image de sortie (frame_boxes)
 //! privacy-key SÉLECTIONS.json              : empreintes view_key des clips
 //! privacy-follow RENDU.h264 TAILLE K0 X Y L H SENS FPS : suivi d'une zone (follow)
-//! privacy-blur SOURCE SORTIE VUES.json PISTES.json CLIP L H : floutage ffmpeg (blur_video)
+//! privacy-blur SOURCE SORTIE VUES.json PISTES.json CLIP L H [detect] : floutage ffmpeg (blur_video)
+//! privacy-vit / privacy-match / privacy-link : suiveur, corrélation de gabarit, ancienne liaison
 //!
 //! VUES.json : {"times": [...], "mats": [[[3×3]]...], "fovs": [...]} (une entrée par image).
 use std::path::Path;
@@ -43,6 +44,12 @@ pub fn run(args: &[String]) -> Result<()> {
                 m => bail!("mode inconnu {m}"),
             };
             std::fs::write(a(8)?, out)?;
+        }
+        "privacy-match" => {
+            // privacy-match ZONE.bgr L H GABARIT.bgr L H : meilleure corrélation (TM_CCOEFF_NORMED)
+            let area = Image::from_bgr(a(3)?.parse()?, a(4)?.parse()?, std::fs::read(a(2)?)?);
+            let templ = Image::from_bgr(a(6)?.parse()?, a(7)?.parse()?, std::fs::read(a(5)?)?);
+            println!("{}", serde_json::to_string(&imgproc::match_template_best(&area, &templ))?);
         }
         "privacy-detect" => {
             let n: usize = a(3)?.parse()?;
@@ -83,6 +90,12 @@ pub fn run(args: &[String]) -> Result<()> {
             let b = privacy::frame_boxes(&times, &mats, &fovs, &tracks, a(5)?.parse()?, a(6)?.parse()?);
             println!("{}", serde_json::to_string(&b)?);
         }
+        "privacy-roundtrip" => {
+            // privacy-roundtrip SESSION : load puis save (racine $INSTA_BUILD_ROOT) : aucune perte attendue
+            let data = privacy::load(a(2)?)?;
+            privacy::save(a(2)?, &data)?;
+            println!("{}", data.len());
+        }
         "privacy-key" => {
             let clips: Vec<Value> = serde_json::from_reader(std::fs::File::open(a(2)?)?)?;
             let keys: Vec<String> = clips.iter().map(privacy::view_key).collect();
@@ -111,6 +124,21 @@ pub fn run(args: &[String]) -> Result<()> {
                 .collect();
             println!("{}", serde_json::to_string(&privacy::link(&frames))?);
         }
+        "privacy-zone" => {
+            // privacy-zone RENDU_LOCAL.h264 TAILLE T_DÉBUT FPS T0 DX DY DZ AX AY : zone manuelle suivie
+            // (vue locale regardant vers d, champ local_fov) → échantillons ; + zone fixe [T0, T0+2]
+            let size: usize = a(3)?.parse()?;
+            let (start, fps, t0): (f64, f64, f64) = (a(4)?.parse()?, a(5)?.parse()?, a(6)?.parse()?);
+            let d = [a(7)?.parse()?, a(8)?.parse()?, a(9)?.parse()?];
+            let (ax, ay): (f64, f64) = (a(10)?.parse()?, a(11)?.parse()?);
+            let frames = privacy::decode(Path::new(a(2)?), size, privacy::MANUAL_STEP)?;
+            let times: Vec<f64> = (0..frames.len()).map(|i| start + (i * privacy::MANUAL_STEP) as f64 / fps).collect();
+            let (m, fov) = (privacy::local_view(&d), privacy::local_fov(ax, ay));
+            let mut net = privacy::nets::VitNet::new(&privacy::nets::project_model(privacy::nets::TRACK_MODEL)?, false)?;
+            let (samples, thumb) = privacy::track_manual_zone(&mut net, &frames, &times, fps, t0, &d, ax, ay, &m, fov)?;
+            let fixed = privacy::fixed_zone_samples(t0, t0 + 2.0, &d, ax, ay);
+            println!("{}", json!({"samples": samples, "thumb": thumb.map(|t| [t.w, t.h]), "fixed": fixed}));
+        }
         "privacy-vit" => {
             // privacy-vit RENDU.h264 L H K0 X Y BL BH N [cpu] : suiveur seul, N mises à jour depuis K0
             let (w, h): (usize, usize) = (a(3)?.parse()?, a(4)?.parse()?);
@@ -120,8 +148,13 @@ pub fn run(args: &[String]) -> Result<()> {
             let gpu = args.get(11).map(String::as_str) != Some("cpu");
             let mut net = privacy::nets::VitNet::new(&privacy::nets::project_model(privacy::nets::TRACK_MODEL)?, gpu)?;
             let mut r = FrameReader::open(Path::new(a(2)?), w, h)?;
-            let (mut fi, mut tr, mut out, mut dt) = (0usize, None, vec![], 0.0);
+            let step: usize = std::env::var("STEP").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+            let (mut fi, mut tr, mut out, mut dt, mut raw) = (0usize, None, vec![], 0.0, 0usize);
             while let Some(img) = r.next_frame() {
+                raw += 1;
+                if (raw - 1) % step != 0 {
+                    continue;
+                }
                 if fi == k0 {
                     tr = Some(privacy::nets::VitTracker::init(&img, b));
                 } else if fi > k0 && fi <= k0 + n {
@@ -141,10 +174,14 @@ pub fn run(args: &[String]) -> Result<()> {
         "privacy-blur" => {
             let (times, mats, fovs) = views(a(4)?)?;
             let tracks = clip_tracks(a(5)?, a(6)?)?;
+            // 9e argument « detect » : détection directe par image (résumé hyperlapse)
+            let mut det = if args.get(9).map(String::as_str) == Some("detect") { Some(Detector::new()?) } else { None };
+            // encodeur : $PRIVACY_ENC (ex. « -c:v libx264rgb -qp 0 » pour comparer sans perte)
+            let enc: Vec<String> = std::env::var("PRIVACY_ENC").unwrap_or_else(|_| "-c:v libx264 -crf 20".into())
+                .split_whitespace().map(String::from).collect();
             let t = Instant::now();
             let n = privacy::blur_video(Path::new(a(2)?), Path::new(a(3)?), &times, &mats, &fovs, &tracks, a(7)?.parse()?,
-                                        a(8)?.parse()?, &["-c:v".into(), "libx264".into(), "-crf".into(), "20".into()],
-                                        None, None)?;
+                                        a(8)?.parse()?, &enc, det.as_mut(), None)?;
             eprintln!("floutage {:.2} s", t.elapsed().as_secs_f64());
             println!("{n}");
         }

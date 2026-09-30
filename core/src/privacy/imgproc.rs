@@ -298,7 +298,26 @@ pub fn components(mask: &[bool], w: usize, h: usize) -> Vec<Component> {
     comps.into_iter().map(|c| c.2).collect()
 }
 
+/// Produit scalaire sur 8 accumulateurs (vectorisable par le compilateur).
+fn dot8(a: &[f32], b: &[f32]) -> f32 {
+    let mut acc = [0f32; 8];
+    let (ca, cb) = (a.chunks_exact(8), b.chunks_exact(8));
+    let (ra, rb) = (ca.remainder(), cb.remainder());
+    for (x, y) in ca.zip(cb) {
+        for k in 0..8 {
+            acc[k] += x[k] * y[k];
+        }
+    }
+    let mut s: f32 = acc.iter().sum();
+    for (x, y) in ra.iter().zip(rb) {
+        s += x * y;
+    }
+    s
+}
+
 /// cv2.matchTemplate(TM_CCOEFF_NORMED) puis minMaxLoc : (meilleur score, x, y).
+/// Calcul direct (OpenCV passe par une FFT en float32, à ~1e-3 près : sur deux maxima
+/// quasi égaux, la position retenue peut différer d'un pixel).
 pub fn match_template_best(area: &Image, templ: &Image) -> Option<(f64, usize, usize)> {
     let (tw, th, cn) = (templ.w, templ.h, templ.c);
     if area.w < tw || area.h < th || tw == 0 || th == 0 {
@@ -337,15 +356,16 @@ pub fn match_template_best(area: &Image, templ: &Image) -> Option<(f64, usize, u
         s[((y + th) * iw + x + tw) * cn + k] - s[(y * iw + x + tw) * cn + k] - s[((y + th) * iw + x) * cn + k] + s[(y * iw + x) * cn + k]
     };
     let af: Vec<f32> = area.data.iter().map(|v| *v as f32).collect();
-    let mut best: Option<(f64, usize, usize)> = None;
-    for y in 0..rh {
+    // meilleur score d'une ligne du résultat ; lignes réparties sur les cœurs (calcul direct coûteux)
+    let row = |y: usize| -> Option<(f64, usize, usize)> {
+        let mut best: Option<(f64, usize, usize)> = None;
         for x in 0..rw {
             // corrélation avec le gabarit centré (la moyenne de la fenêtre s'annule : Σ tz = 0)
             let mut num = 0.0f64;
             for r in 0..th {
                 let a = &af[((y + r) * area.w + x) * cn..((y + r) * area.w + x + tw) * cn];
                 let t = &tz[r * tw * cn..(r + 1) * tw * cn];
-                num += a.iter().zip(t).map(|(a, t)| a * t).sum::<f32>() as f64;
+                num += dot8(a, t) as f64;
             }
             let (mut sum2, mut mean2) = (0.0, 0.0);
             for k in 0..cn {
@@ -366,12 +386,49 @@ pub fn match_template_best(area: &Image, templ: &Image) -> Option<(f64, usize, u
                 best = Some((v, x, y));
             }
         }
+        best
+    };
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(rh).max(1);
+    let per = rh.div_ceil(threads);
+    let parts: Vec<Option<(f64, usize, usize)>> = std::thread::scope(|sc| {
+        let handles: Vec<_> = (0..threads)
+            .map(|k| {
+                let row = &row;
+                sc.spawn(move || {
+                    let mut best: Option<(f64, usize, usize)> = None;
+                    for y in k * per..((k + 1) * per).min(rh) {
+                        if let Some(r) = row(y)
+                            && best.is_none_or(|b| r.0 > b.0)
+                        {
+                            best = Some(r);
+                        }
+                    }
+                    best
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap_or(None)).collect()
+    });
+    // premier maximum dans l'ordre de balayage (comme minMaxLoc)
+    let mut best: Option<(f64, usize, usize)> = None;
+    for r in parts.into_iter().flatten() {
+        if best.is_none_or(|b| r.0 > b.0) {
+            best = Some(r);
+        }
     }
     best
 }
 
 /// Noyau gaussien d'OpenCV (sigma déduit de la taille, comme GaussianBlur(k, 0)).
 fn gauss_kernel(k: usize) -> Vec<f32> {
+    // petites tailles : tables fixes d'OpenCV (getGaussianKernel, sigma ≤ 0)
+    match k {
+        1 => return vec![1.0],
+        3 => return vec![0.25, 0.5, 0.25],
+        5 => return vec![0.0625, 0.25, 0.375, 0.25, 0.0625],
+        7 => return vec![0.03125, 0.109375, 0.21875, 0.28125, 0.21875, 0.109375, 0.03125],
+        _ => {}
+    }
     let sigma = 0.3 * ((k as f64 - 1.0) * 0.5 - 1.0) + 0.8;
     let c = (k as f64 - 1.0) / 2.0;
     let w: Vec<f64> = (0..k).map(|i| (-((i as f64 - c).powi(2)) / (2.0 * sigma * sigma)).exp()).collect();
