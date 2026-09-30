@@ -217,7 +217,7 @@ def to_samples(track, times, mats, fovs):
 
 
 MERGE_GAP_S, MERGE_ANGLE = 0.35, 30.0   # recollage : objets rapides (voiture croisée de près)
-HOLD_GAP_S, HOLD_ANGLE = 7.0, 8.0       # … et objets suivis perdus quelques secondes (plaque en bord d'image,
+HOLD_GAP_S, HOLD_ANGLE = 3.0, 5.0       # … et objets suivis perdus quelques secondes (plaque en bord d'image,
                                         # cahots) : même direction → la zone est tenue entre les deux
 
 
@@ -244,7 +244,10 @@ def merge_fragments(tracks):
         if best is None:
             out.append(t)
             continue
-        best["samples"] = sorted(best["samples"] + t["samples"], key=lambda x: x[0])
+        # chevauchement : la piste plus récente fait foi (l'ancienne n'y a souvent plus qu'un suiveur
+        # à la traîne) ; jamais deux positions au même instant
+        keep_old = [x for x in best["samples"] if x[0] < s0[0] - 1e-3]
+        best["samples"] = sorted(keep_old + t["samples"], key=lambda x: x[0])
         best["conf"] = max(best["conf"], t["conf"])
         if t["conf"] > best.get("thumb_conf", 0):   # garder la vignette la plus sûre
             best["thumb"], best["thumb_conf"] = t["thumb"], t["conf"]
@@ -410,8 +413,42 @@ def view_key(clip):
 # ------------------------------------------------------------------ analyse d'un clip
 
 TRACK_KEEP_S = 2.0      # suivi image par image : poursuivi jusqu'à 2 s sans nouvelle détection
-TRACK_SCORE = 0.35      # confiance minimale du suiveur (VitTrack)
+TRACK_SCORE = 0.45      # confiance minimale du suiveur (VitTrack)
+TAIL_S = 0.5            # après la dernière détection, le suiveur seul ne tient la zone que 0,5 s
 TRACK_MAX = 12          # suiveurs actifs au plus (scènes chargées : village, parking)
+
+
+def _consistent(hits, hard, tail, keep):
+    """Positions du suiveur gardées seulement si elles restent cohérentes avec les détections.
+
+    Entre deux détections, le suiveur doit rester à moins d'une taille d'objet de la trajectoire
+    joignant ces détections (sinon il a glissé sur le décor) ; après la dernière, il ne tient
+    que `tail` images, près de la dernière position détectée. Retourne [(image, conf, boîte)]."""
+    hard_f = [h[0] for h in hard]
+    out = []
+    for f, c, b, is_hard in hits:
+        if is_hard:
+            out.append((f, c, b))
+            continue
+        k = int(np.searchsorted(hard_f, f))
+        cx, cy = b[0] + b[2] / 2, b[1] + b[3] / 2
+        if 0 < k < len(hard):
+            a, z = hard[k - 1], hard[k]
+            if z[0] - a[0] > keep:
+                continue
+            u = (f - a[0]) / (z[0] - a[0])
+            ex = (a[2][0] + a[2][2] / 2) * (1 - u) + (z[2][0] + z[2][2] / 2) * u
+            ey = (a[2][1] + a[2][3] / 2) * (1 - u) + (z[2][1] + z[2][3] / 2) * u
+            size = max(a[2][2], a[2][3], z[2][2], z[2][3])
+        elif k == len(hard) and f - hard[-1][0] <= tail:
+            a = hard[-1]
+            ex, ey = a[2][0] + a[2][2] / 2, a[2][1] + a[2][3] / 2
+            size = max(a[2][2], a[2][3])
+        else:
+            continue
+        if math.hypot(cx - ex, cy - ey) <= size:
+            out.append((f, c, b))
+    return out
 
 
 def analyze_clip(render_h264, times, mats, fovs, sid, clip_id, detector, progress=None):
@@ -462,30 +499,51 @@ def analyze_clip(render_h264, times, mats, fovs, sid, clip_id, detector, progres
                 crop = img[int(max(0, y - m)):int(min(AH, y + h + m)), int(max(0, x - m)):int(min(AW, x + w + m))]
                 if crop.size:
                     crops[(fi, tuple(box))] = cv2.resize(crop, (120, max(1, int(120 * crop.shape[0] / crop.shape[1]))))
-            used = set()
-            for kind, conf, *box in sorted(dets, key=lambda d: -d[1]):
-                best, score = None, 0.0
+            # appariement détections ↔ pistes au plus proche de la position prédite (vitesse entre
+            # les deux dernières détections) ; sans historique, tolérance large : un objet rapide
+            # (voiture croisée, ~150 px entre deux analyses) garde sa piste, deux plaques voisines
+            # gardent chacune la leur
+            pairs = []
+            for di, (kind, conf, *box) in enumerate(dets):
+                cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
                 for t in active:
-                    if t["kind"] != kind or id(t) in used:
+                    if t["kind"] != kind:
                         continue
-                    last = t["box"]
-                    cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
-                    lx, ly = last[0] + last[2] / 2, last[1] + last[3] / 2
-                    near = math.hypot(cx - lx, cy - ly) < 1.5 * max(box[2], box[3], last[2], last[3])
-                    sc = _iou(box, last) + (0.1 if near else 0)
-                    if sc > score and (sc > 0.15 or near):
-                        best, score = t, sc
+                    (f1, b1) = t["det"][-1]
+                    obj = max(box[2], box[3], b1[2], b1[3])
+                    if len(t["det"]) > 1:
+                        (f0, b0) = t["det"][-2]
+                        vx = ((b1[0] + b1[2] / 2) - (b0[0] + b0[2] / 2)) / max(f1 - f0, 1)
+                        vy = ((b1[1] + b1[3] / 2) - (b0[1] + b0[3] / 2)) / max(f1 - f0, 1)
+                        gate = 1.5 * obj
+                    else:
+                        vx = vy = 0.0
+                        gate = max(4 * obj, 0.18 * AW)
+                    px, py = b1[0] + b1[2] / 2 + vx * (fi - f1), b1[1] + b1[3] / 2 + vy * (fi - f1)
+                    dist = math.hypot(cx - px, cy - py)
+                    if dist <= gate:
+                        pairs.append((dist / gate, di, id(t), t))
+            taken_d, taken_t = set(), set()
+            matched = {}
+            for _, di, tid, t in sorted(pairs, key=lambda p: p[0]):
+                if di in taken_d or tid in taken_t:
+                    continue
+                taken_d.add(di)
+                taken_t.add(tid)
+                matched[di] = t
+            for di, (kind, conf, *box) in enumerate(dets):
+                best = matched.get(di)
                 if best is None:
                     if len(active) >= TRACK_MAX:
                         continue
-                    best = {"kind": kind, "hits": [], "conf": conf, "lost": 0}
+                    best = {"kind": kind, "hits": [], "conf": conf, "lost": 0, "det": []}
                     active.append(best)
                     best["tracker"] = start(img, box)
                 elif _iou(box, best["box"]) < 0.6:   # dérive du suiveur : on le recale sur la détection
                     best["tracker"] = start(img, box)
                 best.update(box=tuple(box), last_det=fi, lost=0, conf=max(best["conf"], conf))
                 best["hits"].append((fi, conf, tuple(box), True))
-                used.add(id(best))
+                best["det"] = (best["det"] + [(fi, tuple(box))])[-2:]
         for t in [t for t in active if fi - t["last_det"] > keep or t["lost"] > 3]:
             active.remove(t)
             done.append(t)
@@ -507,8 +565,7 @@ def analyze_clip(render_h264, times, mats, fovs, sid, clip_id, detector, progres
         if (fi, tuple(box)) in crops:
             cv2.imwrite(str(THUMBS / thumb), crops[(fi, tuple(box))])
         conf = round(max(h[1] for h in hard), 2)
-        last_hard = hard[-1][0]
-        hits = [(f, c, b) for f, c, b, _ in t["hits"] if f <= last_hard + keep]
+        hits = _consistent(t["hits"], hard, int(TAIL_S * fps), keep)
         tracks.append({"id": k, "kind": t["kind"], "conf": conf, "thumb_conf": conf,
                        "enabled": True, "thumb": thumb, "samples": to_samples({"hits": hits}, times, mats, fovs)})
     return merge_fragments(tracks)
