@@ -362,7 +362,7 @@ function regionsAt(tracks, t) {
       const a = s[k - 1], b = s[k];
       if (b[0] - a[0] > PV_GAP) {   // trou tenu seulement si l'objet est resté dans la même direction
         const dot = a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-        if (b[0] - a[0] > 7 || Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI > 8) continue;
+        if (b[0] - a[0] > 3 || Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI > 5) continue;
       }
       const f = (t - a[0]) / Math.max(b[0] - a[0], 1e-6);
       d = [0, 1, 2].map((i) => a[1 + i] * (1 - f) + b[1 + i] * f);
