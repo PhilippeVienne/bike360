@@ -100,6 +100,14 @@ def _session(s):
                                               x.get("duration", 0.0)) for x in s["segments"]], s.get("parts", []))
 
 
+def _tracks(result, tracks):
+    """Analyses des sessions du montage, avec l'objet `result` lui-même pour la session courante
+    (telemetry._map_panel la reconnaît par identité : `r is not result`)."""
+    if tracks is None:
+        return None
+    return [result if t.get("id") == result.get("id") else t for t in tracks]
+
+
 def _mats(mats):
     return [np.array(m, float).reshape(3, 3) for m in mats]
 
@@ -110,7 +118,7 @@ def minimap(a):
     (telemetry,) = _import("telemetry")
     from PIL import Image
     result, clip, size = a["result"], a["clip"], a["size"]
-    panel, project, _ = telemetry._map_panel(result, clip, a["tracks"], size, size / 0.26)
+    panel, project, _ = telemetry._map_panel(result, clip, _tracks(result, a["tracks"]), size, size / 0.26)
     if clip["end"] > clip["start"]:
         lat, lon = telemetry._series(result, "lat"), telemetry._series(result, "lon")
         if lat is not None:
@@ -130,14 +138,14 @@ def telemetry_layers(a):
     tm = a.get("time_map")
     time_map = (lambda t, ot=np.array(tm[0]), pt=np.array(tm[1]): np.interp(t, ot, pt)) if tm else None
     return telemetry.layers(a["result"], a["clip"], a["t0"], a["n_frames"], a["fps"], a["W"], a["H"], a["opts"],
-                            a["first_part"], Path(a["workdir"]), time_map=time_map, tracks=a.get("tracks"))
+                            a["first_part"], Path(a["workdir"]), time_map=time_map, tracks=_tracks(a["result"], a.get("tracks")))
 
 
 def telemetry_overlay(a):
     (telemetry,) = _import("telemetry")
     return bool(telemetry.overlay(Path(a["part"]), Path(a["out"]), a["result"], a["clip"], a["t0"], a["dur"],
                                   a["W"], a["H"], a["opts"], first_part=a["first_part"],
-                                  encoder_args=a["encoder_args"], workdir=Path(a["workdir"]), tracks=a.get("tracks")))
+                                  encoder_args=a["encoder_args"], workdir=Path(a["workdir"]), tracks=_tracks(a["result"], a.get("tracks"))))
 
 
 def endcard_render(a):
