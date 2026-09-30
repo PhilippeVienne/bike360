@@ -2,6 +2,7 @@
 
 pub mod analyze;
 pub mod automontage;
+pub mod basemap;
 pub mod draw;
 pub mod geometry;
 pub mod georide;
