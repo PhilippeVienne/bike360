@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Result};
-use insta_core::{geometry, insta360};
+use insta_core::{analyze, geometry, insta360};
 use serde_json::json;
 
 fn main() -> Result<()> {
@@ -32,7 +32,27 @@ fn main() -> Result<()> {
             }
             println!("{}", serde_json::to_string(&out)?);
         }
-        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL"),
+        Some("analyze") => {
+            // analyze DOSSIER... : comme server.load_sessions (dédoublonnage, blocs continus), sans cache
+            let mut sessions: Vec<insta360::Session> = vec![];
+            for dir in &args[2..] {
+                for s in insta360::scan(Path::new(dir)) {
+                    if !sessions.iter().any(|x| x.id == s.id) {
+                        sessions.push(s);
+                    }
+                }
+            }
+            let dur = |s: &insta360::Session| -> f64 {
+                s.segments.iter().filter_map(|x| x.lrv.as_ref()).map(|p| analyze::file_duration(p)).sum()
+            };
+            let durations: std::collections::HashMap<String, f64> = sessions.iter().map(|s| (s.id.clone(), dur(s))).collect();
+            let blocks = insta360::merge_continuous(sessions, |s| durations[&s.id]);
+            for (s, r) in analyze::analyze_sessions(blocks, true)? {
+                eprintln!("{} : {:.1} min, GPS {:.0} %, décalage {:+.1} s ({}), {} candidats", s.id, r.duration as f64 / 60.0,
+                          r.gps_coverage * 100.0, r.offset_s, r.offset_source, r.candidates.len());
+            }
+        }
+        _ => bail!("usage : insta-tool imu FICHIER | scan DOSSIER | views CLIPS.json PITCH ROLL | analyze DOSSIER..."),
     }
     Ok(())
 }
