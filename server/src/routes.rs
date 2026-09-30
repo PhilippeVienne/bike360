@@ -17,7 +17,8 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use crate::app::{self, exports_dir, music_dir, overrides_path, read_json, sources_path,
                  write_json_indent, App, Sess, MUSIC_EXT};
 use crate::export::{self, float_of, int_of, HyperOpts, FORMATS, HEIGHTS};
-use crate::{pending, pyjson};
+use crate::{privacy, pyjson};
+use insta_core::privacy as core_privacy;
 
 const MUSIC_MAX_BYTES: usize = 60 * 1024 * 1024;
 
@@ -397,11 +398,10 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
         let sid = p[2];
         match p[1] {
             "privacy" if app.has(sid) => {
-                let data = pending::privacy_load(sid);
+                let data = privacy::load(sid);
                 let out: Map<String, Value> = data.iter().map(|(cid, e)| {
-                    let tracks: Vec<Value> = pending::privacy_all_tracks(Some(e)).into_iter()
-                        .filter(|t| truthy(t.get("samples"))).collect();
-                    (cid.clone(), Value::Array(tracks))
+                    let tracks = core_privacy::all_tracks(Some(e)).into_iter().filter(|t| !t.samples.is_empty());
+                    (cid.clone(), json!(tracks.collect::<Vec<_>>()))
                 }).collect();
                 return Ok(ok(Value::Object(out)));
             }
@@ -430,7 +430,7 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
     }
     if p[0] == "privacy-thumb" && p.len() == 2 {
         let name = unquote(p[1], false);
-        let f = pending::privacy_thumbs_dir().join(&name);
+        let f = core_privacy::thumbs_dir().join(&name);
         if f.is_file() && !name.contains('/') {
             return Ok(Reply::File(f, Some("image/jpeg")));
         }
@@ -452,20 +452,15 @@ fn py_float(s: &str) -> Option<f64> {
 /// État de l'analyse de confidentialité pour chaque clip du montage (revue).
 fn privacy_overview(app: &App) -> Vec<Value> {
     app.montage_items().into_iter().map(|(sid, clip)| {
-        let data = pending::privacy_load(&sid);
+        let data = privacy::load(&sid);
         let entry = data.get(&clip_id(&clip));
-        let tracks = pending::privacy_all_tracks(entry);
-        let analyzed = truthy(entry) && entry.and_then(|e| e.get("key")).is_some();
-        let stale = analyzed && entry.and_then(|e| e.get("key")) != Some(&Value::String(pending::privacy_view_key(&clip)));
-        let tr: Vec<Value> = tracks.iter().filter(|t| truthy(t.get("samples"))).map(|t| {
-            let mut m = Map::new();
-            for k in ["id", "kind", "conf", "enabled", "thumb"] {
-                m.insert(k.into(), t.get(k).cloned().unwrap_or(Value::Null));
-            }
-            let s = t["samples"].as_array().unwrap();
-            m.insert("t0".into(), s[0][0].clone());
-            m.insert("t1".into(), s[s.len() - 1][0].clone());
-            Value::Object(m)
+        let tracks = core_privacy::all_tracks(entry);
+        let analyzed = entry.and_then(|e| e.key.as_ref()).is_some();
+        let stale = analyzed && !core_privacy::is_analyzed(&data, &Value::Object(clip.clone()));
+        let tr: Vec<Value> = tracks.iter().filter(|t| !t.samples.is_empty()).map(|t| {
+            let s = &t.samples;
+            json!({"id": t.id, "kind": t.kind, "conf": t.conf, "enabled": t.enabled, "thumb": t.thumb,
+                   "t0": s[0][0], "t1": s[s.len() - 1][0]})
         }).collect();
         json!({"sid": sid, "clip": clip.get("id"), "start": clip.get("start"), "end": clip.get("end"),
                "analyzed": analyzed, "stale": stale, "tracks": tr})
@@ -518,8 +513,9 @@ fn put(app: &Arc<App>, full: &str, body: &Bytes) -> Result<Reply, ()> {
     }
     if p.len() == 4 && p[0] == "api" && p[1] == "privacy" && app.has(p[2]) {
         let b = body_obj(body)?;
-        let mut data = pending::privacy_load(p[2]);
-        let mut scratch = json!({});
+        // lecture stricte : un fichier illisible ne doit pas être écrasé par un fichier vide
+        let mut data = core_privacy::load(p[2]).map_err(|_| ())?;
+        let mut scratch = core_privacy::ClipEntry::default();
         let entry = match data.get_mut(p[3]) {
             Some(e) => e,
             None => &mut scratch,
@@ -527,21 +523,19 @@ fn put(app: &Arc<App>, full: &str, body: &Bytes) -> Result<Reply, ()> {
         let track = b.get("track").cloned().unwrap_or(Value::Null);
         if truthy(b.get("delete")) {
             // seules les zones tracées à la main se suppriment
-            let manual: Vec<Value> = entry.get("manual").and_then(Value::as_array).cloned().unwrap_or_default()
-                .into_iter().filter(|t| t.get("id") != Some(&track)).collect();
-            entry["manual"] = Value::Array(manual);
+            let mut manual = entry.manual.take().unwrap_or_default();
+            manual.retain(|t| t.id != track);
+            entry.manual = Some(manual);
         }
         let enabled = truthy(b.get("enabled"));
-        for key in ["tracks", "manual"] {
-            if let Some(Value::Array(list)) = entry.get_mut(key) {
-                for t in list.iter_mut() {
-                    if t.get("id") == Some(&track) || track == json!("all") {
-                        t["enabled"] = json!(enabled);
-                    }
+        for list in [&mut entry.tracks, &mut entry.manual].into_iter().flatten() {
+            for t in list.iter_mut() {
+                if t.id == track || track == json!("all") {
+                    t.enabled = Some(enabled);
                 }
             }
         }
-        pending::privacy_save(p[2], &data).map_err(|_| ())?;
+        core_privacy::save(p[2], &data).map_err(|_| ())?;
         return Ok(ok(json!({"ok": true})));
     }
     if p == ["api", "project"] {
@@ -607,7 +601,7 @@ fn zone_from_body(b: &Value) -> Option<([f64; 3], f64, f64, Map<String, Value>)>
         return None;
     }
     let (w, h) = (1000.0 * f(b.get("aspect")?)?, 1000.0);
-    let (d, ax, ay) = pending::box_to_sphere((bx[0] * w, bx[1] * h, bx[2] * w, bx[3] * h), &m, f(v.get("fov")?)?, w, h);
+    let (d, ax, ay) = core_privacy::box_to_sphere(&[bx[0] * w, bx[1] * h, bx[2] * w, bx[3] * h], &m, f(v.get("fov")?)?, w, h);
     let mut view0 = Map::new();
     for k in ["yaw", "pitch", "roll", "fov"] {
         view0.insert(k.into(), json!(match v.get(k) {
