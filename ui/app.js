@@ -360,7 +360,10 @@ function regionsAt(tracks, t) {
     if (k <= 0) { const a = k === 0 ? s[0] : s[s.length - 1]; d = a.slice(1, 4); ax = a[4]; ay = a[5]; }
     else {
       const a = s[k - 1], b = s[k];
-      if (b[0] - a[0] > PV_GAP) continue;
+      if (b[0] - a[0] > PV_GAP) {   // trou tenu seulement si l'objet est resté dans la même direction
+        const dot = a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+        if (b[0] - a[0] > 7 || Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI > 8) continue;
+      }
       const f = (t - a[0]) / Math.max(b[0] - a[0], 1e-6);
       d = [0, 1, 2].map((i) => a[1 + i] * (1 - f) + b[1 + i] * f);
       ax = a[4] * (1 - f) + b[4] * f; ay = a[5] * (1 - f) + b[5] * f;

@@ -172,6 +172,8 @@ def to_samples(track, times, mats, fovs):
 
 
 MERGE_GAP_S, MERGE_ANGLE = 0.35, 30.0   # recollage : objets rapides (voiture croisée de près)
+HOLD_GAP_S, HOLD_ANGLE = 7.0, 8.0       # … et objets suivis perdus quelques secondes (plaque en bord d'image,
+                                        # cahots) : même direction → la zone est tenue entre les deux
 
 
 def merge_fragments(tracks):
@@ -187,10 +189,12 @@ def merge_fragments(tracks):
         best, best_ang = None, None
         for o in out:
             e = o["samples"][-1]
-            if o["kind"] != t["kind"] or not -0.15 <= s0[0] - e[0] <= MERGE_GAP_S:
+            if o["kind"] != t["kind"] or not -0.15 <= s0[0] - e[0] <= HOLD_GAP_S:
                 continue
             ang = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(e[1:4], s0[1:4]))))))
-            if ang <= MERGE_ANGLE and (best_ang is None or ang < best_ang):
+            gap = s0[0] - e[0]
+            ok = (gap <= MERGE_GAP_S and ang <= MERGE_ANGLE) or (gap <= HOLD_GAP_S and ang <= HOLD_ANGLE)
+            if ok and (best_ang is None or ang < best_ang):
                 best, best_ang = o, ang
         if best is None:
             out.append(t)
@@ -225,8 +229,11 @@ def regions_at(tracks, t):
         else:
             a, b = s[k - 1], s[k]
             f = (t - a[0]) / max(b[0] - a[0], 1e-6)
-            if b[0] - a[0] > TRACK_GAP / 15:   # trou trop long : pas d'invention entre deux passages
-                continue
+            gap = b[0] - a[0]
+            if gap > TRACK_GAP / 15:   # trou : tenu seulement si l'objet est resté dans la même direction
+                ang = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(a[1:4], b[1:4]))))))
+                if gap > HOLD_GAP_S or ang > HOLD_ANGLE:
+                    continue
             d = np.array(a[1:4]) * (1 - f) + np.array(b[1:4]) * f
             ax, ay = a[4] * (1 - f) + b[4] * f, a[5] * (1 - f) + b[5] * f
         out.append((d / np.linalg.norm(d), ax, ay))

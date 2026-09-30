@@ -511,6 +511,10 @@ def run_export(key, clips, quality, opts):
             job["warning"] = f"{int(total_s // 60)} min {int(total_s % 60):02d} : long pour un Reel (90 s) ou un Short (60 s)"
         gpu = q["source"] == "insv" and gpu_engine_available()
         job["engine"] = "GPU" if gpu else "ffmpeg"
+        if blur_on:   # floutage demandé : aucun clip ne doit échapper à l'analyse (ajouté ou recadré depuis)
+            pending = privacy_pending(clips)
+            if pending:
+                analyze_privacy(job, pending, label=f"confidentialité ({len(pending)} clip(s) à analyser) · ")
         out_dir = EXPORTS / key / name
         out_dir.mkdir(parents=True, exist_ok=True)
         todo = [(i, sid, c, p) for i, (sid, c) in enumerate(clips)
@@ -600,60 +604,10 @@ def run_export(key, clips, quality, opts):
 
 
 def run_privacy(items, force=False):
-    """Analyse de confidentialité : visages et plaques de chaque clip, dans son cadrage."""
+    """Tâche d'analyse de confidentialité (bouton « Analyser les clips »)."""
     job = state["jobs"]["privacy"]
     try:
-        if not gpu_engine_available():
-            raise ValueError("l'analyse demande le moteur GPU (render/ + NVENC)")
-        job["message"] = "chargement des modèles"
-        detector = privacy.Detector()
-        work = analyze.CACHE / "privacy_render"
-        work.mkdir(parents=True, exist_ok=True)
-        total = sum(c["end"] - c["start"] for _, c in items) or 1
-        done, found, skipped = 0.0, 0, 0
-        for n, (sid, clip) in enumerate(items):
-            dur_clip = clip["end"] - clip["start"]
-            key = privacy.view_key(clip)
-            if not force and privacy.load(sid).get(clip["id"], {}).get("key") == key:
-                done += dur_clip
-                skipped += 1
-                continue
-            session, result = state["sessions"][sid]
-            full = state["horizon"].get(sid, {})
-            horizon_data = full.get("data") if full.get("status") == "done" else None
-            if geometry.clip_horizon_mode(clip) == "auto" and horizon_data is None:
-                horizon_data = horizon.compute_range(session, result, clip["start"] - 3, clip["end"] + 3)
-            tracks = []
-            for k, (seg, ss, dur) in enumerate(clip_parts(session, result, clip)):
-                if not seg.insv:
-                    raise ValueError(f"fichier .insv manquant pour {sid}")
-                fps = source_fps(seg.insv)
-                seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
-                targets = part_targets(clip, result, horizon_data, seg_offset, ss, dur, 1 / float(fps))
-                h264, spec = work / f"{sid}_{clip['id']}_{k}.h264", work / f"{sid}_{clip['id']}_{k}.json"
-                spec.write_text(json.dumps({
-                    "source": seg.insv, "start": ss, "duration": dur, "width": privacy.AW, "height": privacy.AH,
-                    "fov": targets[0][2], "fovs": [float(f) for _, _, f in targets], "cq": 21, "masks": [],
-                    "matrices": [[float(v) for v in m.flatten()] for _, m, _ in targets], "output": str(h264)}))
-                job["message"] = f"clip {n + 1}/{len(items)} : rendu"
-                run_part_process(job, [str(RENDER_BIN), str(spec)], lambda _: None)
-                job["message"] = f"clip {n + 1}/{len(items)} : détection"
-
-                def progress(f, base=done, d=dur):
-                    job["progress"] = min(1.0, (base + f * d) / total)
-                part = privacy.analyze_clip(h264, [seg_offset + ss + t for t, _, _ in targets],
-                                            [m for _, m, _ in targets], [f for _, _, f in targets],
-                                            sid, f"{clip['id']}_{k}", detector, progress)
-                for t in part:
-                    t["id"] = len(tracks)
-                    tracks.append(t)
-                h264.unlink(missing_ok=True)
-                spec.unlink(missing_ok=True)
-                done += dur
-            data = privacy.load(sid)
-            data[clip["id"]] = {**data.get(clip["id"], {}), "key": key, "tracks": tracks}
-            privacy.save(sid, data)
-            found += len(tracks)
+        found, skipped = analyze_privacy(job, items, force)
         msg = f"{found} zone(s) détectée(s)" + (f", {skipped} clip(s) déjà à jour" if skipped else "")
         job.update(state="done", progress=1.0, message=msg)
     except Exception as e:
@@ -661,6 +615,70 @@ def run_privacy(items, force=False):
         job.update(state="error", message=str(e))
     finally:
         job.pop("proc", None)
+
+
+def privacy_pending(clips):
+    """Clips [(sid, clip)] jamais analysés, ou dont le cadrage a changé depuis l'analyse."""
+    return [(sid, c) for sid, c in clips
+            if privacy.load(sid).get(c.get("id"), {}).get("key") != privacy.view_key(c)]
+
+
+def analyze_privacy(job, items, force=False, label=""):
+    """Analyse de confidentialité : visages et plaques de chaque clip, dans son cadrage.
+
+    Retourne (zones trouvées, clips déjà à jour). Lève une exception en cas d'échec."""
+    if not gpu_engine_available():
+        raise ValueError("l'analyse demande le moteur GPU (render/ + NVENC)")
+    job["message"] = f"{label}chargement des modèles"
+    detector = privacy.Detector()
+    work = analyze.CACHE / "privacy_render"
+    work.mkdir(parents=True, exist_ok=True)
+    total = sum(c["end"] - c["start"] for _, c in items) or 1
+    done, found, skipped = 0.0, 0, 0
+    for n, (sid, clip) in enumerate(items):
+        dur_clip = clip["end"] - clip["start"]
+        key = privacy.view_key(clip)
+        if not force and privacy.load(sid).get(clip["id"], {}).get("key") == key:
+            done += dur_clip
+            skipped += 1
+            continue
+        session, result = state["sessions"][sid]
+        full = state["horizon"].get(sid, {})
+        horizon_data = full.get("data") if full.get("status") == "done" else None
+        if geometry.clip_horizon_mode(clip) == "auto" and horizon_data is None:
+            horizon_data = horizon.compute_range(session, result, clip["start"] - 3, clip["end"] + 3)
+        tracks = []
+        for k, (seg, ss, dur) in enumerate(clip_parts(session, result, clip)):
+            if not seg.insv:
+                raise ValueError(f"fichier .insv manquant pour {sid}")
+            fps = source_fps(seg.insv)
+            seg_offset = next(x["offset"] for x in result["segments"] if x["index"] == seg.index)
+            targets = part_targets(clip, result, horizon_data, seg_offset, ss, dur, 1 / float(fps))
+            h264, spec = work / f"{sid}_{clip['id']}_{k}.h264", work / f"{sid}_{clip['id']}_{k}.json"
+            spec.write_text(json.dumps({
+                "source": seg.insv, "start": ss, "duration": dur, "width": privacy.AW, "height": privacy.AH,
+                "fov": targets[0][2], "fovs": [float(f) for _, _, f in targets], "cq": 21, "masks": [],
+                "matrices": [[float(v) for v in m.flatten()] for _, m, _ in targets], "output": str(h264)}))
+            job["message"] = f"{label}clip {n + 1}/{len(items)} : rendu"
+            run_part_process(job, [str(RENDER_BIN), str(spec)], lambda _: None)
+            job["message"] = f"{label}clip {n + 1}/{len(items)} : détection"
+
+            def progress(f, base=done, d=dur):
+                job["progress"] = min(1.0, (base + f * d) / total)
+            part = privacy.analyze_clip(h264, [seg_offset + ss + t for t, _, _ in targets],
+                                        [m for _, m, _ in targets], [f for _, _, f in targets],
+                                        sid, f"{clip['id']}_{k}", detector, progress)
+            for t in part:
+                t["id"] = len(tracks)
+                tracks.append(t)
+            h264.unlink(missing_ok=True)
+            spec.unlink(missing_ok=True)
+            done += dur
+        data = privacy.load(sid)
+        data[clip["id"]] = {**data.get(clip["id"], {}), "key": key, "tracks": tracks}
+        privacy.save(sid, data)
+        found += len(tracks)
+    return found, skipped
 
 
 def render_local(job, session, result, a, b, M, fov, size):
