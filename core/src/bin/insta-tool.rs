@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use insta_core::{analyze, automontage, geometry, horizon, hyperlapse, insta360, paths};
+use insta_core::{analyze, automontage, geometry, horizon, hyperlapse, insta360, musiclib, paths};
 use serde_json::json;
 
 fn main() -> Result<()> {
@@ -68,6 +68,10 @@ fn main() -> Result<()> {
             let mut plan = automontage::plan(&results, args[2].parse()?, &Default::default(), 0.6);
             plan.values_mut().flatten().for_each(|c| c.id = None);
             println!("{}", serde_json::to_string(&plan)?);
+        }
+        Some("music") => {
+            // music REQUÊTE AMBIANCE : recherche dans le catalogue en cache
+            println!("{}", serde_json::to_string(&musiclib::search(&args[2], &args[3], 60, 60)?)?);
         }
         Some("hyperlapse") => {
             // hyperlapse CACHE.json DURÉE : résumé et instants des images
