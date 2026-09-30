@@ -4,6 +4,7 @@ pub mod analyze;
 pub mod automontage;
 pub mod basemap;
 pub mod draw;
+pub mod endcard;
 pub mod geometry;
 pub mod georide;
 pub mod horizon;
