@@ -29,6 +29,9 @@ AW, AH = 1920, 1080               # rendu d'analyse (cadrage et champ du clip)
 DETECT_EVERY = 2                  # une image sur deux : le suivi comble
 FACE_SCORE, PLATE_SCORE = 0.6, 0.35
 FACE_SCALE = 0.5                  # détection des visages à mi-résolution (≈ 4× plus rapide)
+VEHICLE_MODEL = "rf-detr-nano-384-coco"   # véhicules : sert à trouver les plaques de moto
+MOTO_SCORE = 0.35
+MOTO_MIN_H = 45                   # moto plus petite (px, image 1080p) : plaque illisible, ignorée
 TRACK_GAP = 12                    # images sans détection tolérées dans une piste
 MIN_HITS, SURE_CONF = 2, 0.75     # piste retenue si ≥ 2 détections, ou une seule très sûre
 EXTEND_S = 0.25                   # floutage prolongé avant/après la piste
@@ -49,6 +52,7 @@ class Detector:
         # carte graphique si onnxruntime-gpu est utilisable (CUDA 12), sinon processeur
         providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in ort.get_available_providers()]
         self.plates = create_detector(PLATE_MODEL, conf_thresh=PLATE_SCORE, providers=providers, batch_size=5)
+        self.vehicles = create_detector(VEHICLE_MODEL, conf_thresh=MOTO_SCORE, providers=providers)
 
     def __call__(self, img):
         cv2 = self.cv2
@@ -86,6 +90,47 @@ class Detector:
                 merged.append([x, y, bw, bh, c])
         for x, y, bw, bh, c in merged:
             out.append(("plaque", c, float(x), float(y), float(bw), float(bh)))
+        out += self._moto_plates(img, merged)
+        return out
+
+    def _moto_plates(self, img, known):
+        """Plaques de moto : le modèle de plaques (appris sur des voitures) ne les reconnaît pas.
+
+        On trouve la moto (détecteur de véhicules), puis sur elle le rectangle clair de la
+        plaque (bande centrale) ; à défaut, si la moto est proche, la zone habituelle de la
+        plaque arrière est floutée par prudence (une moto vue de face n'en a pas : tache
+        sans conséquence)."""
+        cv2 = self.cv2
+        out = []
+        for d in self.vehicles.predict(img):
+            if d.label != "motorcycle":
+                continue
+            b = d.bounding_box
+            x, y, w, h = b.x1, b.y1, b.width, b.height
+            if h < MOTO_MIN_H or h > img.shape[0] * 0.6 or y + h > img.shape[0] * 0.95:
+                continue   # trop loin, ou notre propre moto (en bas de l'image)
+            if any(k[0] < x + w and k[0] + k[2] > x and k[1] < y + h and k[1] + k[3] > y for k in known):
+                continue   # plaque déjà trouvée par le modèle de plaques
+            crop = img[max(0, y):y + h, max(0, x):x + w]
+            if crop.size == 0:
+                continue
+            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+            mask = ((hsv[..., 2] > 150) & (hsv[..., 1] < 70)).astype(np.uint8)   # clair et peu coloré
+            band = np.zeros_like(mask)
+            band[int(h * 0.2):int(h * 0.85), int(w * 0.2):int(w * 0.8)] = 1          # bande centrale
+            n, lab, stats, _ = cv2.connectedComponentsWithStats(mask & band)
+            best = None
+            for i in range(1, n):
+                bx, by, bw, bh, area = stats[i]
+                ratio = bw / max(bh, 1)
+                if 0.02 * w * h <= area <= 0.2 * w * h and 0.7 <= ratio <= 2.5 and area >= 0.6 * bw * bh:
+                    if best is None or area > best[4]:
+                        best = (bx, by, bw, bh, area)
+            if best:
+                bx, by, bw, bh, _ = best
+                out.append(("plaque", 0.5, float(x + bx), float(y + by), float(bw), float(bh)))
+            elif h >= 1.5 * MOTO_MIN_H:
+                out.append(("plaque", 0.35, x + 0.3 * w, y + 0.35 * h, 0.4 * w, 0.3 * h))
         return out
 
 
@@ -364,47 +409,108 @@ def view_key(clip):
 
 # ------------------------------------------------------------------ analyse d'un clip
 
+TRACK_KEEP_S = 2.0      # suivi image par image : poursuivi jusqu'à 2 s sans nouvelle détection
+TRACK_SCORE = 0.35      # confiance minimale du suiveur (VitTrack)
+TRACK_MAX = 12          # suiveurs actifs au plus (scènes chargées : village, parking)
+
+
 def analyze_clip(render_h264, times, mats, fovs, sid, clip_id, detector, progress=None):
     """Détecte et suit dans le rendu d'analyse (`times`, `mats`, `fovs` : une entrée par image).
 
+    Détection une image sur DETECT_EVERY ; entre deux, chaque objet est suivi image par image
+    (VitTrack), et chaque détection recale son suiveur. Le flou suit donc le mouvement de près
+    et tient l'objet quand la détection le rate un instant (bord d'image, cahots, flou).
     Retourne les pistes (avec vignette de la meilleure détection).
     """
     import cv2
+    params = cv2.TrackerVit_Params()
+    params.net = str(TRACK_MODEL)
     n = len(times)
+    fps = (n - 1) / max(times[-1] - times[0], 1e-6) if n > 1 else 30.0
+    keep = int(TRACK_KEEP_S * fps)
     proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(render_h264), "-f", "rawvideo",
                              "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE)
-    frames, crops = [], {}
+    crops, active, done = {}, [], []
     size = AW * AH * 3
+
+    def start(img, box):
+        x, y, w, h = (int(round(v)) for v in box)
+        w, h = max(8, w), max(8, h)
+        tr = cv2.TrackerVit.create(params)
+        tr.init(img, (max(0, x), max(0, y), w, h))
+        return tr
+
     for fi in range(n):
         buf = proc.stdout.read(size)
         if len(buf) < size:
             break
-        if fi % DETECT_EVERY:
-            continue
         img = np.frombuffer(buf, np.uint8).reshape(AH, AW, 3)
-        dets = detector(img)
-        frames.append((fi, dets))
-        for kind, conf, *box in dets:   # petite vue de chaque zone, pour la vignette de revue
-            x, y, w, h = box
-            m = 0.6 * max(w, h)
-            crop = img[int(max(0, y - m)):int(min(AH, y + h + m)), int(max(0, x - m)):int(min(AW, x + w + m))]
-            if crop.size:
-                crops[(fi, tuple(box))] = cv2.resize(crop, (120, max(1, int(120 * crop.shape[0] / crop.shape[1]))))
+        detect_now = fi % DETECT_EVERY == 0
+        if not detect_now:   # images intermédiaires : les suiveurs avancent
+            for t in active:
+                ok, b = t["tracker"].update(img)
+                if ok and t["tracker"].getTrackingScore() >= TRACK_SCORE and b[2] > 2 and b[3] > 2:
+                    t["box"] = tuple(float(v) for v in b)
+                    t["hits"].append((fi, t["conf"] * 0.8, t["box"], False))
+                else:
+                    t["lost"] += 1
+        else:
+            dets = detector(img)
+            for kind, conf, *box in dets:   # petite vue de chaque zone, pour la vignette de revue
+                x, y, w, h = box
+                m = 0.6 * max(w, h)
+                crop = img[int(max(0, y - m)):int(min(AH, y + h + m)), int(max(0, x - m)):int(min(AW, x + w + m))]
+                if crop.size:
+                    crops[(fi, tuple(box))] = cv2.resize(crop, (120, max(1, int(120 * crop.shape[0] / crop.shape[1]))))
+            used = set()
+            for kind, conf, *box in sorted(dets, key=lambda d: -d[1]):
+                best, score = None, 0.0
+                for t in active:
+                    if t["kind"] != kind or id(t) in used:
+                        continue
+                    last = t["box"]
+                    cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
+                    lx, ly = last[0] + last[2] / 2, last[1] + last[3] / 2
+                    near = math.hypot(cx - lx, cy - ly) < 1.5 * max(box[2], box[3], last[2], last[3])
+                    sc = _iou(box, last) + (0.1 if near else 0)
+                    if sc > score and (sc > 0.15 or near):
+                        best, score = t, sc
+                if best is None:
+                    if len(active) >= TRACK_MAX:
+                        continue
+                    best = {"kind": kind, "hits": [], "conf": conf, "lost": 0}
+                    active.append(best)
+                    best["tracker"] = start(img, box)
+                elif _iou(box, best["box"]) < 0.6:   # dérive du suiveur : on le recale sur la détection
+                    best["tracker"] = start(img, box)
+                best.update(box=tuple(box), last_det=fi, lost=0, conf=max(best["conf"], conf))
+                best["hits"].append((fi, conf, tuple(box), True))
+                used.add(id(best))
+        for t in [t for t in active if fi - t["last_det"] > keep or t["lost"] > 3]:
+            active.remove(t)
+            done.append(t)
         if progress:
             progress(fi / n)
     proc.stdout.close()
     proc.wait()
+    done += active
 
     tracks = []
     THUMBS.mkdir(parents=True, exist_ok=True)
-    for k, t in enumerate(link(frames)):
-        fi, conf, box = max(t["hits"], key=lambda h: h[1] * h[2][2] * h[2][3])
+    for t in done:
+        hard = [h for h in t["hits"] if h[3]]
+        if not (len(hard) >= MIN_HITS or max(h[1] for h in hard) >= SURE_CONF):
+            continue
+        k = len(tracks)
+        fi, conf, box, _ = max(hard, key=lambda h: h[1] * h[2][2] * h[2][3])
         thumb = f"{sid}_{clip_id}_{k}.jpg"
         if (fi, tuple(box)) in crops:
             cv2.imwrite(str(THUMBS / thumb), crops[(fi, tuple(box))])
-        conf = round(max(h[1] for h in t["hits"]), 2)
+        conf = round(max(h[1] for h in hard), 2)
+        last_hard = hard[-1][0]
+        hits = [(f, c, b) for f, c, b, _ in t["hits"] if f <= last_hard + keep]
         tracks.append({"id": k, "kind": t["kind"], "conf": conf, "thumb_conf": conf,
-                       "enabled": True, "thumb": thumb, "samples": to_samples(t, times, mats, fovs)})
+                       "enabled": True, "thumb": thumb, "samples": to_samples({"hits": hits}, times, mats, fovs)})
     return merge_fragments(tracks)
 
 
