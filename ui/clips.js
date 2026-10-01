@@ -52,7 +52,7 @@ function addClip(start, end) {
 export function markIn() { st.inPoint = now(); updateMarkUI(); }
 export function markOut() {
   const t = now();
-  if (st.inPoint === null) { $("#mark-hint").textContent = "Pose d'abord un début (I)"; return; }
+  if (st.inPoint === null) { $("#mark-hint").textContent = "Pose d'abord un début (⟦ Début)"; return; }
   const [a, b] = [Math.min(st.inPoint, t), Math.max(st.inPoint, t)];
   st.inPoint = null;
   addClip(a, b);
@@ -62,7 +62,7 @@ export function quickClip() { const t = now(); addClip(t - QUICK_CLIP[0], t + QU
 
 export function updateMarkUI() {
   $("#mark-in").classList.toggle("active", st.inPoint !== null);
-  $("#mark-hint").textContent = st.inPoint !== null ? `début ${fmtPrecise(st.inPoint)} → O pour la fin` : "";
+  $("#mark-hint").textContent = st.inPoint !== null ? `début ${fmtPrecise(st.inPoint)} → « Fin ⟧ » pour terminer le clip` : "";
 }
 
 $("#mark-in").addEventListener("click", markIn);
@@ -165,8 +165,10 @@ export function renderClips() {
   if (!st.clips.length) {
     const li = document.createElement("li");
     li.className = "empty";
-    li.innerHTML = `Aucun clip pour l'instant.<br>Pendant la lecture : <kbd>I</kbd> puis <kbd>O</kbd> pour poser début et fin,
-      ou <kbd>C</kbd> pour un clip de 15 s. <kbd>N</kbd> saute au prochain moment fort (ambre sur la frise).`;
+    li.innerHTML = `<strong>Aucun clip dans cette session.</strong><br>
+      1. Saute aux moments forts avec ◀ ▼ ▶ (les ▼ ambre de la frise).<br>
+      2. Pose le début avec <b>⟦ Début</b> puis la fin avec <b>Fin ⟧</b>, ou <b>＋15 s</b> pour un clip rapide.
+      <span class="kbd-only"><br>Clavier : <kbd>N</kbd>/<kbd>P</kbd> moments forts, <kbd>I</kbd> <kbd>O</kbd> début et fin, <kbd>C</kbd> clip de 15 s.</span>`;
     ol.appendChild(li);
   }
   renderEditor();

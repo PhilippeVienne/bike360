@@ -1,7 +1,8 @@
-// Commandes : barre sous la vidéo (lecture, vitesses, points clés, vues), menus déroulants
-// de l'en-tête, aide (?) et raccourcis clavier.
+// Commandes : barre sous la vidéo (lecture, vitesses, moments forts, points clés, vues),
+// menus déroulants, dialogues et feuilles ([data-open="id"] ouvre <dialog id>), aide et
+// raccourcis clavier (ordinateur ; tout reste faisable au doigt sans eux).
 
-import { st, now, RATES, DEFAULT_VIEW } from "./state.js";
+import { st, video, now, RATES, DEFAULT_VIEW } from "./state.js";
 import { $, $$ } from "./util.js";
 import { activeClip, setView, upsertKey, userView } from "./view.js";
 import { applyRate, jumpCandidate, seek, setRate, togglePlay } from "./playback.js";
@@ -9,6 +10,7 @@ import { deleteSelected, editEdge, markIn, markOut, quickClip, updateMarkUI } fr
 import { jumpKey, renderEditor } from "./clip-editor.js";
 import { showWholeSession } from "./timeline.js";
 import { setZoneEdit } from "./zones.js";
+import { onStep } from "./steps.js";
 
 // ------------------------------------------------------------------ barre de commandes
 
@@ -30,6 +32,11 @@ const addKeyHere = () => { const c = activeClip(now()); if (c) upsertKey(c, now(
 $("#key-prev").addEventListener("click", () => jumpKey(-1));
 $("#key-next").addEventListener("click", () => jumpKey(1));
 $("#key-add").addEventListener("click", addKeyHere);
+$("#cand-prev").addEventListener("click", () => jumpCandidate(-1));
+$("#cand-next").addEventListener("click", () => jumpCandidate(1));
+
+// étape ① : pas de vidéo affichée, on la met en pause
+onStep((s) => { if (s === "files") video.pause(); });
 
 // ------------------------------------------------------------------ menus et aide
 
@@ -40,17 +47,32 @@ document.addEventListener("click", (e) => {
 $$("details.menu").forEach((d) => d.addEventListener("toggle", () => {
   if (d.open) $$("details.menu[open]").forEach((o) => { if (o !== d) o.open = false; });
 }));
+// dialogues et feuilles : [data-open="id"] ouvre, clic sur le fond ou [data-close] ferme ;
+// l'événement « open-dialog » permet au module concerné de rafraîchir son contenu.
+export function openDialog(id, section) {
+  const dlg = $("#" + id);
+  if (!dlg) return;
+  $$("dialog[open]").forEach((d) => d !== dlg && d.close());
+  if (!dlg.open) dlg.showModal();
+  dlg.dispatchEvent(new Event("open-dialog"));
+  if (section) dlg.querySelector(`[data-section="${section}"]`)?.scrollIntoView({ block: "start" });
+}
+document.addEventListener("click", (e) => {
+  const o = e.target.closest("[data-open]");
+  if (o) { e.preventDefault(); openDialog(o.dataset.open, o.dataset.section); return; }
+  const dlg = e.target.closest("dialog");
+  if (dlg && dlg.id !== "lib" && (e.target === dlg || e.target.closest("[data-close]"))) dlg.close();
+});
 const helpDlg = $("#help");
-$("#help-open").addEventListener("click", () => helpDlg.showModal());
-helpDlg.addEventListener("click", (e) => { if (e.target === helpDlg || e.target.closest("[data-close]")) helpDlg.close(); });
+$("#help-open").addEventListener("click", () => openDialog("help"));
 
 // ------------------------------------------------------------------ raccourcis clavier (liste dans l'aide, index.html)
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "?" && !helpDlg.open) { helpDlg.showModal(); e.preventDefault(); return; }
+  if (e.key === "?" && !helpDlg.open) { openDialog("help"); e.preventDefault(); return; }
   if (e.key === "Escape") $$("details.menu[open]").forEach((d) => (d.open = false));
   // pas de raccourci pendant une saisie (sauf cases à cocher et curseurs) ni avec Ctrl/Alt/⌘
-  if (!st.s || helpDlg.open || e.target.tagName === "SELECT" || e.target.tagName === "INPUT" && e.target.type !== "checkbox" && e.target.type !== "range"
+  if (!st.s || $("dialog[open]") || e.target.tagName === "SELECT" || e.target.tagName === "INPUT" && e.target.type !== "checkbox" && e.target.type !== "range"
       || e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
   const big = e.shiftKey ? 30 : 5;

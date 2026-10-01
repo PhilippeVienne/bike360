@@ -1,6 +1,6 @@
-// Panneau Projet, onglet Montage : tous les clips du projet dans un ordre libre (glisser ou
-// ↑↓), avec exclusions ; montage automatique ; aperçu de la mini-carte incrustée ; export
-// du montage et suivi de sa progression.
+// Étape ③ Montage : tous les clips du projet dans un ordre libre (glisser ou ↑↓), avec
+// exclusions ; montage automatique ; aperçu de la mini-carte incrustée. Export du montage
+// (étape ④) et suivi de sa progression (annulation, lien du fichier, chapitres YouTube).
 // Partage : montageKey, renderMontage, updateMontageMap, pollMontage.
 
 import { st } from "./state.js";
@@ -11,6 +11,7 @@ import { loadSession } from "./session.js";
 import { refreshSessions } from "./project.js";
 import { exportSettings } from "./export.js";
 import { renderFinish } from "./finish.js";
+import { isStep, onStep, onTab, setExported, setJob, tabShown, updateSteps } from "./steps.js";
 
 /** Identifiant d'un clip dans le projet (les id de clip ne sont uniques que par session). */
 export const montageKey = (sid, clipId) => `${sid}|${clipId}`;
@@ -18,7 +19,8 @@ const itemKey = (c) => montageKey(c.sid, c.id);
 
 export function renderMontage() {
   const ul = $("#mt-list"), clips = st.project.clips;
-  ul.innerHTML = clips.length ? "" : "<li class='hint'>Aucun clip dans les fichiers du projet.</li>";
+  ul.innerHTML = clips.length ? "" : `<li class="empty">Aucun clip dans les sessions du projet.<br>
+    Repère des moments à l'étape <button data-go="cut">② Repérer &amp; couper</button>, ou laisse faire ✨ le montage automatique ci-dessus.</li>`;
   let n = 0;
   clips.forEach((c) => {
     const li = document.createElement("li");
@@ -36,15 +38,16 @@ export function renderMontage() {
   const kept = clips.filter((c) => !c.excluded);
   const total = kept.reduce((a, c) => a + c.end - c.start, 0);
   $("#mt-total").textContent = kept.length ? `${kept.length} clip(s) · ${fmt(total)}` + (clips.length > kept.length ? ` · ${clips.length - kept.length} exclu(s)` : "") : "";
-  $("#mt-count").textContent = kept.length ? kept.length : "";
+  $("#ex-montage-sum").textContent = kept.length ? $("#mt-total").textContent : "aucun clip : voir l'étape ③";
   $("#mt-start").disabled = $("#mt-preview").disabled = !kept.length;
   updateMontageMap();
-  if (!$("#p-montage").hidden) renderFinish();
+  if (isStep("montage") || isStep("export")) renderFinish();
+  updateSteps();
 }
 
 /** Aperçu de la mini-carte d'export : clip sélectionné (ou premier du montage). */
 export function updateMontageMap() {
-  if ($("#p-montage").hidden) return;
+  if (!tabShown("mt", "minimap")) return;
   const sel = st.s && st.clips[st.sel];
   const c = (sel && st.project.clips.find((x) => x.sid === st.s.id && x.id === sel.id))
     || st.project.clips.find((x) => !x.excluded);
@@ -158,14 +161,21 @@ export async function pollMontage() {
       <button id="mt-cancel">annuler</button>`;
     $("#mt-cancel").onclick = () => api("POST", "/api/export/montage", { cancel: true });
     montageTimer = setTimeout(pollMontage, 1000);
+    setJob("montage", `Montage ${Math.round(j.progress * 100)} %`);
   } else {
+    setJob("montage", null);
+    if (j.state === "done") setExported(j.output);
     el.innerHTML = j.state === "done" ? exportLink(j.output)
       : j.state === "error" ? "⚠ " + j.message.slice(0, 200) : "";
     if (j.warning) el.insertAdjacentHTML("beforeend", ` <span class="warn">⚠ ${j.warning}</span>`);
     if (j.state === "done" && j.chapters) {   // chapitres YouTube : à coller dans la description
       el.insertAdjacentHTML("beforeend", `<div class="hint">Chapitres YouTube (description de la vidéo) :
         <button id="mt-copy-chapters">copier</button></div><textarea id="mt-chapters" readonly rows="${Math.min(8, j.chapters.split("\n").length)}">${esc(j.chapters)}</textarea>`);
-      $("#mt-copy-chapters").onclick = () => { $("#mt-chapters").select(); navigator.clipboard?.writeText(j.chapters).catch(() => document.execCommand("copy")); };
+      $("#mt-copy-chapters").onclick = () => { $("#mt-chapters").select(); (navigator.clipboard ? navigator.clipboard.writeText(j.chapters) : Promise.reject()).catch(() => document.execCommand("copy")); };
     }
   }
 }
+
+// entrée dans l'étape ③ : projet relu (clips des autres sessions), état de l'export
+onStep((step) => { if (step === "montage") { refreshSessions(); pollMontage(); } });
+onTab((g, name) => { if (name === "minimap") updateMontageMap(); });
