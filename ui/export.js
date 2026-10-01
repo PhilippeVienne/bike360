@@ -1,13 +1,14 @@
-// Exports de la session affichée (en-tête) : destination (format, résolution, qualité),
-// cadre de la destination sur l'aperçu, aperçu 720p / export des clips, résumé hyperlapse
-// et suivi de la progression.
+// Étape ④ Exporter, réglages communs (destination, résolution, qualité) et exports de la
+// session affichée : cadre de la destination sur l'aperçu, aperçu 720p / export des clips,
+// résumé hyperlapse et suivi de la progression (avec annulation).
 // Partage : exportSettings, updateFrameGuide, pollExport.
 
 import { st, DEFAULT_VIEW } from "./state.js";
 import { $, api, exportLink, storageGet, storageSet } from "./util.js";
 import { saveClipsNow } from "./clips.js";
+import { onStep, setJob } from "./steps.js";
 
-/** Destination et encodage choisis dans l'en-tête (communs aux clips, au résumé et au montage). */
+/** Destination et encodage choisis à l'étape ④ (communs aux clips, au résumé et au montage). */
 export const exportSettings = () => ({ format: $("#export-format").value,
                                        height: +$("#export-height").value, crf: +$("#export-crf").value });
 
@@ -27,9 +28,7 @@ $("#export-format").addEventListener("change", () => {
   storageSet("exportFormat", $("#export-format").value);
 });
 $("#export-format").value = storageGet("exportFormat") || "standard";
-
-// téléphone : les réglages d'export sont repliés derrière « Exporter ▾ »
-$("#export-toggle").addEventListener("click", () => document.body.classList.toggle("show-export"));
+updateFrameGuide();
 
 // ------------------------------------------------------------------ clips de la session
 
@@ -41,8 +40,9 @@ export async function pollExport() {
   const el = $("#export-status");
   const running = j.state === "running";
   $("#export-preview").disabled = $("#export-final").disabled = $("#hl-start").disabled = running;
+  const kind = { preview: "Aperçu", final: "Export", hyperlapse: "Résumé" }[j.quality] || j.quality;
+  setJob("session", running ? `${kind} ${Math.round(j.progress * 100)} %` : null);
   if (running) {
-    const kind = { preview: "Aperçu", final: "Export", hyperlapse: "Résumé" }[j.quality] || j.quality;
     el.innerHTML = `<progress value="${j.progress}" max="1"></progress> ${kind} ${Math.round(j.progress * 100)} % · ${j.message}
                     <button id="export-cancel">annuler</button>`;
     if (j.warning) el.insertAdjacentHTML("beforeend", `<span class="warn">⚠ ${j.warning}</span>`);
@@ -58,7 +58,7 @@ export async function pollExport() {
 }
 
 async function startExport(quality) {
-  if (!st.clips.length) { $("#export-status").textContent = "Aucun clip sélectionné (I/O)"; return; }
+  if (!st.clips.length) { $("#export-status").textContent = "Aucun clip dans cette session (étape ②)."; return; }
   await saveClipsNow();
   await api("POST", `/api/export/${st.s.id}`, { quality, ...exportSettings() });
   pollExport();
@@ -75,7 +75,7 @@ async function hyperlapseInfo() {
     ? `session courte : ${Math.round(r.output_s)} s au plus`
     : `accéléré de ×${r.slowest_x} (moments forts) à ×${r.fastest_x} (arrêts)`;
 }
-$("#hl-menu").addEventListener("toggle", (e) => { if (e.target.open) hyperlapseInfo(); });
+onStep((s) => { if (s === "export") { hyperlapseInfo(); updateFrameGuide(); } });
 $("#hl-duration").addEventListener("change", hyperlapseInfo);
 $("#hl-start").addEventListener("click", async () => {
   const v = st.view.raw ? DEFAULT_VIEW : st.view;   // cadrage de l'aperçu
@@ -84,6 +84,5 @@ $("#hl-start").addEventListener("click", async () => {
       duration: +$("#hl-duration").value, yaw: v.yaw, pitch: v.pitch, roll: v.roll ?? 0, fov: v.fov,
       horizon: st.view.horizon, ...exportSettings() });
   } catch (err) { $("#export-status").textContent = "⚠ export déjà en cours"; return; }
-  $("#hl-menu").open = false;
   pollExport();
 });

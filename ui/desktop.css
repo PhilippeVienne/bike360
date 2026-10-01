@@ -1,0 +1,61 @@
+/* Disposition ordinateur (index.html) : en-tête avec les étapes, barre « prochaine action »,
+   puis une grille par étape :
+     ① files    : page des fichiers (grille de vignettes)
+     ② cut      : vidéo | carte, stats et clips (largeur réglable)  /  frise sur toute la largeur
+     ③ montage  : ordre du montage | vidéo | finition, confidentialité, mini-carte
+     ④ export   : réglages et exports | vidéo (cadre de la destination) */
+
+html, body { height: 100%; }
+body { display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; }
+header.top { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+  position: relative; z-index: 2000; }   /* menus au-dessus des contrôles Leaflet (z-index 1000) */
+.brand { font-weight: 700; letter-spacing: .02em; color: var(--accent); margin-right: 6px; white-space: nowrap; }
+.kbd-only { display: inline; }
+
+main { display: grid; min-height: 0; overflow: hidden; position: relative; }
+main > * { min-width: 0; min-height: 0; }
+body[data-step=files] main { grid-template: "files" minmax(0, 1fr) / minmax(0, 1fr); }
+body[data-step=cut] main {
+  grid-template: "viewer side" minmax(0, 1fr) "tl tl" auto / minmax(0, 1fr) var(--aside-w, clamp(300px, 27vw, 440px));
+}
+body[data-step=montage] main {
+  grid-template: "mlist viewer mside" minmax(0, 1fr) / clamp(300px, 27vw, 420px) minmax(0, 1fr) clamp(300px, 26vw, 400px);
+}
+body[data-step=export] main { grid-template: "export viewer" minmax(0, 1fr) / clamp(380px, 38vw, 560px) minmax(0, 1fr); }
+#files-view { grid-area: files; }
+.viewer { grid-area: viewer; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+#side { grid-area: side; }
+#tlbox { grid-area: tl; }
+#mlist-view { grid-area: mlist; }
+#mside { grid-area: mside; }
+#export-view { grid-area: export; }
+
+/* pages et colonnes qui défilent */
+.page { overflow: auto; padding: 14px 18px 24px; }
+.column { display: flex; flex-direction: column; gap: 10px; overflow: auto; padding: 12px; }
+#mside.column { padding: 0; gap: 0; border-left: 1px solid var(--line); }
+#mlist-view { border-right: 1px solid var(--line); }
+#export-view { border-right: 1px solid var(--line); }
+.page-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.page-head .hint { margin: 4px 0 0; }
+
+/* ① fichiers : grille de vignettes */
+.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.file-grid > .empty, .file-grid > .hint { grid-column: 1 / -1; }
+
+/* ② colonne de droite : carte / stats en haut, clips en bas */
+#side { border-left: 1px solid var(--line); display: grid; grid-template-rows: minmax(0, 42fr) minmax(0, 58fr); }
+.side-top { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
+#side > .clips { display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--line); }
+#side > .clips > #clips, #side > .clips { overflow: auto; }
+.splitter { position: absolute; top: 0; bottom: 0; width: 10px; margin-left: -5px; z-index: 50; cursor: col-resize; touch-action: none; }
+.splitter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px; background: transparent; transition: background .15s; }
+.splitter:hover::after, .splitter.dragging::after { background: var(--accent); }
+
+/* ② frise */
+#tlbox { border-top: 1px solid var(--line); background: var(--panel); }
+#timeline { height: clamp(120px, 21vh, 170px); }
+
+/* ③ */
+#mt-list { flex: 1; overflow: auto; min-height: 120px; }
+#mside .pane { flex: 1; }

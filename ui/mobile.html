@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="fr" data-ui="mobile">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a1d23">
+<title>Bike360</title>
+<script src="/ui/device.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="/ui/style.css">
+<link rel="stylesheet" href="/ui/mobile.css">
+</head>
+<!-- Interface téléphone. Mêmes éléments (id) que index.html, disposés pour le doigt :
+     une colonne qui défile, vidéo collée en haut, étapes en onglets en bas de l'écran,
+     réglages et options de vue en feuilles. data-steps : étapes où un bloc est visible. -->
+<body data-step="cut">
+<header class="m-top">
+  <span class="brand">◉</span>
+  <strong class="m-title" data-step-title></strong>
+  <div class="spacer"></div>
+  <button id="job-pill" class="job-pill" hidden></button>
+  <button data-open="settings" class="m-icon" aria-label="Réglages" title="Réglages">⚙</button>
+</header>
+<div class="nextbar">
+  <span id="next-text" class="next-text"></span>
+  <button id="next-btn" class="primary" hidden></button>
+</div>
+
+<main id="m-main">
+  <!-- ① Fichiers -->
+  <section id="files-view" class="m-page" data-steps="files">
+    <p class="hint">Coche « dans le projet » pour garder une session au montage. Touche une vignette pour la regarder.</p>
+    <div class="row">
+      <label class="toggle"><input type="checkbox" id="show-all"> fichiers hors projet</label>
+      <div class="spacer"></div>
+      <button data-open="settings" data-section="sources">📁 <span id="src-count">Dossiers</span></button>
+    </div>
+    <div id="file-list" class="file-list"></div>
+  </section>
+
+  <!-- ② choix de la session -->
+  <div class="ctx m-ctx" data-steps="cut">
+    <select id="session-pick" aria-label="Session affichée"></select>
+    <button class="gps" data-open="settings" data-section="gps" title="Synchronisation caméra ↔ GPS">
+      <span class="dot" id="sync-dot"></span>GPS <span id="sync-badge" class="muted">–</span></button>
+  </div>
+
+  <!-- visionneuse (② et ③) : l'image reste collée en haut pendant le défilement -->
+  <section class="viewer" data-steps="cut montage">
+    <div class="stage">
+      <canvas id="gl"></canvas>
+      <canvas id="zones"></canvas>
+      <div id="hud"></div>
+      <div id="viewinfo"></div>
+      <div id="frame-guide" hidden><span></span></div>
+      <div id="stage-msg" hidden></div>
+      <div id="mask-banner" class="banner" hidden>Trace des rectangles sur l'image brute.
+        <button id="mask-done" class="primary">Terminer</button></div>
+      <div id="zone-banner" class="banner" hidden><span id="zone-banner-text"></span>
+        <button id="zone-cancel">Annuler</button></div>
+    </div>
+    <div class="controls">
+      <div class="c-row">
+        <button id="play" class="play" aria-label="Lecture / pause">▶</button>
+        <div class="time"><span id="clock">--:--:--</span><span id="tpos" class="muted">0:00 / 0:00</span></div>
+        <div class="spacer"></div>
+        <button id="cand-prev" class="cut-only" aria-label="Moment fort précédent" title="Moment fort précédent">◀ ▼</button>
+        <button id="cand-next" class="cut-only" aria-label="Moment fort suivant" title="Moment fort suivant">▼ ▶</button>
+        <button data-open="view-sheet" aria-label="Vue et horizon">Vue</button>
+        <button id="fs-toggle" aria-label="Plein écran" title="Plein écran">⛶</button>
+      </div>
+      <div class="c-row">
+        <div class="rates" id="rates" aria-label="Vitesse de lecture"></div>
+        <label class="toggle" title="Accélère (16×) les passages calmes"><input type="checkbox" id="skim"> survol</label>
+      </div>
+      <div class="c-row marks cut-only">
+        <button id="mark-in">⟦ Début</button>
+        <button id="mark-out">Fin ⟧</button>
+        <button id="quick-clip" class="primary">＋ 15 s</button>
+      </div>
+      <div id="mark-hint" class="muted cut-only"></div>
+    </div>
+  </section>
+
+  <!-- ② frise -->
+  <section id="tlbox" data-steps="cut">
+    <canvas id="timeline"></canvas>
+    <div class="tl-bar">
+      <button id="tl-zoom-out" aria-label="Dézoomer la frise">−</button>
+      <div id="tl-scroll"><div id="tl-thumb"></div></div>
+      <button id="tl-zoom-in" aria-label="Zoomer la frise">+</button>
+      <button id="tl-all">tout</button>
+    </div>
+  </section>
+
+  <!-- ② clips, carte, stats -->
+  <section class="m-panel" data-steps="cut">
+    <div class="tabs" data-tabs="cut"><button data-tab="clips">Clips</button><button data-tab="map">Carte</button><button data-tab="stats">Stats</button></div>
+    <div class="clips" data-panel="cut:clips">
+      <div class="clips-head">
+        <label aria-label="Tout cocher"><input type="checkbox" id="check-all"></label>
+        <strong>Clips</strong> <span id="clips-total" class="muted"></span>
+        <div class="spacer"></div>
+        <button id="delete-checked" class="danger" disabled>Supprimer</button>
+      </div>
+      <div id="clip-editor" hidden>
+        <div class="ed-head"><strong id="ed-title"></strong><div class="spacer"></div>
+          <button data-a="play">▶ Lire</button>
+          <button data-a="loop" id="ed-loop">⟲ Boucle</button>
+          <button data-a="close" aria-label="Fermer l'éditeur">✕</button></div>
+        <div class="ed-edge"><span class="ed-label">Début</span><span id="ed-start" class="ed-time"></span>
+          <div class="ed-btns">
+            <button data-edge="start" data-d="-1">−1 s</button><button data-edge="start" data-d="-0.1">−0,1</button>
+            <button data-edge="start" data-d="0.1">+0,1</button><button data-edge="start" data-d="1">+1 s</button>
+            <button data-edge="start" data-d="here">⤓ ici</button></div></div>
+        <div class="ed-edge"><span class="ed-label">Fin</span><span id="ed-end" class="ed-time"></span>
+          <div class="ed-btns">
+            <button data-edge="end" data-d="-1">−1 s</button><button data-edge="end" data-d="-0.1">−0,1</button>
+            <button data-edge="end" data-d="0.1">+0,1</button><button data-edge="end" data-d="1">+1 s</button>
+            <button data-edge="end" data-d="here">⤓ ici</button></div>
+          <button data-a="goto-end" class="ed-more">voir la fin ▶</button></div>
+        <details class="ed-sec">
+          <summary>Cadrage <span id="ed-view" class="muted"></span></summary>
+          <div class="ed-row">
+            <button data-a="view">Prendre la vue affichée</button>
+            <label class="inline">Horizon <select id="ed-horizon">
+              <option value="fixe">fixe (support)</option><option value="auto">auto (image)</option><option value="aucun">aucun</option></select></label></div>
+          <div class="ed-row">
+            <button id="key-prev" aria-label="Point clé précédent">◀</button>
+            <button id="key-add" class="primary">◆ Point clé ici</button>
+            <button id="key-next" aria-label="Point clé suivant">▶</button>
+            <label class="inline"><input type="checkbox" id="auto-key"> auto</label></div>
+          <ol id="ed-keylist"></ol>
+          <div class="ed-row">
+            <button data-a="follow">🎯 Suivre un compagnon</button>
+            <div class="spacer"></div>
+            <button data-a="clear-keys" class="danger">Effacer les points</button></div>
+          <span id="ed-follow" class="hint"></span>
+        </details>
+        <details class="ed-sec">
+          <summary>Vitesse <span id="ed-speed-out" class="muted"></span></summary>
+          <div class="ed-row">
+            <select id="ed-speed"></select>
+            <button data-a="add-speed">⏩ Vitesse ici</button></div>
+          <ol id="ed-speedlist"></ol>
+          <span class="hint">La vitesse change en douceur d'un point à l'autre (accéléré à l'export).</span>
+        </details>
+        <div class="ed-row ed-foot"><div class="spacer"></div>
+          <button data-a="del" class="danger">Supprimer le clip</button></div>
+      </div>
+      <ol id="clips"></ol>
+    </div>
+    <div id="map" data-panel="cut:map" hidden></div>
+    <div id="stats" data-panel="cut:stats" hidden></div>
+  </section>
+
+  <!-- ③ Montage -->
+  <section class="m-panel" data-steps="montage">
+    <div class="tabs" data-tabs="mt">
+      <button data-tab="order">Ordre</button><button data-tab="finish">Finition</button><button data-tab="privacy">Flou</button><button data-tab="minimap">Carte</button>
+    </div>
+    <div class="pane" data-panel="mt:order">
+      <div class="pane-head"><strong>Ordre du montage</strong><span id="mt-total" class="muted"></span></div>
+      <div class="auto-row">
+        <span class="auto-lbl">✨ Montage auto</span>
+        <select id="auto-duration" aria-label="Durée visée">
+          <option value="60">1 min</option><option value="120" selected>2 min</option><option value="180">3 min</option><option value="300">5 min</option>
+        </select>
+        <select id="auto-scope" aria-label="Sessions utilisées"><option value="day">ce jour</option><option value="project">tout le projet</option></select>
+        <button id="auto-make" class="primary">Ajouter</button>
+        <button id="auto-clear">Retirer les auto</button>
+      </div>
+      <ol id="mt-list"></ol>
+      <span class="hint">↑ ↓ pour réordonner · 👁 pour exclure · touche un clip pour le revoir.</span>
+    </div>
+    <div id="mt-finish" class="pane form" data-panel="mt:finish" hidden>
+      <p class="pane-sum">Finition <span id="fin-summary" class="muted"></span></p>
+      <div class="field"><span>Transition</span>
+        <div class="row">
+          <select data-style="transition">
+            <option value="aucune">aucune (coupe franche)</option><option value="fondu">fondu enchaîné</option>
+            <option value="noir">fondu au noir</option><option value="glisse">glissement</option>
+          </select>
+          <select data-style="duration" aria-label="Durée de la transition">
+            <option value="0.4">0,4 s</option><option value="0.6">0,6 s</option><option value="1">1 s</option><option value="1.5">1,5 s</option>
+          </select></div></div>
+      <label class="field"><span>Titre d'ouverture</span><input data-style="title" type="text" maxlength="120" placeholder="vide = aucun"></label>
+      <label class="field"><span>Sous-titre</span><input data-style="subtitle" type="text" maxlength="120" placeholder="date, lieux…"></label>
+      <div class="field"><span>Musique</span>
+        <select data-style="music" id="fin-music"><option value="">aucune</option></select>
+        <div class="row">
+          <button id="lib-open">🎵 Musiques libres…</button>
+          <label class="upload">＋ Envoyer un fichier<input type="file" id="fin-upload" accept="audio/*" hidden></label>
+        </div></div>
+      <label class="field slider"><span>Volume de la musique</span><input data-style="music_volume" type="range" min="0" max="1.5" step="0.05"></label>
+      <label class="field slider"><span>Son d'origine (moteur, vent)</span><input data-style="original_volume" type="range" min="0" max="1.5" step="0.05"></label>
+      <label class="check"><input type="checkbox" data-style="end_card"> Carte de fin + stats (5 s)</label>
+      <span class="hint" id="fin-status">Ouverture et fermeture en fondu au noir dès qu'une finition est choisie.</span>
+    </div>
+    <div id="mt-privacy" class="pane form" data-panel="mt:privacy" hidden>
+      <p class="pane-sum">Confidentialité <span id="pv-summary" class="muted"></span></p>
+      <label class="check"><input type="checkbox" id="pv-enabled"> Flouter visages et plaques à l'export</label>
+      <div class="row">
+        <button id="pv-analyze" class="primary">Analyser les clips</button>
+        <button id="pv-draw">＋ Zone à la main</button>
+        <label class="check"><input type="checkbox" id="pv-follow" checked> suivre l'élément</label>
+      </div>
+      <span id="pv-status" class="hint">Détecte visages et plaques dans chaque clip, dans son cadrage (moteur GPU).</span>
+      <div id="pv-list"></div>
+      <span class="hint">Touche une vignette : garder ↔ ignorer (fausse détection). Appui long pour la voir nette. Zones en rouge sur la vidéo.</span>
+    </div>
+    <div class="pane" data-panel="mt:minimap" hidden>
+      <figure class="mt-map"><img id="mt-map" alt=""><figcaption>© contributeurs OpenStreetMap</figcaption></figure>
+      <span class="hint">Mini-carte telle qu'incrustée à l'export (incrustation « mini-carte », étape 4), pour le clip sélectionné.</span>
+    </div>
+  </section>
+
+  <!-- ④ Exporter -->
+  <section id="export-view" class="m-page" data-steps="export">
+    <div class="card main-card">
+      <h3>Montage <span id="ex-montage-sum" class="muted"></span></h3>
+      <div class="field-grid">
+        <label class="field"><span>Format</span>
+          <select id="export-format">
+            <option value="standard">YouTube / 16:9</option>
+            <option value="vertical">Reels · TikTok · Shorts 9:16</option>
+            <option value="carre">Instagram carré 1:1</option>
+            <option value="leger">Message (léger)</option>
+          </select></label>
+        <label class="field"><span>Résolution</span>
+          <select id="export-height">
+            <option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">4K</option>
+          </select></label>
+        <label class="field"><span>Qualité</span>
+          <select id="export-crf">
+            <option value="22">Standard</option><option value="20" selected>Haute</option><option value="17">Maximale</option>
+          </select></label>
+      </div>
+      <details class="m-more">
+        <summary>Incrustations</summary>
+        <div class="checks">
+          <label><input type="checkbox" data-tel="enabled"> <strong>télémétrie</strong></label>
+          <label><input type="checkbox" data-tel="speed"> vitesse</label>
+          <label><input type="checkbox" data-tel="map"> mini-carte</label>
+          <label><input type="checkbox" data-tel="altitude"> altitude + profil</label>
+          <label><input type="checkbox" data-tel="place"> lieu au début des clips</label>
+          <label><input type="checkbox" data-tel="lean"> angle d'inclinaison</label>
+        </div>
+      </details>
+      <button id="mt-start" class="primary big">Exporter le montage</button>
+      <button id="mt-preview">Aperçu rapide 720p</button>
+      <div id="mt-status" class="status"></div>
+    </div>
+    <div class="card">
+      <h3>Autres exports <span class="muted">· session affichée</span></h3>
+      <p class="session-label muted"></p>
+      <div class="sub">
+        <strong>Clips séparés</strong>
+        <div class="row">
+          <button id="export-preview">Aperçu 720p</button>
+          <button id="export-final">Exporter les clips</button>
+        </div>
+      </div>
+      <div class="sub">
+        <strong>⏩ Résumé hyperlapse</strong>
+        <span class="hint">Toute la balade en quelques minutes, plus lente sur les moments forts. Cadrage de l'aperçu, sans son.</span>
+        <div class="row">
+          <label class="field inline"><span>Durée</span><select id="hl-duration">
+            <option value="60">1 min</option><option value="120">2 min</option><option value="180" selected>3 min</option><option value="300">5 min</option>
+          </select></label>
+          <button id="hl-start">Créer le résumé</button>
+        </div>
+        <span id="hl-info" class="hint"></span>
+      </div>
+      <div id="export-status" class="status"></div>
+    </div>
+  </section>
+</main>
+
+<nav class="m-tabs steps" aria-label="Étapes">
+  <button data-go="files"><span class="num">1</span><span class="lbl">Fichiers<small data-step-status="files"></small></span></button>
+  <button data-go="cut"><span class="num">2</span><span class="lbl">Repérer<small data-step-status="cut"></small></span></button>
+  <button data-go="montage"><span class="num">3</span><span class="lbl">Montage<small data-step-status="montage"></small></span></button>
+  <button data-go="export"><span class="num">4</span><span class="lbl">Exporter<small data-step-status="export"></small></span></button>
+</nav>
+
+<dialog id="view-sheet" class="dlg sheet">
+  <div class="dlg-head"><strong>Vue</strong><div class="spacer"></div><button data-close aria-label="Fermer">✕</button></div>
+  <div class="seg3">
+    <button id="view-front">Avant</button><button id="view-rider">Pilote</button><button id="view-raw">Brut</button>
+  </div>
+  <label class="field"><span>Horizon de la vue libre</span>
+    <select id="horizon-mode">
+      <option value="fixe">fixe (inclinaison du support)</option><option value="auto">auto (mesuré sur l'image)</option><option value="aucun">aucun</option></select></label>
+  <label class="field slider"><span>Rotation de l'image</span>
+    <input type="range" id="view-roll" min="-45" max="45" step="0.5" value="0"></label>
+  <span class="hint">Sur l'image : toucher = lecture / pause, glisser = orienter, pincer = champ.</span>
+</dialog>
+
+<dialog id="settings" class="dlg sheet">
+  <div class="dlg-head"><strong>Réglages</strong><div class="spacer"></div><button data-close aria-label="Fermer">✕</button></div>
+  <section data-section="sources">
+    <h3>Dossiers de vidéos</h3>
+    <ul id="src-list" class="src-list"></ul>
+    <form id="src-add" class="src-add">
+      <input id="src-path" type="text" placeholder="/chemin/vers/dossier" spellcheck="false" autocomplete="off" autocapitalize="off">
+      <button type="submit" class="primary">Ajouter</button>
+    </form>
+    <span id="src-status" class="hint">Tous les sous-dossiers sont parcourus.</span>
+  </section>
+  <section data-section="gps">
+    <h3>Synchronisation caméra ↔ GPS</h3>
+    <p class="session-label muted"></p>
+    <div id="offset" class="offset">–</div>
+    <div class="sync">
+      <button data-off="-10">−10 s</button><button data-off="-1">−1 s</button>
+      <button data-off="1">+1 s</button><button data-off="10">+10 s</button>
+    </div>
+    <button id="offset-auto">Recalculer automatiquement</button>
+    <span class="hint">Ajuste si la courbe de vitesse de la frise ne colle pas aux vibrations de la vidéo.</span>
+  </section>
+  <section data-section="masks">
+    <h3>Masques fixes</h3>
+    <span class="hint">Zones toujours floutées sur toutes les vidéos (compteur…), tracées sur l'image brute.</span>
+    <span id="mask-count" class="muted"></span>
+    <div class="row"><button id="mask-edit">Tracer des masques…</button><button id="mask-clear" class="danger">Effacer les masques</button></div>
+  </section>
+  <section data-section="ui">
+    <h3>Aide et interface</h3>
+    <div class="row"><button id="help-open">? Aide</button>
+      <a href="/" data-ui-switch="desktop" class="button">🖥 Version ordinateur</a></div>
+  </section>
+</dialog>
+
+<dialog id="help" class="dlg sheet">
+  <div class="dlg-head"><strong>Aide</strong><div class="spacer"></div><button data-close aria-label="Fermer">✕</button></div>
+  <div class="help-grid">
+    <section><h4>Le parcours (onglets du bas)</h4>
+      <p><b>1. Fichiers</b> : coche les sessions de ta balade.</p>
+      <p><b>2. Repérer</b> : regarde, saute aux moments forts (◀ ▼ ▶), pose des clips (⟦ Début, Fin ⟧, ＋15 s).</p>
+      <p><b>3. Montage</b> : ordre, montage auto, finition, musique, flou.</p>
+      <p><b>4. Exporter</b> : destination, qualité, puis export.</p></section>
+    <section><h4>Gestes</h4>
+      <p>Image : toucher pour lecture / pause, glisser pour orienter, pincer pour le champ ; « Vue » pour avant / pilote / brut, horizon et rotation.</p>
+      <p>⛶ : vidéo en plein écran.</p>
+      <p>Frise : toucher pour aller à un instant, glisser pour balayer, pincer pour zoomer ; glisser le bord d'un clip sélectionné ou un ◆ pour l'ajuster.</p></section>
+    <section><h4>Clips</h4>
+      <p>Touche un clip pour l'éditer : bords au dixième, cadrage et points clés ◆, suivi d'un compagnon 🎯, points de vitesse ⏩.</p></section>
+  </div>
+</dialog>
+<dialog id="lib" class="dlg sheet">
+  <div class="dlg-head"><strong>Musiques libres (CC BY 4.0)</strong><div class="spacer"></div><button data-close aria-label="Fermer">✕</button></div>
+  <p class="hint">Kevin MacLeod (incompetech.com). Le crédit est ajouté automatiquement à la fin du montage.</p>
+  <div id="lib-moods" class="lib-moods"></div>
+  <input id="lib-q" type="search" placeholder="Chercher (guitare, rock, piano…)" spellcheck="false">
+  <ol id="lib-list"></ol>
+  <audio id="lib-audio" preload="none"></audio>
+</dialog>
+<video id="video" playsinline crossorigin="anonymous" preload="auto"></video>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script type="module" src="/ui/mobile.js"></script>
+</body>
+</html>

@@ -6,9 +6,13 @@
 import { st } from "./state.js";
 import { $, localClock } from "./util.js";
 import { seek } from "./playback.js";
+import { onStep, onTab } from "./steps.js";
 
 const map = L.map("map", { zoomControl: true, attributionControl: true });
-new ResizeObserver(() => map.invalidateSize()).observe($("#map"));
+new ResizeObserver(() => refreshMapSize()).observe($("#map"));
+// La carte peut être masquée (autre étape, autre onglet) quand la trace est chargée : elle
+// est alors recadrée dès qu'elle redevient visible.
+let pendingFit = null;
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 18, attribution: "© OpenStreetMap",
 }).addTo(map);
@@ -17,7 +21,12 @@ const mapLayers = L.layerGroup().addTo(map), clipLayer = L.layerGroup().addTo(ma
 const posMarker = L.circleMarker([0, 0], { radius: 7, color: "#fff", weight: 2, fillColor: "#ff4d4f", fillOpacity: 1 });
 
 /** À appeler quand le conteneur de la carte change de taille ou redevient visible. */
-export const refreshMapSize = () => map.invalidateSize();
+export function refreshMapSize() {
+  map.invalidateSize();
+  if (pendingFit && $("#map").clientWidth > 0) { map.fitBounds(pendingFit, { padding: [20, 20] }); pendingFit = null; }
+}
+onTab((g, name) => { if (name === "map") refreshMapSize(); });
+onStep(() => refreshMapSize());
 
 function heatColor(v) {
   // bleu (calme) → ambre (intéressant)
@@ -35,7 +44,7 @@ export function drawMap() {
     if (lat[i] === null) continue;
     pts.push([lat[i], lon[i], i]);
   }
-  if (!pts.length) { posMarker.remove(); return; }
+  if (!pts.length) { posMarker.remove(); pendingFit = null; return; }
   for (let k = 1; k < pts.length; k++) {
     const [a, b] = [pts[k - 1], pts[k]];
     if (b[2] - a[2] > 30) continue;   // trou GPS : pas de trait
@@ -47,7 +56,9 @@ export function drawMap() {
       .bindTooltip(`candidat ${k + 1} · ${localClock(t)}`).on("click", () => seek(t)).addTo(mapLayers);
   });
   posMarker.addTo(map);
-  map.fitBounds(L.latLngBounds(pts.map((p) => [p[0], p[1]])), { padding: [20, 20] });
+  const bounds = L.latLngBounds(pts.map((p) => [p[0], p[1]]));
+  if ($("#map").clientWidth > 0) { map.fitBounds(bounds, { padding: [20, 20] }); pendingFit = null; }
+  else pendingFit = bounds;
   map.off("click").on("click", (e) => {
     let best = null, bd = Infinity;
     for (const [la, lo, i] of pts) {

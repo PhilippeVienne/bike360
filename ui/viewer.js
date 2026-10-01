@@ -1,7 +1,7 @@
 // Visionneuse WebGL : le .lrv (double fisheye) est reprojeté en vue plane selon st.view,
 // redressé comme à l'export, avec les masques fixes floutés. Gère aussi les gestes sur
 // l'image : orienter (glisser), champ (molette, pincement), rotation (Ctrl+glisser),
-// tracé des masques et des zones.
+// lecture / pause (appui bref au doigt), tracé des masques et des zones.
 // Partage : render (appelé à chaque image par la boucle d'affichage de main.js).
 
 import { st, video, now, LENS_FOV } from "./state.js";
@@ -9,6 +9,7 @@ import { $ } from "./util.js";
 import { clipKeys, clipMode, clipViewAt, levelMatrix } from "./geometry.js";
 import { activeClip, followsKeyframes, userView } from "./view.js";
 import { drawZones, sendZone } from "./zones.js";
+import { togglePlay } from "./playback.js";
 import { saveSettings } from "./settings.js";
 import { updateFrameGuide } from "./export.js";
 
@@ -166,9 +167,12 @@ export function render() {
   const rectBetween = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
   const fingers = new Map();   // pincement à deux doigts = champ (zoom)
   const spread = () => { const [a, b] = [...fingers.values()]; return Math.hypot(a.x - b.x, a.y - b.y) || 1; };
+  let tap = null;   // appui bref au doigt sans bouger = lecture / pause (pas de barre d'espace au téléphone)
 
   cv.addEventListener("pointerdown", (e) => {
     fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    tap = fingers.size === 1 && e.pointerType !== "mouse" && !st.zoneEdit && !st.maskEdit
+      ? { x: e.clientX, y: e.clientY, t: performance.now() } : null;
     if (fingers.size === 2 && !st.zoneEdit && !st.maskEdit) {
       drag = { pinch: { d: spread(), fov: st.view.fov } };
       st.dragging = true;
@@ -184,6 +188,8 @@ export function render() {
     if (drag && drag.pinch) { if (!fingers.size) { drag = null; st.dragging = false; } return; }
     cv.classList.remove("rotating");
     st.dragging = false;
+    if (tap && e.type === "pointerup" && performance.now() - tap.t < 350) togglePlay();
+    tap = null;
     if (drag && drag.z) {   // fin du tracé d'une zone (floutage ou suivi)
       const z = st.zoneDraft;
       st.zoneDraft = null; drag = null;
@@ -198,6 +204,7 @@ export function render() {
   cv.addEventListener("pointercancel", release);
   cv.addEventListener("pointermove", (e) => {
     if (fingers.has(e.pointerId)) fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (tap && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > 10) tap = null;
     if (drag && drag.pinch) {
       if (fingers.size === 2) userView({ fov: drag.pinch.fov * drag.pinch.d / spread() });
       return;

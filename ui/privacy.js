@@ -1,12 +1,13 @@
-// Volet « Confidentialité » du montage : analyse des clips (visages, plaques), revue des
+// Onglet « Confidentialité » de l'étape ③ : analyse des clips (visages, plaques), revue des
 // zones détectées (garder / ignorer, supprimer une zone tracée à la main), floutage à l'export.
-// Les zones s'affichent aussi sur la vidéo quand le volet est ouvert (zones.js).
-// Partage : renderPrivacy.
+// Les zones s'affichent aussi sur la vidéo quand l'onglet est affiché (zones.js).
+// Partage : renderPrivacy, privacyShown.
 
 import { st } from "./state.js";
 import { $, api, apiOrError, esc, fmt } from "./util.js";
 import { loadPrivacyTracks, setZoneEdit } from "./zones.js";
 import { montageKey } from "./montage.js";
+import { onStep, onTab, setJob, tabShown } from "./steps.js";
 
 let pvTimer = null;
 export async function renderPrivacy() {
@@ -16,6 +17,7 @@ export async function renderPrivacy() {
   $("#pv-enabled").checked = r.enabled;
   const j = r.job, running = j.state === "running";
   $("#pv-analyze").disabled = running;
+  setJob("privacy", running ? `Analyse ${Math.round(j.progress * 100)} %` : null, "montage");
   $("#pv-status").innerHTML = running
     ? `<progress value="${j.progress}" max="1"></progress> ${Math.round(j.progress * 100)} % · ${esc(j.message)} <button id="pv-cancel">annuler</button>`
     : j.state === "done" ? "✓ " + esc(j.message) : j.state === "error" ? "⚠ " + esc(j.message)
@@ -48,7 +50,14 @@ export async function renderPrivacy() {
   $("#pv-summary").textContent = `· ${r.enabled ? "flou activé" : "flou désactivé"}` + (kept ? ` · ${kept} zone(s)` : "") + (pending ? ` · ${pending} à analyser` : "");
 }
 
-$("#mt-privacy").addEventListener("toggle", (e) => { if (e.target.open) renderPrivacy(); else setZoneEdit(false); });
+/** Onglet Confidentialité affiché (étape ③) : zones dessinées sur la vidéo, tracé possible. */
+export const privacyShown = () => tabShown("mt", "privacy");
+const syncPrivacy = () => {
+  if (privacyShown()) renderPrivacy();
+  else if (st.zoneEdit && st.zoneMode === "privacy") setZoneEdit(false);
+};
+onTab(syncPrivacy);
+onStep(syncPrivacy);
 $("#pv-draw").addEventListener("click", () => setZoneEdit(!st.zoneEdit));
 $("#pv-enabled").addEventListener("change", async (e) => {
   await api("PUT", "/api/settings", { privacy: { enabled: e.target.checked } });

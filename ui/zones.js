@@ -10,13 +10,13 @@ import { currentView, setView } from "./view.js";
 import { seek } from "./playback.js";
 import { renderClips } from "./clips.js";
 import { drawClipsOnMap } from "./map.js";
-import { renderPrivacy } from "./privacy.js";
+import { privacyShown, renderPrivacy } from "./privacy.js";
 
 const gl = $("#gl"), zc = $("#zones"), zctx = zc.getContext("2d");
 
 /** Dessine les zones floutées (rouge) et le rectangle en cours de tracé, alignés sur la vue WebGL. */
 export function drawZones() {
-  const show = st.zoneEdit || !$("#p-montage").hidden && $("#mt-privacy").open;
+  const show = st.zoneEdit || privacyShown();
   const cw = gl.clientWidth, ch = gl.clientHeight, dpr = devicePixelRatio;
   if (zc.width !== cw * dpr || zc.height !== ch * dpr) { zc.width = cw * dpr; zc.height = ch * dpr; zc.style.width = cw + "px"; zc.style.height = ch + "px"; }
   zctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -56,13 +56,18 @@ export function setZoneEdit(on, mode = "privacy") {
   $("#pv-draw").classList.toggle("active", on && mode === "privacy");
   $("#pv-draw").textContent = on && mode === "privacy" ? "Annuler le tracé" : "＋ Zone à la main";
   gl.classList.toggle("zoning", on);
+  // bandeau sur la vidéo : consigne et « Annuler » (au doigt, pas d'Échap)
+  $("#zone-banner").hidden = !on;
+  $("#zone-banner-text").textContent = mode === "privacy" ? "Trace un rectangle autour de l'élément à flouter."
+    : "Trace un rectangle autour du motard ou de la voiture à suivre.";
   if (on) {
     video.pause();
     if (st.view.raw) setView({ raw: false });
     if (mode === "privacy") $("#pv-status").textContent = "Trace un rectangle sur la vidéo autour de l'élément à flouter.";
-    else $("#ed-follow").textContent = "Trace un rectangle autour du motard ou de la voiture à suivre (Échap pour annuler).";
+    else $("#ed-follow").textContent = "Trace un rectangle autour du motard ou de la voiture à suivre.";
   }
 }
+$("#zone-cancel").addEventListener("click", () => setZoneEdit(false));
 
 /** Rectangle tracé (0..1 dans la vue) + vue qui l'a vu : de quoi le retrouver sur la sphère côté serveur. */
 function zoneRequest(z, L, t, clip) {

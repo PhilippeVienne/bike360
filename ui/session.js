@@ -1,5 +1,5 @@
 // Session affichée : chargement (clips, carte, horizon, zones…) et synchronisation de
-// l'horloge caméra avec le GPS GeoRide (menu « GPS » de l'en-tête).
+// l'horloge caméra avec le GPS GeoRide (Réglages → GPS ; pastille GPS de l'étape ②).
 // Partage : loadSession.
 
 import { st, video, now } from "./state.js";
@@ -10,6 +10,7 @@ import { loadPrivacyTracks } from "./zones.js";
 import { drawClipsOnMap, drawMap, updateMapPos } from "./map.js";
 import { renderClips } from "./clips.js";
 import { pollExport } from "./export.js";
+import { updateSteps } from "./steps.js";
 
 export async function loadSession(id) {
   video.pause();
@@ -25,9 +26,14 @@ export async function loadSession(id) {
   st.seg = -1;
   st.tl = { v0: 0, v1: st.s.duration };
   const info = st.sessions.find((x) => x.id === id);
-  $("#session-title").textContent = `${dayLabel(st.s.date)} · ${hhmm(st.s)} · ${fmt(st.s.duration)}` +
+  const label = `${dayLabel(st.s.date)} · ${hhmm(st.s)} · ${fmt(st.s.duration)}` +
     (info && info.parts > 1 ? ` · boucle de ${info.parts} fichiers` : "");
+  $$(".session-label").forEach((el) => (el.textContent = label));
   $$(".file-card").forEach((c) => c.classList.toggle("current", c.dataset.sid === id));
+  const pick = $("#session-pick");
+  if (![...pick.options].some((o) => o.value === id)) pick.add(new Option(`${hhmm(st.s)} · ${fmt(st.s.duration)} (hors projet)`, id));
+  pick.value = id;
+  updateSteps();
   showOffset();
   drawMap(); drawClipsOnMap(); renderClips();
   seek(st.s.candidates[0] ?? 0, false);
