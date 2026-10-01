@@ -45,6 +45,9 @@ pub fn thumbs_dir() -> PathBuf {
 pub fn music_dir() -> PathBuf {
     paths::data().join("music")
 }
+/// Versions précédentes gardées par session (historique des clips).
+const HISTORY_KEEP: usize = 200;
+
 pub fn selections_path(sid: &str) -> PathBuf {
     selections_dir().join(format!("{sid}.json"))
 }
@@ -84,7 +87,16 @@ pub fn write_json_indent(path: &Path, v: &Value) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, pyjson::dumps_indent(v, 1))?;
+    write_atomic(path, pyjson::dumps_indent(v, 1).as_bytes())
+}
+
+/// Écriture atomique (fichier temporaire puis renommage) : une lecture simultanée voit
+/// l'ancien ou le nouveau contenu, jamais un fichier vide ou tronqué.
+pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
+    let tmp = path.with_extension(format!("tmp-{}-{:?}", std::process::id(), std::thread::current().id())
+        .replace(['(', ')', ' '], ""));
+    std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| { let _ = std::fs::remove_file(&tmp); })?;
     Ok(())
 }
 
@@ -459,20 +471,56 @@ impl App {
 
     /// Clips d'une session ; ceux d'avant les identifiants en reçoivent un (ordre du montage).
     pub fn get_selections(&self, sid: &str) -> Vec<Map<String, Value>> {
+        self.try_selections(sid).unwrap_or_else(|e| {
+            eprintln!("  clips de {sid} illisibles : {e:#}");
+            vec![]
+        })
+    }
+
+    /// Clips d'une session ; erreur si le fichier existe mais ne se lit pas (jamais une liste
+    /// vide à la place : l'interface la réenregistrerait et effacerait les clips).
+    pub fn try_selections(&self, sid: &str) -> Result<Vec<Map<String, Value>>> {
         let p = selections_path(sid);
-        let mut clips: Vec<Map<String, Value>> =
-            read_json(&p).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        if !p.exists() {
+            return Ok(vec![]);
+        }
+        let mut last = None;
+        let mut clips: Vec<Map<String, Value>> = loop {
+            match std::fs::read_to_string(&p).map_err(anyhow::Error::from)
+                .and_then(|t| Ok(serde_json::from_str::<Vec<Map<String, Value>>>(&t)?)) {
+                Ok(c) => break c,
+                Err(e) if last.is_none() => {   // une seconde chance (écriture d'un ancien serveur)
+                    last = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e.context(format!("lecture de {p:?}"))),
+            }
+        };
         if clips.iter().any(|c| !c.contains_key("id")) {
             for c in clips.iter_mut() {
                 c.entry("id").or_insert_with(|| automontage::new_id().into());
             }
             let _ = write_json_indent(&p, &Value::from(clips.iter().cloned().map(Value::Object).collect::<Vec<_>>()));
         }
-        clips
+        Ok(clips)
     }
 
+    /// Enregistre les clips d'une session ; la version précédente est d'abord gardée dans
+    /// selections/historique/<session>/ (les HISTORY_KEEP dernières), pour pouvoir revenir en arrière.
     pub fn write_selections(&self, sid: &str, clips: &[Map<String, Value>]) -> Result<()> {
-        write_json_indent(&selections_path(sid), &Value::Array(clips.iter().cloned().map(Value::Object).collect()))
+        let path = selections_path(sid);
+        if let Ok(prev) = std::fs::read(&path) {
+            let dir = selections_dir().join("historique").join(sid);
+            std::fs::create_dir_all(&dir)?;
+            let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
+            write_atomic(&dir.join(format!("{stamp}.json")), &prev)?;
+            let mut old: Vec<PathBuf> = std::fs::read_dir(&dir)?.flatten().map(|e| e.path()).collect();
+            old.sort();
+            for f in old.iter().rev().skip(HISTORY_KEEP) {
+                let _ = std::fs::remove_file(f);
+            }
+        }
+        write_json_indent(&path, &Value::Array(clips.iter().cloned().map(Value::Object).collect()))
     }
 
     /// Projet : sessions retenues, ordre libre du montage [[sid, id du clip]], clips exclus.

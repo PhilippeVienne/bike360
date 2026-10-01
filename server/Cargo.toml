@@ -8,6 +8,7 @@ name = "bike360-server"
 path = "src/main.rs"
 
 [dependencies]
+chrono = "0.4"
 anyhow = "1.0.104"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }

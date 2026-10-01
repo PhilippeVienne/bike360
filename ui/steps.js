@@ -41,7 +41,12 @@ export const initialStep = () => storageGet("bike360.step");
 
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-go]");
-  if (b && !b.disabled) { e.preventDefault(); goStep(b.dataset.go); }
+  if (b && !b.disabled) {
+    e.preventDefault();
+    goStep(b.dataset.go);
+    // « Ouvrir 18h28 » : charge la session (import différé : session.js dépend de ce module)
+    if (b.dataset.sid) import("./session.js").then((m) => m.loadSession(b.dataset.sid));
+  }
 });
 
 // ------------------------------------------------------------------ état des étapes et prochaine action
@@ -56,7 +61,9 @@ export function updateSteps() {
   const plural = (n, w) => `${n} ${w}${n > 1 ? "s" : ""}`;
   const status = {
     files: nS ? plural(nS, "session") : "à choisir",
-    cut: p.clips.length ? plural(p.clips.length, "clip") : "aucun clip",
+    // clips de la session affichée (ce que montrent la frise et la liste), puis total du projet
+    cut: !p.clips.length ? "aucun clip" : st.s && st.clips.length !== p.clips.length
+      ? `${st.clips.length} ici · ${p.clips.length} en tout` : plural(p.clips.length, "clip"),
     montage: kept.length ? `${kept.length} · ${fmt(dur)}` : "vide",
     export: jobs.montage ? jobs.montage.text : exported ? "fait" : "",
   };
@@ -68,9 +75,14 @@ export function updateSteps() {
   // prochaine action : [texte, étape suivante, libellé du bouton]
   const step = document.body.dataset.step;
   let next;
+  // sessions qui ont des clips (pour y mener quand la session affichée n'en a pas)
+  const withClips = st.sessions.filter((x) => x.clips && (!st.s || x.id !== st.s.id));
   if (step === "files") next = nS ? ["Touche une vignette pour regarder la session, puis repère les bons moments.", "cut", "Repérer & couper →"]
     : ["Coche « dans le projet » sur les sessions de ta balade.", null];
   else if (step === "cut") next = !st.s ? ["Choisis d'abord une session (étape 1).", "files", "← Fichiers"]
+    : !st.clips.length && withClips.length ? [`Aucun clip dans cette session. Tes clips sont dans : ${withClips
+        .map((x) => `${x.time.slice(0, 2)}h${x.time.slice(2, 4)} (${x.clips})`).join(", ")}.`, "cut",
+        `Ouvrir ${withClips[0].time.slice(0, 2)}h${withClips[0].time.slice(2, 4)} →`, withClips[0].id]
     : !st.clips.length ? ["Pose un clip : ⟦ Début puis Fin ⟧, ou ＋15 s. Les ▼ ambre sont les moments forts.", null]
     : [`${plural(st.clips.length, "clip")} dans cette session, ${plural(p.clips.length, "clip")} dans le projet.`, "montage", "Montage →"];
   else if (step === "montage") next = kept.length ? ["Range les clips, choisis la finition, puis exporte.", "export", "Exporter →"]
@@ -79,7 +91,11 @@ export function updateSteps() {
     : kept.length ? ["Choisis la destination puis « Exporter le montage ».", null] : ["Aucun clip à exporter.", "cut", "← Repérer"];
   const nt = $("#next-text"), nb = $("#next-btn");
   if (nt) nt.textContent = next[0];
-  if (nb) { nb.hidden = !next[1]; if (next[1]) { nb.dataset.go = next[1]; nb.textContent = next[2]; } }
+  if (nb) {
+    nb.hidden = !next[1];
+    if (next[1]) { nb.dataset.go = next[1]; nb.textContent = next[2]; }
+    if (next[3]) nb.dataset.sid = next[3]; else delete nb.dataset.sid;
+  }
   renderJobs();
 }
 

@@ -408,7 +408,9 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
             "session" => {
                 if let Some(s) = app.sess(sid) {
                     let mut r = result_json(&s);
-                    r.insert("selections".into(), Value::Array(app.get_selections(sid).into_iter().map(Value::Object).collect()));
+                    // clips illisibles : erreur plutôt qu'une liste vide que l'interface réenregistrerait
+                    let Ok(clips) = app.try_selections(sid) else { return Ok(err(503, "clips momentanément illisibles, réessaie")) };
+                    r.insert("selections".into(), Value::Array(clips.into_iter().map(Value::Object).collect()));
                     return Ok(ok(Value::Object(r)));
                 }
             }
@@ -894,7 +896,7 @@ fn automontage_route(app: &Arc<App>, b: &Value) -> Result<Reply, ()> {
     let mut existing: std::collections::HashMap<String, Vec<Map<String, Value>>> = Default::default();
     for sid in &sids {
         // les clips auto précédents sont remplacés ; les tiens restent
-        let clips = app.get_selections(sid);
+        let Ok(clips) = app.try_selections(sid) else { return Ok(err(503, "clips momentanément illisibles, réessaie")) };
         let keep: Vec<Map<String, Value>> = clips.iter().filter(|c| !truthy(c.get("auto"))).cloned().collect();
         if keep.len() != clips.len() {
             removed += clips.len() - keep.len();
