@@ -459,7 +459,14 @@ pub fn analyze(session: &mut Session, overrides: &Map<String, Value>, refs: &[(f
 
 /// Analyse de plusieurs sessions : les longues d'abord (leur décalage sert de référence aux
 /// clips courts, dont la corrélation n'est pas fiable).
-pub fn analyze_sessions(mut sessions: Vec<Session>, force: bool) -> Result<Vec<(Session, Analysis)>> {
+pub fn analyze_sessions(sessions: Vec<Session>, force: bool) -> Result<Vec<(Session, Analysis)>> {
+    analyze_sessions_progress(sessions, force, &mut |_, _, _| {})
+}
+
+/// Comme [`analyze_sessions`], en signalant l'avancement : `progress(faites, total, session en cours)`
+/// avant chaque session, puis une dernière fois quand tout est fini.
+pub fn analyze_sessions_progress(mut sessions: Vec<Session>, force: bool,
+                                 progress: &mut dyn FnMut(usize, usize, &str)) -> Result<Vec<(Session, Analysis)>> {
     let overrides: Map<String, Value> = std::fs::read_to_string(paths::data().join("overrides.json"))
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let size = |s: &Session| -> u64 {
@@ -468,7 +475,9 @@ pub fn analyze_sessions(mut sessions: Vec<Session>, force: bool) -> Result<Vec<(
     sessions.sort_by_key(|s| std::cmp::Reverse(size(s)));
     let mut refs = vec![];
     let mut out = vec![];
-    for mut s in sessions {
+    let total = sessions.len();
+    for (done, mut s) in sessions.into_iter().enumerate() {
+        progress(done, total, &s.id);
         // une session illisible (carte retirée, fichier tronqué…) est ignorée, pas fatale
         let r = match analyze(&mut s, &overrides, &refs, force) {
             Ok(r) => r,
@@ -487,5 +496,6 @@ pub fn analyze_sessions(mut sessions: Vec<Session>, force: bool) -> Result<Vec<(
         }
         out.push((s, r));
     }
+    progress(total, total, "");
     Ok(out)
 }

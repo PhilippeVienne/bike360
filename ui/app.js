@@ -22,7 +22,8 @@
 //   stats.js          statistiques
 //   session.js        chargement d'une session, synchro GPS
 //   export.js         exports de la session, résumé hyperlapse
-//   project.js        fichiers du projet, choix de la session, dossiers de vidéos
+//   project.js        fichiers du projet, choix de la session
+//   sources.js        dossiers de vidéos, cartes SD, analyse
 //   montage.js        montage : ordre, montage auto, export
 //   finish.js         finition du montage
 //   music-library.js  bibliothèque de musiques libres
@@ -48,6 +49,7 @@ import "./stats.js";
 import "./export.js";
 import "./finish.js";
 import "./music-library.js";
+import "./sources.js";
 import "./privacy.js";
 import "./commands.js";
 

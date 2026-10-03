@@ -1,10 +1,10 @@
 // Fichiers du projet (étape ①) : sessions groupées par jour, case « dans le projet » pour
-// les inclure au montage, ouverture d'une session ; sélecteur de session de l'étape ② ;
-// dossiers de vidéos analysés (Réglages).
-// Partage : refreshSessions, refreshSources.
+// les inclure au montage, ouverture d'une session ; sélecteur de session de l'étape ②.
+// (Les dossiers de vidéos sont gérés par sources.js.)
+// Partage : refreshSessions.
 
 import { st } from "./state.js";
-import { $, api, apiOrError, dayLabel, esc, fmt, hhmm } from "./util.js";
+import { $, api, dayLabel, esc, fmt, hhmm } from "./util.js";
 import { loadSession } from "./session.js";
 import { renderMontage } from "./montage.js";
 import { goStep, updateSteps } from "./steps.js";
@@ -41,7 +41,7 @@ function renderFiles() {
     list.appendChild(card);
   });
   if (!st.sessions.length) list.innerHTML = `<div class="empty">Aucune vidéo analysée pour l'instant.<br>
-    Ajoute le dossier de ta carte SD (ou d'une copie) dans <button data-open="settings">⚙ Réglages → Dossiers de vidéos</button>.</div>`;
+    Branche ta carte SD ou ajoute un dossier dans « Dossiers de vidéos » ci-dessus.</div>`;
   else if (!inProj.size && !all) list.innerHTML = `<div class="empty">Aucune session dans le projet.<br>
     Coche « afficher aussi les fichiers hors projet » ci-dessus, puis « dans le projet » sur les sessions de ta balade.</div>`;
   if (hidden && inProj.size) list.insertAdjacentHTML("beforeend", `<p class="hint">${hidden} fichier(s) hors projet masqué(s).</p>`);
@@ -75,47 +75,3 @@ $("#file-list").addEventListener("click", async (e) => {
   if (!st.s || card.dataset.sid !== st.s.id) await loadSession(card.dataset.sid);
   goStep("cut");
 });
-
-// ------------------------------------------------------------------ dossiers de vidéos (Réglages)
-
-export async function refreshSources() {
-  const r = await api("GET", "/api/sources");
-  const ul = $("#src-list");
-  ul.innerHTML = "";
-  r.folders.forEach((f) => {
-    const li = document.createElement("li");
-    li.innerHTML = `<span class="${f.present ? "muted" : "absent"}" title="${f.present ? "présent" : "absent (carte retirée ?)"}">${f.present ? "●" : "○"}</span>
-      <span class="path" title="${esc(f.path)}"><bdi dir="ltr">${esc(f.path)}</bdi></span>
-      <span>${f.sessions} session(s) ${f.removable ? `<button data-rm="${esc(f.path)}" title="Retirer ce dossier">✕</button>` : ""}</span>`;
-    ul.appendChild(li);
-  });
-  showFolderCount(r.folders.length);
-  const sc = r.scan;
-  $("#src-status").textContent = sc.state === "running" ? "⏳ " + sc.message : sc.state === "error" ? "⚠ " + sc.message
-    : sc.state === "done" ? "✓ " + sc.message : "Tous les sous-dossiers sont parcourus ; les vidéos déjà analysées ne sont pas recalculées.";
-  // analyse en cours : on réinterroge, puis on recharge les sessions quand elle est finie
-  if (sc.state === "running") setTimeout(async () => { if ((await refreshSources()).scan.state !== "running") refreshSessions(); }, 2000);
-  return r;
-}
-/** Nombre de dossiers, rappelé sur la page Fichiers. */
-function showFolderCount(n) {
-  const el = $("#src-count");
-  if (el) el.textContent = `${n} dossier${n > 1 ? "s" : ""} de vidéos`;
-}
-$("#src-list").addEventListener("click", async (e) => {
-  const rm = e.target.dataset.rm;
-  if (!rm) return;
-  await api("POST", "/api/sources", { remove: rm });
-  refreshSources();
-});
-$("#src-add").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const path = $("#src-path").value.trim();
-  if (!path) return;
-  const r = await apiOrError("POST", "/api/sources", { add: path });
-  if (r.error) { $("#src-status").textContent = "⚠ " + r.error; return; }
-  $("#src-path").value = "";
-  refreshSources();
-});
-$("#settings").addEventListener("open-dialog", refreshSources);
-refreshSources();

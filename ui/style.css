@@ -262,6 +262,28 @@ button.play { width: 38px; height: 32px; border-radius: 50%; padding: 0; font-si
 .src-add { display: flex; gap: 6px; }
 .src-add input { flex: 1; }
 
+/* dossiers de vidéos (sources.js) */
+.src-panel { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.src-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.src-head .spacer { flex: 1; }
+.src-card { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 6px; background: var(--panel2); }
+.src-card .spacer { flex: 1; }
+.scan { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.scan .grow { flex: 1; min-width: 0; }
+.scan progress { width: 100%; margin-top: 3px; }
+.scan.ok { color: var(--clip); }
+.scan.err { color: #ff7875; }
+.fs-shortcuts { display: flex; flex-wrap: wrap; gap: 4px; }
+.fs-bar { display: flex; gap: 6px; }
+.fs-bar input { flex: 1; min-width: 0; }
+.fs-list { list-style: none; margin: 0; padding: 0; min-height: 160px; max-height: 50vh; overflow: hidden auto; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--line); border-radius: 6px; }
+.fs-list li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; }
+.fs-list li:hover { background: var(--panel2); }
+.fs-list .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fs-list button { padding: 2px 10px; }
+#fs { width: min(640px, calc(100vw - 16px)); }
+#fs[open] { display: flex; flex-direction: column; gap: 8px; }
+
 /* ================================================================ 9. montage, finition, confidentialité */
 .pane-head { display: flex; align-items: baseline; gap: 8px; }
 .pane { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; overflow: auto; min-height: 0; }

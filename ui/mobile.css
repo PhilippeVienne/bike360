@@ -95,6 +95,11 @@ body.fs #hud { top: calc(6px + env(safe-area-inset-top)); }
   border-top: 1px solid var(--line); min-height: 44px; font-size: 14px; }
 .file-card.out .fc-check { background: var(--panel2); }
 
+/* dossiers */
+.src-panel button, .fs-shortcuts button, .fs-bar button { min-height: 40px; }
+.fs-bar input { font-size: 16px; }
+.fs-list li { min-height: 44px; }
+
 /* montage */
 .mte { --mte-head: 96px; padding: 0 0 8px; background: none; }
 .mte-bar button, .mte-add button, .mte-add .upload, .mte-add select { min-height: 40px; }

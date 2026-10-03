@@ -14,7 +14,7 @@ use bike360_core::{analyze, automontage, finishing, geometry, hyperlapse, insta3
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::audio;
+use crate::{audio, sources};
 use crate::app::{self, exports_dir, music_dir, overrides_path, read_json, sources_path,
                  write_json_indent, App, Sess, MUSIC_EXT};
 use crate::export::{self, float_of, int_of, HyperOpts, FORMATS, HEIGHTS};
@@ -378,6 +378,14 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                 Err(e) => err(502, format!("catalogue indisponible : {e}")),
             });
         }
+        "/api/sources/detect" => return Ok(ok(Value::Array(sources::detect(app)))),
+        "/api/fs" => {
+            let dir = unquote(raw_query(full).get("path").and_then(Value::as_str).unwrap_or(""), false);
+            return Ok(match sources::browse(&dir) {
+                Ok(v) => ok(v),
+                Err(e) => err(400, format!("{e:#}")),
+            });
+        }
         "/api/sources" => {
             let sessions = app.sessions.read().unwrap();
             let folders: Vec<Value> = app.source_folders().into_iter().map(|f| {
@@ -559,6 +567,11 @@ fn put(app: &Arc<App>, full: &str, body: &Bytes) -> Result<Reply, ()> {
     if p == ["api", "project"] {
         let b = body_obj(body)?;
         let mut proj = app.get_project();
+        // get_project() écarte les sessions absentes (carte retirée) : on garde la liste enregistrée,
+        // sinon elles disparaîtraient du projet à la première modification
+        if let Some(saved) = read_json(&app::project_path()).and_then(|p| p.get("sessions").cloned()).filter(Value::is_array) {
+            proj["sessions"] = saved;
+        }
         for k in ["sessions", "order", "excluded"] {
             if let Some(Value::Array(a)) = b.get(k) {
                 proj[k] = Value::Array(a.clone());
@@ -850,6 +863,11 @@ fn post(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Result
 fn sources(app: &Arc<App>, b: &Value) -> Result<Reply, ()> {
     if app.scan.lock().unwrap().get("state").and_then(Value::as_str) == Some("running") {
         return Ok(err(409, "analyse déjà en cours"));
+    }
+    if truthy(b.get("rescan")) {   // nouvelle analyse à la demande (nouveaux fichiers, carte rebranchée)
+        let app2 = app.clone();
+        spawn(move || app2.rescan());
+        return Ok(ok(json!({"ok": true})));
     }
     let mut extra: Vec<String> = read_json(&sources_path()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     if truthy(b.get("add")) {

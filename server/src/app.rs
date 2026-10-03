@@ -314,20 +314,33 @@ impl App {
     /// Une session présente dans deux dossiers n'est prise qu'une fois (la première trouvée) ;
     /// les fichiers qui se suivent sans interruption forment un seul bloc continu.
     pub fn load_sessions(&self) -> Result<()> {
+        self.load_sessions_with(&mut |_| {})
+    }
+
+    /// Comme [`load_sessions`], en signalant l'avancement : `report({phase, message, done, total, current})`.
+    pub fn load_sessions_with(&self, report: &mut dyn FnMut(Value)) -> Result<()> {
         let mut by_id: Vec<Session> = vec![];
         let mut origin: HashMap<String, String> = HashMap::new();
-        for folder in self.source_folders() {
-            if !Path::new(&folder).is_dir() {
+        let folders = self.source_folders();
+        for (i, folder) in folders.iter().enumerate() {
+            report(json!({"phase": "listing", "message": format!("recherche des vidéos ({}/{}) : {}", i + 1, folders.len(), folder),
+                          "done": i, "total": folders.len(), "current": folder}));
+            if !Path::new(folder).is_dir() {
                 continue;
             }
-            for s in insta360::scan(Path::new(&folder)) {
+            for s in insta360::scan(Path::new(folder)) {
                 if !origin.contains_key(&s.id) {
                     origin.insert(s.id.clone(), folder.clone());
                     by_id.push(s);
                 }
             }
         }
-        let durations: HashMap<String, f64> = by_id.iter().map(|s| (s.id.clone(), self.session_duration(s))).collect();
+        let mut durations: HashMap<String, f64> = HashMap::new();
+        for (i, s) in by_id.iter().enumerate() {
+            report(json!({"phase": "durations", "message": format!("lecture des durées ({}/{})", i + 1, by_id.len()),
+                          "done": i, "total": by_id.len(), "current": s.id}));
+            durations.insert(s.id.clone(), self.session_duration(s));
+        }
         let blocks = insta360::merge_continuous(by_id, |s| durations[&s.id]);
         for b in &blocks {
             if !b.parts.is_empty() {
@@ -340,7 +353,12 @@ impl App {
                 migrate_block_selections(&b.id, &members)?;
             }
         }
-        let results = analyze::analyze_sessions(blocks, false)?;
+        let results = analyze::analyze_sessions_progress(blocks, false, &mut |done, total, sid| {
+            if !sid.is_empty() {
+                report(json!({"phase": "analyzing", "message": format!("analyse des sessions ({}/{}) : {sid}", done + 1, total),
+                              "done": done, "total": total, "current": sid}));
+            }
+        })?;
         let mut map = BTreeMap::new();
         for (s, mut r) in results {
             // Bloc : dossier de la première session (le bloc porte son identifiant).
@@ -355,11 +373,19 @@ impl App {
 
     /// Nouvelle analyse des dossiers (après ajout/retrait d'un dossier), en tâche de fond.
     pub fn rescan(self: &Arc<Self>) {
-        *self.scan.lock().unwrap() = json!({"state": "running", "message": "analyse des dossiers…"});
+        let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+        let running = |patch: Value| {
+            let mut v = json!({"state": "running", "started": started, "phase": "listing", "message": "analyse des dossiers…"});
+            if let (Some(a), Value::Object(b)) = (v.as_object_mut(), patch) {
+                a.extend(b);
+            }
+            v
+        };
+        *self.scan.lock().unwrap() = running(json!({}));
         let before: HashSet<String> = self.sessions.read().unwrap().keys().cloned().collect();
         let r = {
             let _g = self.lock.lock().unwrap();
-            self.load_sessions()
+            self.load_sessions_with(&mut |patch| *self.scan.lock().unwrap() = running(patch))
         };
         match r {
             Ok(()) => {
@@ -369,8 +395,9 @@ impl App {
                 for sid in &new {
                     self.request_horizon(sid, false);
                 }
-                *self.scan.lock().unwrap() =
-                    json!({"state": "done", "message": format!("{} nouvelle(s) session(s)", new.len()), "new": new});
+                let msg = if new.is_empty() { "aucune nouvelle session".to_string() } else { format!("{} nouvelle(s) session(s)", new.len()) };
+                *self.scan.lock().unwrap() = json!({"state": "done", "message": msg, "new": new, "started": started,
+                                                    "finished": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())});
             }
             Err(e) => {
                 eprintln!("Erreur d'analyse : {e:#}");

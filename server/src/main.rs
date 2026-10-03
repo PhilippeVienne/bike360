@@ -9,6 +9,7 @@ mod export;
 mod privacy;
 mod pyjson;
 mod routes;
+mod sources;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -44,6 +45,10 @@ async fn main() -> Result<()> {
     {
         let app = app.clone();
         tokio::task::spawn_blocking(move || app.load_sessions()).await??;
+    }
+    {
+        let app = app.clone();
+        std::thread::spawn(move || sources::watch(app));
     }
     for _ in 0..HORIZON_WORKERS {
         let app = app.clone();

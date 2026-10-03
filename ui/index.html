@@ -50,8 +50,8 @@
       </div>
       <div class="spacer"></div>
       <label class="toggle"><input type="checkbox" id="show-all"> afficher aussi les fichiers hors projet</label>
-      <button data-open="settings" data-section="sources" title="Dossiers de vidéos analysés (carte SD, copies sur disque…)">📁 <span id="src-count">Dossiers de vidéos</span></button>
     </div>
+    <div id="src-panel" class="src-panel"></div>
     <div id="file-list" class="file-grid"></div>
   </section>
 
@@ -310,15 +310,6 @@
 
 <dialog id="settings" class="dlg">
   <div class="dlg-head"><strong>Réglages</strong><div class="spacer"></div><button data-close>✕</button></div>
-  <section data-section="sources">
-    <h3>Dossiers de vidéos</h3>
-    <ul id="src-list" class="src-list"></ul>
-    <form id="src-add" class="src-add">
-      <input id="src-path" type="text" placeholder="/chemin/vers/dossier" spellcheck="false" autocomplete="off">
-      <button type="submit" class="primary">Ajouter</button>
-    </form>
-    <span id="src-status" class="hint">Tous les sous-dossiers sont parcourus ; les vidéos déjà analysées ne sont pas recalculées.</span>
-  </section>
   <section data-section="gps">
     <h3>Synchronisation caméra ↔ GPS GeoRide</h3>
     <p class="session-label muted"></p>
@@ -367,6 +358,18 @@
       <p>glisser les bords d'un clip pour l'ajuster</p><p>glisser un ◆ pour déplacer un point clé</p>
       <p>molette : zoom · <kbd>0</kbd> : tout afficher</p></section>
   </div>
+</dialog>
+<dialog id="fs" class="dlg">
+  <div class="dlg-head"><strong>Choisir un dossier de vidéos</strong><div class="spacer"></div><button data-close aria-label="Fermer">✕</button></div>
+  <div id="fs-shortcuts" class="fs-shortcuts"></div>
+  <form id="fs-form" class="fs-bar">
+    <button type="button" id="fs-up" title="Dossier parent" aria-label="Dossier parent">↑</button>
+    <input id="fs-path" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Chemin du dossier">
+    <button type="submit">Aller</button>
+  </form>
+  <ul id="fs-list" class="fs-list"></ul>
+  <span id="fs-status" class="hint"></span>
+  <div class="row"><span class="spacer"></span><button id="fs-pick" class="primary" disabled>Ajouter le dossier affiché</button></div>
 </dialog>
 <dialog id="lib" class="dlg">
   <div class="dlg-head"><strong>Musiques libres (CC BY 4.0)</strong><div class="spacer"></div><button data-close>✕</button></div>
