@@ -478,7 +478,9 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
             };
             let vals = (num("t", s.result.duration as f64 / 3.0), num("yaw", 0.0), num("pitch", -10.0), num("fov", 100.0));
             let (Some(t), Some(yaw), Some(pitch), Some(fov)) = vals else { return Ok(Reply::Error(500)) };
-            return Ok(match export::thumbnail(app, sid, t, yaw, pitch, fov.clamp(30.0, 150.0), 320) {
+            // largeur facultative (w=…, 160 à 1280 px) pour les illustrations ; 320 px par défaut
+            let width = num("w", 320.0).unwrap_or(320.0).clamp(160.0, 1280.0) as u32;
+            return Ok(match export::thumbnail(app, sid, t, yaw, pitch, fov.clamp(30.0, 150.0), width) {
                 Ok(img) => Reply::File(img, Some("image/jpeg")),
                 Err(e) => {
                     eprintln!("Vignette : {e:#}");

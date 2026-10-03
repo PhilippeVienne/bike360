@@ -10,9 +10,15 @@ conf="$HOME/.config/bike360"
 unit="$HOME/.config/systemd/user"
 
 cargo build --release --manifest-path "$repo/Cargo.toml"
+# moteur GPU (NVDEC/CUDA/NVENC) : seulement si le kit CUDA est là ; sinon exports par ffmpeg (processeur)
+if command -v nvcc >/dev/null 2>&1; then
+    cargo build --release --manifest-path "$repo/Cargo.toml" -p bike360-render
+else
+    echo "nvcc introuvable : moteur GPU non compilé (exports ffmpeg ; pas de floutage, suivi ni hyperlapse)."
+fi
 mkdir -p "$bin" "$conf" "$unit"
 for b in bike360-server bike360-render bike360-tool; do
-    install -m 755 "$repo/target/release/$b" "$bin/$b"
+    [ -f "$repo/target/release/$b" ] && install -m 755 "$repo/target/release/$b" "$bin/$b"
 done
 
 if [ ! -f "$conf/server.env" ]; then
