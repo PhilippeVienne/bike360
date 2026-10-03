@@ -1,8 +1,8 @@
 // Bibliothèque de musiques libres (CC BY, Kevin MacLeod) : recherche par ambiance ou mot,
-// écoute d'un extrait, téléchargement et choix comme musique du montage (dialogue #lib).
+// écoute d'un extrait, téléchargement et ajout comme piste audio du montage (dialogue #lib).
 
 import { $, $$, apiOrError, esc, fmt } from "./util.js";
-import { renderFinish, useMusic } from "./finish.js";
+import { addTrack, setEditorStatus } from "./mt-editor.js";
 
 const lib = $("#lib"), libAudio = $("#lib-audio");
 let libMood = "Driving", libTimer = null;
@@ -21,7 +21,7 @@ async function libSearch() {
       <button data-use class="primary">Utiliser</button></li>`).join("") : "<li class='hint'>Aucun résultat.</li>";
 }
 
-$("#lib-open").addEventListener("click", () => { lib.showModal(); libSearch(); });
+document.addEventListener("click", (e) => { if (e.target.closest("#lib-open")) { lib.showModal(); libSearch(); } });
 lib.addEventListener("close", () => libAudio.pause());
 lib.addEventListener("click", async (e) => {
   if (e.target === lib || e.target.closest("[data-close]")) return lib.close();
@@ -39,10 +39,10 @@ lib.addEventListener("click", async (e) => {
   if (e.target.closest("[data-use]")) {
     e.target.disabled = true; e.target.textContent = "Téléchargement…";
     const r = await apiOrError("POST", "/api/music/library", { filename: li.dataset.f });
-    if (r.error) { e.target.textContent = "⚠ échec"; $("#fin-status").textContent = "⚠ " + r.error; return; }
-    await useMusic(r.name);
-    $("#fin-status").textContent = `✓ ${r.name} — crédit ajouté à la fin du montage`;
-    libAudio.pause(); lib.close(); renderFinish();
+    if (r.error) { e.target.textContent = "⚠ échec"; setEditorStatus("⚠ " + r.error); return; }
+    libAudio.pause(); lib.close();
+    await addTrack(r.name);
+    setEditorStatus(`✓ ${r.name} ajoutée — crédit ajouté à la fin du montage`);
   }
 });
 $("#lib-q").addEventListener("input", () => { clearTimeout(libTimer); libTimer = setTimeout(libSearch, 350); });

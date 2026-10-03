@@ -1,5 +1,5 @@
 // Étape ③ Montage : tous les clips du projet dans un ordre libre (glisser ou ↑↓), avec
-// exclusions ; montage automatique ; aperçu de la mini-carte incrustée. Export du montage
+// exclusions (liste ci-dessous et frise de l'éditeur, mt-editor.js) ; montage automatique ; aperçu de la mini-carte incrustée. Export du montage
 // (étape ④) et suivi de sa progression (annulation, lien du fichier, chapitres YouTube).
 // Partage : montageKey, renderMontage, updateMontageMap, pollMontage.
 
@@ -11,6 +11,7 @@ import { loadSession } from "./session.js";
 import { refreshSessions } from "./project.js";
 import { exportSettings } from "./export.js";
 import { renderFinish } from "./finish.js";
+import { initEditor, renderEditor } from "./mt-editor.js";
 import { isStep, onStep, onTab, setExported, setJob, tabShown, updateSteps } from "./steps.js";
 
 /** Identifiant d'un clip dans le projet (les id de clip ne sont uniques que par session). */
@@ -41,6 +42,7 @@ export function renderMontage() {
   $("#ex-montage-sum").textContent = kept.length ? $("#mt-total").textContent : "aucun clip : voir l'étape ③";
   $("#mt-start").disabled = $("#mt-preview").disabled = !kept.length;
   updateMontageMap();
+  renderEditor();
   if (isStep("montage") || isStep("export")) renderFinish();
   updateSteps();
 }
@@ -80,12 +82,18 @@ list.addEventListener("click", async (e) => {
     return saveMontage(clips);
   }
   if (b && "ex" in b.dataset) { clips[i] = { ...clips[i], excluded: !clips[i].excluded }; return saveMontage(clips); }
-  // clic sur le clip : l'ouvrir dans sa session
-  const c = clips[i];
+  openClip(clips[i]);   // clic sur le clip : l'ouvrir dans sa session
+});
+async function openClip(c) {
   if (!st.s || st.s.id !== c.sid) await loadSession(c.sid);
   const k = st.clips.findIndex((x) => x.id === c.id);
   if (k >= 0) selectClip(k, "seek");
   renderMontage();
+}
+initEditor({
+  reorder: saveMontage,
+  open: openClip,
+  exclude: (c) => saveMontage(st.project.clips.map((x) => (itemKey(x) === itemKey(c) ? { ...x, excluded: true } : x))),
 });
 // glisser-déposer : un trait avant ou après la ligne survolée montre l'emplacement
 let dragKey = null;

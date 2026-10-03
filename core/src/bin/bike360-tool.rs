@@ -194,8 +194,15 @@ fn port_check(cmd: &str, spec: &Value) -> Result<Value> {
             let files: Vec<&Path> = clips.iter().map(|c| Path::new(&c.0)).collect();
             let info: Vec<(f64, bool)> = clips.iter().map(|c| (c.1, c.2)).collect();
             let opt = |k: &str| spec[k].as_str().map(Path::new);
+            // fichiers audio : {nom du fichier → [chemin, durée]}
+            let tracks: Vec<finishing::Track> = style["audio_tracks"].as_array().into_iter().flatten()
+                .filter_map(|t| {
+                    let f = &spec["audio_files"][t["file"].as_str()?];
+                    Some(finishing::Track { path: f[0].as_str()?.into(), seconds: f[1].as_f64()?, spec: t })
+                })
+                .collect();
             let (cmd, total) = finishing::finish_command(&files, &info, &out("final"), &style, &strings(&spec["encoder_args"]),
-                                                         f("W") as usize, f("H") as usize, opt("music"),
+                                                         f("W") as usize, f("H") as usize, &tracks,
                                                          spec["audio_bitrate"].as_str().unwrap_or("160k"), opt("end_card"),
                                                          &strings(&spec["credits"]));
             json!({"clean": style, "plain": finishing::is_plain(&style), "cmd": cmd, "total": total})

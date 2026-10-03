@@ -157,9 +157,10 @@
   <!-- ③ Montage -->
   <section class="m-panel" data-steps="montage">
     <div class="tabs" data-tabs="mt">
-      <button data-tab="order">Ordre</button><button data-tab="finish">Finition</button><button data-tab="privacy">Flou</button><button data-tab="minimap">Carte</button>
+      <button data-tab="order">Montage</button><button data-tab="finish">Finition</button><button data-tab="privacy">Flou</button><button data-tab="minimap">Carte</button>
     </div>
     <div class="pane" data-panel="mt:order">
+      <div id="mte" class="mte" aria-label="Éditeur de montage"></div>
       <div class="pane-head"><strong>Ordre du montage</strong><span id="mt-total" class="muted"></span></div>
       <div class="auto-row">
         <span class="auto-lbl">✨ Montage auto</span>
@@ -186,16 +187,8 @@
           </select></div></div>
       <label class="field"><span>Titre d'ouverture</span><input data-style="title" type="text" maxlength="120" placeholder="vide = aucun"></label>
       <label class="field"><span>Sous-titre</span><input data-style="subtitle" type="text" maxlength="120" placeholder="date, lieux…"></label>
-      <div class="field"><span>Musique</span>
-        <select data-style="music" id="fin-music"><option value="">aucune</option></select>
-        <div class="row">
-          <button id="lib-open">🎵 Musiques libres…</button>
-          <label class="upload">＋ Envoyer un fichier<input type="file" id="fin-upload" accept="audio/*" hidden></label>
-        </div></div>
-      <label class="field slider"><span>Volume de la musique</span><input data-style="music_volume" type="range" min="0" max="1.5" step="0.05"></label>
-      <label class="field slider"><span>Son d'origine (moteur, vent)</span><input data-style="original_volume" type="range" min="0" max="1.5" step="0.05"></label>
       <label class="check"><input type="checkbox" data-style="end_card"> Carte de fin + stats (5 s)</label>
-      <span class="hint" id="fin-status">Ouverture et fermeture en fondu au noir dès qu'une finition est choisie.</span>
+      <span class="hint">Ouverture et fermeture en fondu au noir dès qu'une finition est choisie. Musique et volumes : onglet Montage.</span>
     </div>
     <div id="mt-privacy" class="pane form" data-panel="mt:privacy" hidden>
       <p class="pane-sum">Confidentialité <span id="pv-summary" class="muted"></span></p>

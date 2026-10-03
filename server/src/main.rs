@@ -4,6 +4,7 @@
 //! Portage Rust de server.py : mêmes routes, mêmes JSON, mêmes fichiers de data/.
 
 mod app;
+mod audio;
 mod export;
 mod privacy;
 mod pyjson;

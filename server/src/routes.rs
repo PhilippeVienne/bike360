@@ -14,6 +14,7 @@ use bike360_core::{analyze, automontage, finishing, geometry, hyperlapse, insta3
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+use crate::audio;
 use crate::app::{self, exports_dir, music_dir, overrides_path, read_json, sources_path,
                  write_json_indent, App, Sess, MUSIC_EXT};
 use crate::export::{self, float_of, int_of, HyperOpts, FORMATS, HEIGHTS};
@@ -300,6 +301,12 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
             return Ok(Reply::File(f, None));
         }
     }
+    if p[0] == "music" && p.len() == 2 {   // fichier audio du montage (écoute dans l'éditeur)
+        return Ok(match audio::path_of(&unquote(p[1], false)) {
+            Some(f) => Reply::File(f, None),
+            None => Reply::Error(404),
+        });
+    }
     match path {
         "/api/sessions" => {
             let sessions = app.sessions.read().unwrap();
@@ -324,6 +331,7 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                        "auto": truthy(c.get("auto")), "yaw": c.get("yaw").cloned().unwrap_or(json!(0)),
                        "pitch": c.get("pitch").cloned().unwrap_or(json!(0)),
                        "fov": c.get("fov").cloned().unwrap_or(json!(100)),
+                       "speed_keys": c.get("speed_keys").cloned().unwrap_or(json!([])),
                        "utc": sessions.get(sid).map_or(0.0, |s| s.result.utc_t0) + float_of(c.get("start"), 0.0)})
             }).collect();
             let mut out = proj.as_object().cloned().unwrap_or_default();
@@ -351,6 +359,14 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                                 "clips": privacy_overview(app)})));
         }
         "/api/music" => return Ok(ok(json!(app.music_files()))),
+        "/api/music/files" => return Ok(ok(Value::Array(audio::list(app)))),
+        "/api/music/peaks" => {
+            let name = unquote(raw_query(full).get("name").and_then(Value::as_str).unwrap_or(""), false);
+            return Ok(match audio::peaks(&name) {
+                Ok(v) => ok(json!({"per_s": audio::PEAKS_PER_S, "peaks": v.iter().map(|x| (x * 1000.0).round() / 1000.0).collect::<Vec<_>>()})),
+                Err(e) => err(404, format!("{e:#}")),
+            });
+        }
         "/api/music/library" => {
             let qs = parse_qs(full);
             let s = |k: &str| qs.get(k).and_then(Value::as_str).unwrap_or("").to_string();

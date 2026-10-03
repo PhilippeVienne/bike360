@@ -19,8 +19,9 @@ body[data-step=cut] main {
   grid-template: "viewer side" minmax(0, 1fr) "tl tl" auto / minmax(0, 1fr) var(--aside-w, clamp(300px, 27vw, 440px));
 }
 body[data-step=montage] main {
-  grid-template: "mlist viewer mside" minmax(0, 1fr) / clamp(300px, 27vw, 420px) minmax(0, 1fr) clamp(300px, 26vw, 400px);
+  grid-template: "mlist viewer mside" minmax(0, 1fr) "mte mte mte" auto / clamp(300px, 27vw, 420px) minmax(0, 1fr) clamp(300px, 26vw, 400px);
 }
+#mte { grid-area: mte; border-top: 1px solid var(--line); max-height: 52vh; overflow-y: auto; }
 body[data-step=export] main { grid-template: "export viewer" minmax(0, 1fr) / clamp(380px, 38vw, 560px) minmax(0, 1fr); }
 #files-view { grid-area: files; }
 .viewer { grid-area: viewer; display: grid; grid-template-rows: minmax(0, 1fr) auto; }

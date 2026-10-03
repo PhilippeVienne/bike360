@@ -96,6 +96,11 @@ body.fs #hud { top: calc(6px + env(safe-area-inset-top)); }
 .file-card.out .fc-check { background: var(--panel2); }
 
 /* montage */
+.mte { --mte-head: 96px; padding: 0 0 8px; background: none; }
+.mte-bar button, .mte-add button, .mte-add .upload, .mte-add select { min-height: 40px; }
+.mte-row { min-height: 60px; }
+.blk-aud .hdl { width: 22px; }
+.mte-insp .row button { flex: 1 1 40%; min-height: 40px; }
 .auto-row select { flex: 1 1 30%; min-width: 0; }
 .auto-row button { flex: 1 1 40%; }
 .mt-item { grid-template-columns: 96px minmax(0, 1fr); grid-template-areas: "img info" "btns btns"; cursor: default; }

@@ -17,7 +17,7 @@ use bike360_core::telemetry::{self, Span};
 use bike360_core::{chapters, draw, endcard, finishing, hyperlapse, musiclib, ramp};
 use serde_json::{json, Map, Value};
 
-use crate::app::{exports_dir, music_dir, render_bin, thumbs_dir, App, Job};
+use crate::app::{exports_dir, render_bin, thumbs_dir, App, Job};
 use crate::{privacy, pyjson};
 use bike360_core::privacy::Track;
 
@@ -793,9 +793,18 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
                               "-c", "copy", &joined.display().to_string()])?;
                 clip_files.push(joined);
             }
-            let music_name = style["music"].as_str().unwrap_or("").to_string();
-            let music = app.music_files().contains(&music_name).then(|| music_dir().join(&music_name));
-            let credits = if music.is_some() { musiclib::credit_lines(&music_name) } else { vec![] };
+            let audio = crate::audio::resolve(style);
+            let mut credits: Vec<String> = vec![];
+            for t in &audio {
+                let name = t.spec["file"].as_str().unwrap_or_default();
+                if t.spec["muted"] != json!(true) {
+                    for l in musiclib::credit_lines(name) {
+                        if !credits.contains(&l) {
+                            credits.push(l);
+                        }
+                    }
+                }
+            }
             let mut card = None;
             if style["end_card"].as_bool().unwrap_or(false) {
                 let c = out_dir.join("fin.png");
@@ -811,7 +820,7 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
             let refs: Vec<&Path> = clip_files.iter().map(PathBuf::as_path).collect();
             let info = refs.iter().map(|f| finishing::probe(f)).collect::<Result<Vec<_>>>()?;
             let (cmd, _) = finishing::finish_command(&refs, &info, &final_, style, &encoder_args(app, &q), out_w as usize,
-                                                     out_h as usize, music.as_deref(), &q.audio, card.as_deref(), &credits);
+                                                     out_h as usize, &audio, &q.audio, card.as_deref(), &credits);
             run_part_process(job, &cmd, |_| {})?;
             chapter_text = Some(montage_chapters(clips, &sessions, &parsed, style, card.is_some()));
         }

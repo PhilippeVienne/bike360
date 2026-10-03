@@ -71,6 +71,9 @@
     <span class="hint">Glisser ou ↑↓ pour réordonner · 👁 pour exclure · clic : ouvrir le clip dans sa session.</span>
   </section>
 
+  <!-- ③ Montage : frise (clips en blocs vidéo, pistes audio) -->
+  <section id="mte" class="mte" data-steps="montage" aria-label="Éditeur de montage"></section>
+
   <!-- ④ Exporter -->
   <section id="export-view" class="page column" data-steps="export">
     <div class="card">
@@ -272,16 +275,8 @@
           </select></div></div>
       <label class="field"><span>Titre d'ouverture</span><input data-style="title" type="text" maxlength="120" placeholder="vide = aucun"></label>
       <label class="field"><span>Sous-titre</span><input data-style="subtitle" type="text" maxlength="120" placeholder="date, lieux…"></label>
-      <div class="field"><span>Musique</span>
-        <select data-style="music" id="fin-music"><option value="">aucune</option></select>
-        <div class="row">
-          <button id="lib-open" title="Musiques libres (CC BY) de Kevin MacLeod, créditées à la fin du montage">🎵 Musiques libres…</button>
-          <label class="upload" title="Envoyer un fichier audio (mp3, m4a, wav…)">＋ Envoyer un fichier<input type="file" id="fin-upload" accept="audio/*" hidden></label>
-        </div></div>
-      <label class="field slider"><span>Volume de la musique</span><input data-style="music_volume" type="range" min="0" max="1.5" step="0.05"></label>
-      <label class="field slider"><span>Son d'origine (moteur, vent)</span><input data-style="original_volume" type="range" min="0" max="1.5" step="0.05"></label>
       <label class="check" title="Carte des balades et statistiques (km, dénivelé, durée, vitesse max) pendant 5 s à la fin"><input type="checkbox" data-style="end_card"> Carte de fin + stats (5 s)</label>
-      <span class="hint" id="fin-status">Ouverture et fermeture en fondu au noir dès qu'une finition est choisie.</span>
+      <span class="hint">Ouverture et fermeture en fondu au noir dès qu'une finition est choisie. Musique et volumes : dans la frise du montage.</span>
     </div>
     <div id="mt-privacy" class="pane form" data-panel="mt:privacy" hidden>
       <p class="pane-sum">Confidentialité <span id="pv-summary" class="muted"></span></p>
