@@ -96,9 +96,8 @@ body.fs #hud { top: calc(6px + env(safe-area-inset-top)); }
 .file-card.out .fc-check { background: var(--panel2); }
 
 /* dossiers */
-.src-panel button, .fs-shortcuts button, .fs-bar button { min-height: 40px; }
-.fs-bar input { font-size: 16px; }
-.fs-list li { min-height: 44px; }
+.src-panel button { min-height: 40px; }
+.fs-bar input, #fs-filter { font-size: 16px; }
 
 /* montage */
 .mte { --mte-head: 96px; padding: 0 0 8px; background: none; }

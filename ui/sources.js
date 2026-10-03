@@ -1,7 +1,7 @@
 // Dossiers de vidéos (étape ① Fichiers) : liste des dossiers analysés, cartes SD détectées,
 // navigateur de dossiers du PC, nouvelle analyse à la demande et suivi de l'analyse en cours
 // (le serveur relance aussi seul l'analyse quand de nouveaux fichiers apparaissent).
-// Le panneau #src-panel est dessiné ici ; le navigateur est le dialogue #fs.
+// Le panneau #src-panel est dessiné ici ; le navigateur est le dialogue #fs (à trois panneaux).
 // Partage : refreshSources.
 
 import { $, api, apiOrError, esc, fmt, storageGet, storageSet } from "./util.js";
@@ -100,27 +100,86 @@ panel.addEventListener("click", (e) => {
 });
 
 // ------------------------------------------------------------------ navigateur de dossiers
+// Emplacements et cartes à gauche, dossiers au centre (fil d'Ariane, filtre), aperçu des
+// sessions trouvées à droite avant d'ajouter.
 
 const fs = $("#fs");
-let here = null;   // réponse de /api/fs pour le dossier affiché
+let here = null;           // réponse de /api/fs pour le dossier affiché
+let preview = null;        // réponse de /api/fs/preview ("loading" pendant le calcul)
+let browseToken = 0;       // ignore les réponses d'un dossier qu'on a déjà quitté
+
+const sizeText = (b) => b >= 1e9 ? (b / 1e9).toFixed(1).replace(".", ",") + " Go" : Math.max(1, Math.round(b / 1e6)) + " Mo";
+const sessionsText = (n) => `${n} session${n > 1 ? "s" : ""}`;
 
 async function browse(path) {
+  const token = ++browseToken;
   const r = await apiOrError("GET", `/api/fs?path=${encodeURIComponent(path)}`);
+  if (token !== browseToken) return;
   if (r.error) { $("#fs-status").textContent = "⚠ " + r.error; return; }
   here = r;
+  preview = "loading";
   storageSet("bike360.fs", r.path);
-  $("#fs-path").value = r.path;
+  $("#fs-filter").value = "";
+  $("#fs-form").hidden = true;
+  $("#fs-crumbs").hidden = false;
+  renderBrowser();
+  const p = await apiOrError("GET", `/api/fs/preview?path=${encodeURIComponent(r.path)}`);
+  if (token !== browseToken) return;
+  preview = p.error ? { error: p.error } : p;
+  renderPreview();
+}
+
+function renderBrowser() {
+  const r = here;
   $("#fs-up").disabled = !r.parent;
-  $("#fs-shortcuts").innerHTML = r.shortcuts
-    .map((s) => `<button data-go="${esc(s.path)}">${esc(s.label)}</button>`).join("");
-  $("#fs-list").innerHTML = r.dirs.length ? r.dirs.map((d) => `<li data-go="${esc(d.path)}">
-      <span class="ico">📁</span><span class="nm">${esc(d.name)}</span>
-      ${d.videos ? `<span class="badge">${d.videos} vidéo${d.videos > 1 ? "s" : ""}</span>` : ""}
-      ${d.videos ? `<button class="primary" data-pick="${esc(d.path)}">Ajouter</button>` : ""}</li>`).join("")
-    : `<li class="hint">Aucun sous-dossier.</li>`;
-  $("#fs-status").textContent = r.videos_here ? `${r.videos_here} fichier(s) de la caméra dans ce dossier.` : "Aucune vidéo de la caméra directement ici (les sous-dossiers sont parcourus à l'analyse).";
-  $("#fs-pick").disabled = false;
-  $("#fs-list").scrollTop = 0;
+  // fil d'Ariane : chaque segment ramène à ce dossier
+  const parts = r.path.split("/").filter(Boolean);
+  $("#fs-crumbs").innerHTML = `<button data-go="/">/</button>` + parts.map((p, i) =>
+    `<button data-go="/${esc(parts.slice(0, i + 1).join("/"))}"${i === parts.length - 1 ? ' class="active"' : ""}>${esc(p)}</button>`).join("");
+  $("#fs-crumbs").scrollLeft = 1e6;
+  // barre latérale : cartes détectées, emplacements, dossiers déjà analysés
+  const added = new Set(data.folders.map((f) => f.path));
+  $("#fs-side").innerHTML = `
+    ${detected.length ? `<h4>Cartes SD</h4>${detected.map((d) => `<div class="fs-card">
+      <button data-go="${esc(d.path)}" title="${esc(d.path)}">💾 <b>${esc(d.label)}</b><small>${sessionsText(d.sessions)}</small></button>
+      ${added.has(d.path) ? `<span class="ok">✓ ajoutée</span>` : `<button class="primary" data-pick="${esc(d.path)}">Utiliser</button>`}</div>`).join("")}` : ""}
+    <h4>Emplacements</h4>${r.shortcuts.map((s) => `<button data-go="${esc(s.path)}" class="${s.path === r.path ? "active" : ""}">${esc(s.label)}</button>`).join("")}
+    ${data.folders.length ? `<h4>Déjà analysés</h4>${data.folders.map((f) => `<button data-go="${esc(f.path)}" title="${esc(f.path)}" class="${f.present ? "" : "absent"}">${esc(f.path.split("/").filter(Boolean).pop() || f.path)}</button>`).join("")}` : ""}`;
+  renderList();
+  renderPreview();
+}
+
+function renderList() {
+  const q = $("#fs-filter").value.trim().toLowerCase();
+  // dossiers qui contiennent des vidéos de la caméra d'abord
+  const dirs = here.dirs.filter((d) => !q || d.name.toLowerCase().includes(q))
+    .sort((a, b) => (!!b.videos - !!a.videos) || a.name.localeCompare(b.name, "fr", { numeric: true }));
+  $("#fs-list").innerHTML = dirs.length ? dirs.map((d) => `<li data-go="${esc(d.path)}" class="${d.videos ? "has" : ""}">
+      <span class="ico">${d.videos ? "🎞" : "📁"}</span><span class="nm">${esc(d.name)}</span>
+      ${d.videos ? `<span class="badge">${d.videos} fichier${d.videos > 1 ? "s" : ""}</span>` : ""}<span class="chev">›</span></li>`).join("")
+    : `<li class="hint empty">${q ? "Aucun dossier ne correspond." : "Aucun sous-dossier."}</li>`;
+}
+
+function renderPreview() {
+  const box = $("#fs-prev"), pick = $("#fs-pick"), st = $("#fs-status");
+  if (!here) return;
+  const name = here.path.split("/").filter(Boolean).pop() || "/";
+  if (preview === "loading") {
+    box.innerHTML = `<h4>${esc(name)}</h4><div class="scan"><span class="spin"></span> Recherche des vidéos…</div>`;
+    pick.disabled = true; pick.textContent = "Ajouter ce dossier"; st.textContent = "";
+    return;
+  }
+  if (preview.error) { box.innerHTML = `<h4>${esc(name)}</h4><div class="scan err">⚠ ${esc(preview.error)}</div>`; pick.disabled = true; return; }
+  const n = preview.total, isAdded = data.folders.some((f) => f.path === here.path);
+  box.innerHTML = `<h4>${esc(name)}</h4>` + (n
+    ? `<p class="hint">${sessionsText(n)} de la caméra dans ce dossier et ses sous-dossiers${preview.truncated ? " (exploration partielle : dossier très grand)" : ""}.</p>
+       <ul class="fs-sessions">${preview.sessions.map((s) => `<li class="${s.known ? "known" : ""}">
+         <b>${new Date(`${s.date.slice(0, 4)}-${s.date.slice(4, 6)}-${s.date.slice(6)}T12:00`).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}</b>
+         · ${s.time.slice(0, 2)}h${s.time.slice(2, 4)}<small>${s.files} fichier${s.files > 1 ? "s" : ""} · ${sizeText(s.bytes)}${s.known ? " · déjà analysée" : ""}</small></li>`).join("")}</ul>`
+    : `<p class="hint">Aucune vidéo de la caméra (.insv / .lrv) ici. Ouvre un sous-dossier : ceux qui en contiennent sont en tête de liste (🎞).</p>`);
+  pick.disabled = !n || isAdded;
+  pick.textContent = isAdded ? "✓ Déjà ajouté" : n ? `Ajouter ce dossier (${sessionsText(n)})` : "Ajouter ce dossier";
+  st.textContent = "";
 }
 
 function openBrowser() {
@@ -146,7 +205,14 @@ fs.addEventListener("click", (e) => {
   if (g) return browse(g.dataset.go);
   if (e.target.closest("#fs-up") && here?.parent) return browse(here.parent);
   if (e.target.closest("#fs-pick") && here) return pick(here.path);
+  if (e.target.closest("#fs-edit")) {   // saisie directe d'un chemin
+    const f = $("#fs-form");
+    f.hidden = !f.hidden;
+    $("#fs-crumbs").hidden = !f.hidden;
+    if (!f.hidden) { $("#fs-path").value = here?.path || ""; $("#fs-path").select(); }
+  }
 });
 $("#fs-form").addEventListener("submit", (e) => { e.preventDefault(); browse($("#fs-path").value.trim()); });
+$("#fs-filter").addEventListener("input", () => here && renderList());
 
 refreshSources();

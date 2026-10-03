@@ -386,6 +386,13 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                 Err(e) => err(400, format!("{e:#}")),
             });
         }
+        "/api/fs/preview" => {
+            let dir = unquote(raw_query(full).get("path").and_then(Value::as_str).unwrap_or(""), false);
+            return Ok(match sources::preview(app, &dir) {
+                Ok(v) => ok(v),
+                Err(e) => err(400, format!("{e:#}")),
+            });
+        }
         "/api/sources" => {
             let sessions = app.sessions.read().unwrap();
             let folders: Vec<Value> = app.source_folders().into_iter().map(|f| {

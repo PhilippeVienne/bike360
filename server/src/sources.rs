@@ -1,10 +1,10 @@
 //! Dossiers de vidéos : cartes SD détectées, navigation dans les dossiers du PC et surveillance
 //! des nouveaux fichiers (scan automatique).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use bike360_core::insta360;
@@ -105,12 +105,64 @@ pub fn browse(path: &str) -> Result<Value> {
         json!({"name": name, "path": p.display().to_string(), "videos": videos})
     }).collect();
     let mut shortcuts = vec![json!({"label": "Maison", "path": home().display().to_string()})];
+    for name in ["Vidéos", "Videos", "Bureau", "Desktop"] {   // dossiers usuels, s'ils existent
+        let p = home().join(name);
+        if p.is_dir() {
+            shortcuts.push(json!({"label": name, "path": p.display().to_string()}));
+        }
+    }
     for m in removable_mounts() {
         let label = m.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| m.display().to_string());
         shortcuts.push(json!({"label": format!("💾 {label}"), "path": m.display().to_string()}));
     }
     Ok(json!({"path": dir.display().to_string(), "parent": dir.parent().map(|p| p.display().to_string()),
               "videos_here": here, "dirs": dirs, "shortcuts": shortcuts}))
+}
+
+/// Aperçu d'un dossier avant de l'ajouter : sessions de la caméra trouvées dans ses sous-dossiers
+/// (sans les analyser), avec date, heure, nombre de fichiers et taille. L'exploration est bornée
+/// (profondeur et temps) pour qu'un grand dossier comme la maison ne bloque pas.
+pub fn preview(app: &App, path: &str) -> Result<Value> {
+    const BUDGET: Duration = Duration::from_millis(2500);
+    let dir = std::fs::canonicalize(path).with_context(|| format!("dossier introuvable : {path}"))?;
+    let t0 = Instant::now();
+    let mut truncated = false;
+    // session → (date, heure, indices de fichiers, octets)
+    let mut found: BTreeMap<String, (String, String, BTreeSet<String>, u64)> = BTreeMap::new();
+    let mut stack = vec![(dir.clone(), WATCH_DEPTH)];
+    while let Some((d, depth)) = stack.pop() {
+        if t0.elapsed() > BUDGET {
+            truncated = true;
+            break;
+        }
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let p = e.path();
+            if p.is_dir() {
+                if depth > 0 && !name.starts_with('.') {
+                    stack.push((p, depth - 1));
+                }
+            } else if is_video(&name) {
+                let parts: Vec<&str> = name.split(['_', '.']).collect();   // VID _ date _ heure _ 00 _ idx . insv
+                if parts.len() >= 6 && parts[1].len() == 8 && parts[2].len() == 6 {
+                    let sid = format!("VID_{}_{}", parts[1], parts[2]);
+                    let ent = found.entry(sid).or_insert_with(|| (parts[1].into(), parts[2].into(), BTreeSet::new(), 0));
+                    ent.2.insert(parts[4].to_string());
+                    ent.3 += e.metadata().map_or(0, |m| m.len());
+                }
+            }
+        }
+    }
+    let known: Vec<String> = app.sessions.read().unwrap().keys().cloned().collect();
+    let mut sessions: Vec<Value> = found.iter()
+        .map(|(id, (date, time, files, bytes))| json!({"id": id, "date": date, "time": time, "files": files.len(), "bytes": bytes,
+                                                         "known": known.contains(id)}))
+        .collect();
+    sessions.reverse();   // plus récentes d'abord
+    let total = sessions.len();
+    sessions.truncate(200);
+    Ok(json!({"path": dir.display().to_string(), "total": total, "truncated": truncated, "sessions": sessions}))
 }
 
 // ------------------------------------------------------------------ scan automatique

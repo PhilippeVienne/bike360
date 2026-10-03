@@ -331,17 +331,26 @@
       <p>Touche un clip pour l'éditer : bords au dixième, cadrage et points clés ◆, suivi d'un compagnon 🎯, points de vitesse ⏩.</p></section>
   </div>
 </dialog>
-<dialog id="fs" class="dlg sheet">
-  <div class="dlg-head"><strong>Choisir un dossier de vidéos</strong><div class="spacer"></div><button data-close aria-label="Fermer">✕</button></div>
-  <div id="fs-shortcuts" class="fs-shortcuts"></div>
-  <form id="fs-form" class="fs-bar">
-    <button type="button" id="fs-up" title="Dossier parent" aria-label="Dossier parent">↑</button>
-    <input id="fs-path" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Chemin du dossier">
-    <button type="submit">Aller</button>
-  </form>
-  <ul id="fs-list" class="fs-list"></ul>
-  <span id="fs-status" class="hint"></span>
-  <div class="row"><span class="spacer"></span><button id="fs-pick" class="primary" disabled>Ajouter le dossier affiché</button></div>
+<dialog id="fs" class="dlg sheet fs">
+  <div class="dlg-head"><strong>Ajouter un dossier de vidéos</strong><div class="spacer"></div><button data-close aria-label="Fermer">✕</button></div>
+  <div class="fs-body">
+    <nav id="fs-side" class="fs-side" aria-label="Emplacements"></nav>
+    <div class="fs-main">
+      <div class="fs-bar">
+        <button type="button" id="fs-up" title="Dossier parent" aria-label="Dossier parent">↑</button>
+        <div id="fs-crumbs" class="fs-crumbs"></div>
+        <button type="button" id="fs-edit" title="Saisir un chemin" aria-label="Saisir un chemin">✎</button>
+      </div>
+      <form id="fs-form" class="fs-bar" hidden>
+        <input id="fs-path" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Chemin du dossier">
+        <button type="submit">Aller</button>
+      </form>
+      <input id="fs-filter" type="search" placeholder="Filtrer les dossiers…" spellcheck="false" autocomplete="off">
+      <ul id="fs-list" class="fs-list"></ul>
+    </div>
+    <aside id="fs-prev" class="fs-prev" aria-live="polite"></aside>
+  </div>
+  <div class="fs-foot"><span id="fs-status" class="hint"></span><div class="spacer"></div><button id="fs-pick" class="primary" disabled>Ajouter ce dossier</button></div>
 </dialog>
 <dialog id="lib" class="dlg sheet">
   <div class="dlg-head"><strong>Musiques libres (CC BY 4.0)</strong><div class="spacer"></div><button data-close aria-label="Fermer">✕</button></div>
