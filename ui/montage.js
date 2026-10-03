@@ -3,11 +3,12 @@
 // (étape ④) et suivi de sa progression (annulation, lien du fichier, chapitres YouTube).
 // Partage : montageKey, renderMontage, updateMontageMap, pollMontage.
 
-import { st } from "./state.js";
+import { st, now, video } from "./state.js";
 import { $, $$, api, apiOrError, esc, exportLink, fmt } from "./util.js";
 import { renderClips, saveClipsNow, selectClip } from "./clips.js";
 import { drawClipsOnMap } from "./map.js";
 import { loadSession } from "./session.js";
+import { seek } from "./playback.js";
 import { refreshSessions } from "./project.js";
 import { exportSettings } from "./export.js";
 import { renderFinish } from "./finish.js";
@@ -90,7 +91,25 @@ async function openClip(c) {
   if (k >= 0) selectClip(k, "seek");
   renderMontage();
 }
+
+// aperçu de la frise : montre le clip c à l'instant `src` (s depuis son début) dans la visionneuse
+let showBusy = false, lastSeek = 0;
+async function showClip(c, src, play) {
+  if (showBusy) return;
+  const want = c.start + src, drift = Math.abs(now() - want);
+  if (st.s && st.s.id === c.sid) {
+    const idle = performance.now() - lastSeek > 1200;   // en lecture : laisse à la vidéo le temps de se positionner
+    if (st.seg < 0 || (play ? idle && (drift > 0.7 || video.paused) : drift > 0.05)) {
+      lastSeek = performance.now();
+      seek(want, play);
+    } else if (!play && !video.paused) video.pause();
+    return;
+  }
+  showBusy = true;   // autre session : on la charge, puis la prochaine mise à jour positionne la vidéo
+  try { await loadSession(c.sid); } finally { showBusy = false; lastSeek = 0; }
+}
 initEditor({
+  show: showClip,
   reorder: saveMontage,
   open: openClip,
   exclude: (c) => saveMontage(st.project.clips.map((x) => (itemKey(x) === itemKey(c) ? { ...x, excluded: true } : x))),

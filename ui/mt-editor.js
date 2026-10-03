@@ -9,11 +9,14 @@
 //   (null = jusqu'à la fin du fichier ou du montage) · loop : le fichier se répète.
 // La durée des blocs vidéo et les chevauchements de transition reprennent finish_command.
 //
+// L'aperçu vidéo (visionneuse) suit la tête de lecture : le clip sous la tête s'y affiche et joue,
+// avec son son d'origine ; hook show(clip, instant, lecture) fourni par montage.js.
 // Partage : initEditor, renderEditor, addTrack, setEditorStatus.
 
-import { st } from "./state.js";
+import { st, video } from "./state.js";
 import { $, api, apiOrError, esc, fmt, storageGet, storageSet } from "./util.js";
 import { outputDuration, speedAt, speedKeys } from "./speed.js";
+import { onStep } from "./steps.js";
 
 const END_CARD_S = 5;                 // = finishing::END_CARD_S
 let HEAD_W = 116;                     // colonne des intitulés (px), lue dans --mte-head
@@ -22,7 +25,7 @@ const MIN_LEN = 0.2;                  // durée minimale d'une piste (s)
 const ORIG_MUTED_VOLUME = 0;
 const ZOOMS = [1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24];
 
-let hooks = { reorder() {}, exclude() {}, open() {} };
+let hooks = { reorder() {}, exclude() {}, open() {}, show() {} };
 let root = null;
 let files = new Map();                // nom → durée (s)
 let zoom = 0;                         // indice dans ZOOMS
@@ -487,7 +490,7 @@ function onPointerDown(e) {
     drag = { type: "scrub" };
     seekTo(timeAt(e.clientX));
   } else return;
-  e.target.setPointerCapture?.(e.pointerId);
+  try { e.target.setPointerCapture?.(e.pointerId); } catch (err) { /* pointeur déjà relâché */ }
   const move = (ev) => onPointerMove(ev);
   const up = (ev) => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); removeEventListener("pointercancel", up); onPointerUp(ev); };
   addEventListener("pointermove", move);
@@ -558,6 +561,7 @@ function onPointerUp() {
     rest.splice(d.idx ?? kept.indexOf(moved), 0, moved);
     return reorderKept(rest);
   }
+  if (d.type === "clip") { const b = geo.blocks.find((x) => keyOf(x.c) === d.key); if (b) playhead = b.start + 0.05; showFrame(); }
   if (d.dirty) save();
   renderEditor();
 }
@@ -570,7 +574,7 @@ const voices = new Map();   // id de piste → {el, gain, file}
 
 function seekTo(t) {
   playhead = Math.max(0, Math.min(geo.total, t));
-  if (player) { player.t0 = performance.now(); player.from = playhead; syncVoices(); }
+  if (player) { player.t0 = performance.now(); player.from = playhead; syncVoices(); } else showFrame();
   renderTime();
 }
 
@@ -603,6 +607,8 @@ function stopPreview(onlyId) {
   if (player) clearInterval(player.timer);
   player = null;
   voices.forEach((v) => v.el.pause());
+  video.pause();
+  video.muted = false; video.volume = 1;
   const b = root?.querySelector('[data-a="play"]');
   if (b) b.textContent = "▶";
 }
@@ -629,19 +635,10 @@ function syncVoices() {
     const env = Math.min(1, tr.fade_in > 0 ? local / tr.fade_in : 1, tr.fade_out > 0 ? (len - local) / tr.fade_out : 1);
     v.gain.gain.value = tr.volume * Math.max(0, env);
   }
-  syncOriginal();
+  syncViewer(true);
 }
 
-// ---- son d'origine : proxys .lrv de chaque clip, au volume du montage, avec les fondus enchaînés
-// (les passages accélérés restent muets, comme à l'export)
-
-const segCache = new Map();   // session → segments (ou promesse en cours)
-function segmentsOf(sid) {
-  const v = segCache.get(sid);
-  if (Array.isArray(v)) return v;
-  if (!v) segCache.set(sid, api("GET", `/api/session/${sid}`).then((s) => segCache.set(sid, s.segments)).catch(() => segCache.delete(sid)));
-  return null;
-}
+// ---- aperçu vidéo : la visionneuse suit la tête de lecture (son d'origine = celui de la vidéo)
 
 const speedMaps = new Map();
 /** Instant du clip (s) et vitesse à t secondes après le début du clip accéléré. */
@@ -662,39 +659,34 @@ function clipTime(c, t) {
   return { src: rel, speed: speedAt(keys, rel) };
 }
 
-function syncOriginal() {
-  const vol = style().original_volume ?? 1, n = geo.blocks.length;
+/** Clip sous la tête de lecture (le dernier commencé pendant un fondu enchaîné). */
+function blockAt(t) {
+  let found = null;
+  geo.blocks.forEach((b, i) => { if (t >= b.start && t < b.start + b.len) found = { b, i }; });
+  return found;
+}
+
+/** Visionneuse : affiche le clip sous la tête de lecture ; en lecture, fait jouer la vidéo
+ *  (muette sur les passages accélérés) au volume du son d'origine, avec les fondus. */
+function syncViewer(playing) {
+  const hit = blockAt(playhead);
+  if (!hit) { if (playing) video.pause(); return; }
+  const { b, i } = hit, local = playhead - b.start;
+  const { src, speed } = clipTime(b.c, local);
+  hooks.show(b.c, src, playing);
+  if (!playing) return;
+  const vol = style().original_volume ?? 1, n = geo.blocks.length, t = geo.t;
   const master = Math.max(0, Math.min(1, playhead / 0.8, (geo.total - playhead) / Math.min(1.5, geo.total / 4 || 1)));
-  geo.blocks.forEach((b, i) => {
-    const key = "o:" + keyOf(b.c), local = playhead - b.start, v = voices.get(key);
-    if (local >= b.len || local < -2.5 || vol <= 0) {   // passé, trop loin ou coupé
-      if (v) { v.el.pause(); if (local >= b.len) { v.el.removeAttribute("src"); voices.delete(key); } }
-      return;
-    }
-    const segs = segmentsOf(b.c.sid);
-    if (!segs) return;
-    const { src, speed } = clipTime(b.c, Math.max(0, local));
-    const ts = b.c.start + src;
-    let k = segs.length - 1;
-    while (k > 0 && ts < segs[k].offset) k--;
-    const want = ts - segs[k].offset;
-    let o = v;
-    if (!o) {
-      const el = new Audio();
-      el.preload = "auto";
-      const gain = actx.createGain();
-      actx.createMediaElementSource(el).connect(gain).connect(actx.destination);
-      o = { el, gain, seg: -1 };
-      voices.set(key, o);
-    }
-    if (o.seg !== k) { o.seg = k; o.el.src = "/media/" + encodeURIComponent(segs[k].lrv); o.el.currentTime = want; }
-    if (local < 0 || speed > 1.05) { o.el.pause(); if (local < 0) o.el.currentTime = want; return; }   // préchargé, ou passage accéléré
-    if (o.el.paused) { o.el.currentTime = want; o.el.play().catch(() => {}); }
-    else if (Math.abs(o.el.currentTime - want) > 0.5) o.el.currentTime = want;
-    const t = geo.t;
-    const env = Math.min(1, i > 0 && t ? local / t : 1, (i < n - 1 || geo.card) && t ? (b.len - local) / t : 1);
-    o.gain.gain.value = vol * Math.max(0, env) * master;
-  });
+  const env = Math.min(1, i > 0 && t ? local / t : 1, (i < n - 1 || geo.card) && t ? (b.len - local) / t : 1);
+  video.muted = speed > 1.05 || vol <= 0;
+  video.volume = Math.min(1, vol * Math.max(0, env) * master);
+}
+
+let viewerTimer = null;
+/** Pause : montre l'image du clip sous la tête de lecture (après un court délai quand on la déplace). */
+function showFrame() {
+  clearTimeout(viewerTimer);
+  viewerTimer = setTimeout(() => { if (!player) syncViewer(false); }, 150);
 }
 
 // ------------------------------------------------------------------ démarrage
@@ -705,5 +697,6 @@ export function initEditor(h) {
   root = $("#mte");
   if (!root) return;
   mount();
+  onStep(() => { if (player) stopPreview(); });   // quitter l'étape arrête l'écoute
   loadFiles().then(() => renderEditor());
 }
