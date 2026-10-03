@@ -618,45 +618,38 @@ function syncVoices() {
   for (const tr of tracksOf()) {
     const len = playedLength(tr, geo.total), dur = files.get(tr.file), local = playhead - tr.start;
     let v = voices.get(tr.id);
-    const active = !tr.muted && tr.volume > 0 && dur && local >= 0 && local < len;
-    if (!active) { v?.el.pause(); continue; }
-    if (!v || v.file !== tr.file) {
+    const usable = !tr.muted && tr.volume > 0 && dur && len > 0;
+    const active = usable && local >= 0 && local < len;
+    if (!active) {
+      if (v) v.el.pause();
+      if (!usable || local >= len || local < -4) continue;
+    }
+    if (!v || v.file !== tr.file) {   // créée un peu avant l'entrée de la piste : le fichier a le temps de se charger
       const el = new Audio(`/music/${encodeURIComponent(tr.file)}`);
       el.preload = "auto";
       const gain = actx.createGain();
       actx.createMediaElementSource(el).connect(gain).connect(actx.destination);
-      v = { el, gain, file: tr.file };
+      v = { el, gain, file: tr.file, fixed: 0 };
       voices.set(tr.id, v);
     }
-    let want = tr.offset + local;
+    let want = tr.offset + Math.max(0, local);
     if (tr.loop) want %= dur;
-    if (v.el.paused) { v.el.currentTime = want; v.el.play().catch(() => {}); }
-    else if (Math.abs(v.el.currentTime - want) > 0.4 && !(tr.loop && Math.abs(v.el.currentTime - want) > dur - 0.4)) v.el.currentTime = want;
+    if (!active) {   // en attente : positionnée au point de départ
+      if (Math.abs(v.el.currentTime - want) > 0.3) v.el.currentTime = want;
+      continue;
+    }
+    const now = performance.now();
+    if (v.el.paused) {
+      if (Math.abs(v.el.currentTime - want) > 0.3) v.el.currentTime = want;
+      v.el.play().catch(() => setEditorStatus("⚠ lecture audio refusée par le navigateur"));
+    } else if (v.el.readyState >= 3 && now - v.fixed > 1000) {   // recalage seulement quand l'audio est prêt
+      const d = Math.abs(v.el.currentTime - want);
+      if (d > 0.4 && !(tr.loop && d > dur - 0.4)) { v.el.currentTime = want; v.fixed = now; }
+    }
     const env = Math.min(1, tr.fade_in > 0 ? local / tr.fade_in : 1, tr.fade_out > 0 ? (len - local) / tr.fade_out : 1);
     v.gain.gain.value = tr.volume * Math.max(0, env);
   }
   syncViewer(true);
-}
-
-// ---- aperçu vidéo : la visionneuse suit la tête de lecture (son d'origine = celui de la vidéo)
-
-const speedMaps = new Map();
-/** Instant du clip (s) et vitesse à t secondes après le début du clip accéléré. */
-function clipTime(c, t) {
-  const keys = speedKeys(c), len = c.end - c.start;
-  if (!keys.length) return { src: Math.min(len, t), speed: 1 };
-  const sig = keys.map((k) => `${k.t}:${k.speed}`).join(), id = keyOf(c);
-  let m = speedMaps.get(id);
-  if (!m || m.sig !== sig || m.len !== len) {
-    const out = [0], src = [0];
-    for (let u = 0; u < len; u += 1 / 30) { out.push(out[out.length - 1] + 1 / 30 / speedAt(keys, Math.min(len, u + 1 / 60))); src.push(Math.min(len, u + 1 / 30)); }
-    m = { sig, len, out, src };
-    speedMaps.set(id, m);
-  }
-  let lo = 0, hi = m.out.length - 1;
-  while (lo < hi) { const mid = (lo + hi) >> 1; if (m.out[mid] < t) lo = mid + 1; else hi = mid; }
-  const rel = m.src[Math.min(lo, m.src.length - 1)];
-  return { src: rel, speed: speedAt(keys, rel) };
 }
 
 /** Clip sous la tête de lecture (le dernier commencé pendant un fondu enchaîné). */
