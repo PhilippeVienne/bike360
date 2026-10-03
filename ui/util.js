@@ -6,10 +6,16 @@ import { st } from "./state.js";
 export const $ = (s) => document.querySelector(s);
 export const $$ = (s) => document.querySelectorAll(s);
 
+/** Session expirée (serveur protégé par mot de passe) : retour à la page de connexion. */
+function checkLogin(r) {
+  if (r.status === 401) location.href = "/login?next=" + encodeURIComponent(location.pathname + location.hash);
+  return r;
+}
+
 /** Appel JSON au serveur ; lève une erreur si le statut HTTP n'est pas 2xx. */
 export async function api(method, url, body) {
-  const r = await fetch(url, { method, headers: { "Content-Type": "application/json" },
-                               body: body === undefined ? undefined : JSON.stringify(body) });
+  const r = checkLogin(await fetch(url, { method, headers: { "Content-Type": "application/json" },
+                                          body: body === undefined ? undefined : JSON.stringify(body) }));
   if (!r.ok) throw new Error(`${method} ${url} → ${r.status}`);
   return r.json();
 }
@@ -17,7 +23,7 @@ export async function api(method, url, body) {
 /** Appel JSON dont on lit la réponse même en erreur : le serveur y met alors {error: "…"}. */
 export function apiOrError(method, url, body) {
   return fetch(url, { method, headers: { "Content-Type": "application/json" },
-                      body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json());
+                      body: body === undefined ? undefined : JSON.stringify(body) }).then(checkLogin).then((r) => r.json());
 }
 
 // ------------------------------------------------------------------ formats

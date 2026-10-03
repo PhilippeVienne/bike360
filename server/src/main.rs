@@ -5,6 +5,7 @@
 
 mod app;
 mod audio;
+mod auth;
 mod export;
 mod privacy;
 mod pyjson;
@@ -39,6 +40,11 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let a = Args::parse();
+    if auth::init() {
+        println!("Authentification activée (BIKE360_PASSWORD).");
+    } else if a.host != "127.0.0.1" && a.host != "localhost" {
+        eprintln!("⚠ Serveur ouvert sur {} sans mot de passe : définir BIKE360_PASSWORD.", a.host);
+    }
     let app = App::new(a.dcim.clone());
     app.nvenc_available();
     println!("Analyse des sessions…");

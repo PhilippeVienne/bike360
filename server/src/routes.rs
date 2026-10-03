@@ -42,6 +42,11 @@ fn err(code: u16, msg: impl Into<String>) -> Reply {
 pub async fn dispatch(State(app): State<Arc<App>>, ConnectInfo(addr): ConnectInfo<SocketAddr>, method: Method, uri: Uri,
                       headers: HeaderMap, body: Bytes) -> Response {
     let full = uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| uri.path().to_string());
+    if crate::auth::enabled() {
+        if let Some(resp) = gate(&uri, &method, &headers, &body, addr.ip()).await {
+            return resp;
+        }
+    }
     let h = headers.clone();
     let m = method.clone();
     let f = full.clone();
@@ -71,6 +76,63 @@ pub async fn dispatch(State(app): State<Arc<App>>, ConnectInfo(addr): ConnectInf
         eprintln!("{} - - \"{} {}\" {}", addr.ip(), method, full, resp.status().as_u16());
     }
     resp
+}
+
+/// Contrôle d'accès : page de connexion, déconnexion, refus des requêtes sans session.
+/// None = requête autorisée, à traiter normalement.
+async fn gate(uri: &Uri, method: &Method, headers: &HeaderMap, body: &Bytes, ip: std::net::IpAddr) -> Option<Response> {
+    use crate::auth;
+    let page = |code: u16, html: String, cookie: Option<String>| {
+        let mut r = Response::builder().status(code).header(header::CONTENT_TYPE, "text/html; charset=utf-8").header(header::CACHE_CONTROL, "no-store");
+        if let Some(c) = cookie {
+            r = r.header(header::SET_COOKIE, c);
+        }
+        r.body(Body::from(html)).unwrap()
+    };
+    let https = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https");
+    let redirect = |to: &str, cookie: Option<String>| {
+        let mut r = Response::builder().status(303).header(header::LOCATION, to).header(header::CACHE_CONTROL, "no-store");
+        if let Some(c) = cookie {
+            r = r.header(header::SET_COOKIE, c);
+        }
+        r.body(Body::empty()).unwrap()
+    };
+    let query_next = || {
+        let q = uri.query().unwrap_or("");
+        auth::safe_next(&auth::form_field(q, "next"))
+    };
+    match uri.path() {
+        "/login" if method == Method::POST => {
+            let text = String::from_utf8_lossy(body).into_owned();
+            let next = auth::safe_next(&auth::form_field(&text, "next"));
+            if auth::blocked(ip) {
+                return Some(page(429, auth::login_page("Trop d'essais : réessaie dans quelques minutes.", &next), None));
+            }
+            match auth::login(&auth::form_field(&text, "password")) {
+                Some(tok) => Some(redirect(&next, Some(auth::set_cookie(&tok, https)))),
+                None => {
+                    auth::record_fail(ip);
+                    let _ = tokio::task::spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(1))).await;   // ralentit les essais
+                    Some(page(401, auth::login_page("Mot de passe incorrect.", &next), None))
+                }
+            }
+        }
+        "/login" => Some(if auth::authorized(headers) { redirect(&query_next(), None) } else { page(200, auth::login_page("", &query_next()), None) }),
+        "/logout" => Some(redirect("/login", Some(auth::set_cookie("", https)))),
+        _ if auth::authorized(headers) => None,
+        p if p.starts_with("/api/") => Some(json_401()),
+        _ if ["/media/", "/music/", "/exports/", "/thumb/", "/minimap"].iter().any(|x| uri.path().starts_with(x)) => Some(error_page(401)),
+        _ => {
+            let to = uri.path_and_query().map_or("/".to_string(), |p| p.as_str().to_string());
+            let enc: String = to.bytes().map(|b| if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+            Some(redirect(&format!("/login?next={enc}"), None))
+        }
+    }
+}
+
+fn json_401() -> Response {
+    let body = serde_json::to_vec(&json!({"error": "authentification requise"})).unwrap_or_default();
+    Response::builder().status(401).header(header::CONTENT_TYPE, "application/json").body(Body::from(body)).unwrap()
 }
 
 fn error_page(code: u16) -> Response {

@@ -22,6 +22,8 @@ BIKE360_ROOT=$repo
 DCIM=/run/media/$USER/Insta360 X5/DCIM
 HOST=127.0.0.1
 PORT=8360
+# mot de passe de l'interface (vide = accès libre, à éviter hors de 127.0.0.1)
+BIKE360_PASSWORD=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-20)
 ENV
     chmod 600 "$conf/server.env"
     echo "Réglages créés : $conf/server.env (HOST=0.0.0.0 pour y accéder depuis le téléphone)"
