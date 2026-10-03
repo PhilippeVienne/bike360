@@ -1,6 +1,6 @@
 // Lecture multi-segments : une session est une suite de fichiers .lrv (enregistrement en
 // boucle) lus un par un dans l'élément <video> caché ; la visionneuse WebGL en fait la texture.
-// Partage : seek, togglePlay, applyRate, setRate, jumpCandidate.
+// Partage : seek, togglePlay, setPlayOverride, applyRate, setRate, jumpCandidate.
 
 import { st, video, now, series, SKIM_THRESHOLD } from "./state.js";
 import { $, $$ } from "./util.js";
@@ -33,7 +33,13 @@ export function seek(t, play) {
   followTimeline(t);
 }
 
-export function togglePlay() { video.paused ? video.play() : video.pause(); }
+let playOverride = null;
+/** Une étape peut reprendre la lecture (étape ③ : la visionneuse joue le montage, pas la session). */
+export const setPlayOverride = (fn) => { playOverride = fn; };
+export function togglePlay() {
+  if (playOverride?.()) return;
+  video.paused ? video.play() : video.pause();
+}
 
 /** Vitesse effective : celle choisie (× accéléré du clip traversé, comme à l'export), ou 16×
  *  sur les passages calmes en mode survol. */

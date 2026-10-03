@@ -5,7 +5,8 @@
 import { st, video, now, RATES, DEFAULT_VIEW } from "./state.js";
 import { $, $$ } from "./util.js";
 import { activeClip, setView, upsertKey, userView } from "./view.js";
-import { applyRate, jumpCandidate, seek, setRate, togglePlay } from "./playback.js";
+import { applyRate, jumpCandidate, seek, setPlayOverride, setRate, togglePlay } from "./playback.js";
+import { togglePreview } from "./mt-editor.js";
 import { deleteSelected, editEdge, markIn, markOut, quickClip, updateMarkUI } from "./clips.js";
 import { jumpKey, renderEditor } from "./clip-editor.js";
 import { showWholeSession } from "./timeline.js";
@@ -20,6 +21,8 @@ RATES.forEach((r) => {
   b.addEventListener("click", () => setRate(r));
   $("#rates").appendChild(b);
 });
+// étape ③ : ▶, espace et toucher de la visionneuse jouent le montage (frise), pas la session
+setPlayOverride(() => document.body.dataset.step === "montage" && (togglePreview(), true));
 $("#play").addEventListener("click", togglePlay);
 $("#skim").addEventListener("change", (e) => { st.skim = e.target.checked; applyRate(); });
 $("#view-front").addEventListener("click", () => userView({ ...DEFAULT_VIEW, raw: false }));

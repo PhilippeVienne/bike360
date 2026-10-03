@@ -11,7 +11,7 @@
 //
 // L'aperçu vidéo (visionneuse) suit la tête de lecture : le clip sous la tête s'y affiche et joue,
 // avec son son d'origine ; hook show(clip, instant, lecture) fourni par montage.js.
-// Partage : initEditor, renderEditor, addTrack, setEditorStatus.
+// Partage : initEditor, renderEditor, addTrack, setEditorStatus, togglePreview.
 
 import { st, video } from "./state.js";
 import { $, api, apiOrError, esc, fmt, storageGet, storageSet } from "./util.js";
@@ -578,6 +578,9 @@ function seekTo(t) {
   renderTime();
 }
 
+/** ▶ / ❚❚ de la frise (aussi appelé par le bouton et la barre d'espace de la visionneuse, cf. commands.js). */
+export function togglePreview() { player ? stopPreview() : startPreview(); }
+
 function startPreview() {
   if (!tracksOf().length && !geo.blocks.length) { setEditorStatus("Rien à écouter : ajoute des clips ou une musique."); return; }
   if (playhead >= geo.total - 0.1) playhead = 0;
@@ -596,6 +599,7 @@ function startPreview() {
   tick();
   player.timer = setInterval(tick, 50);   // pas de requestAnimationFrame : il s'arrête quand l'onglet est masqué
   root.querySelector('[data-a="play"]').textContent = "❚❚";
+  $("#play").textContent = "❚❚";
 }
 
 function stopPreview(onlyId) {
@@ -611,6 +615,7 @@ function stopPreview(onlyId) {
   video.muted = false; video.volume = 1;
   const b = root?.querySelector('[data-a="play"]');
   if (b) b.textContent = "▶";
+  $("#play").textContent = "▶";
 }
 
 /** Place chaque piste à l'instant de la tête de lecture : fichier, volume (avec fondus), lecture ou pause. */
@@ -650,6 +655,25 @@ function syncVoices() {
     v.gain.gain.value = tr.volume * Math.max(0, env);
   }
   syncViewer(true);
+}
+
+const speedMaps = new Map();
+/** Instant du clip (s depuis son début) et vitesse à t secondes après le début du clip accéléré. */
+function clipTime(c, t) {
+  const keys = speedKeys(c), len = c.end - c.start;
+  if (!keys.length) return { src: Math.min(len, t), speed: 1 };
+  const sig = keys.map((k) => `${k.t}:${k.speed}`).join(), id = keyOf(c);
+  let m = speedMaps.get(id);
+  if (!m || m.sig !== sig || m.len !== len) {
+    const out = [0], src = [0];
+    for (let u = 0; u < len; u += 1 / 30) { out.push(out[out.length - 1] + 1 / 30 / speedAt(keys, Math.min(len, u + 1 / 60))); src.push(Math.min(len, u + 1 / 30)); }
+    m = { sig, len, out, src };
+    speedMaps.set(id, m);
+  }
+  let lo = 0, hi = m.out.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (m.out[mid] < t) lo = mid + 1; else hi = mid; }
+  const rel = m.src[Math.min(lo, m.src.length - 1)];
+  return { src: rel, speed: speedAt(keys, rel) };
 }
 
 /** Clip sous la tête de lecture (le dernier commencé pendant un fondu enchaîné). */
