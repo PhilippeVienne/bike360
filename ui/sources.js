@@ -134,17 +134,17 @@ function renderBrowser() {
   $("#fs-up").disabled = !r.parent;
   // fil d'Ariane : chaque segment ramène à ce dossier
   const parts = r.path.split("/").filter(Boolean);
-  $("#fs-crumbs").innerHTML = `<button data-go="/">/</button>` + parts.map((p, i) =>
-    `<button data-go="/${esc(parts.slice(0, i + 1).join("/"))}"${i === parts.length - 1 ? ' class="active"' : ""}>${esc(p)}</button>`).join("");
+  $("#fs-crumbs").innerHTML = `<button data-dir="/">/</button>` + parts.map((p, i) =>
+    `<button data-dir="/${esc(parts.slice(0, i + 1).join("/"))}"${i === parts.length - 1 ? ' class="active"' : ""}>${esc(p)}</button>`).join("");
   $("#fs-crumbs").scrollLeft = 1e6;
   // barre latérale : cartes détectées, emplacements, dossiers déjà analysés
   const added = new Set(data.folders.map((f) => f.path));
   $("#fs-side").innerHTML = `
     ${detected.length ? `<h4>Cartes SD</h4>${detected.map((d) => `<div class="fs-card">
-      <button data-go="${esc(d.path)}" title="${esc(d.path)}">💾 <b>${esc(d.label)}</b><small>${sessionsText(d.sessions)}</small></button>
+      <button data-dir="${esc(d.path)}" title="${esc(d.path)}">💾 <b>${esc(d.label)}</b><small>${sessionsText(d.sessions)}</small></button>
       ${added.has(d.path) ? `<span class="ok">✓ ajoutée</span>` : `<button class="primary" data-pick="${esc(d.path)}">Utiliser</button>`}</div>`).join("")}` : ""}
-    <h4>Emplacements</h4>${r.shortcuts.map((s) => `<button data-go="${esc(s.path)}" class="${s.path === r.path ? "active" : ""}">${esc(s.label)}</button>`).join("")}
-    ${data.folders.length ? `<h4>Déjà analysés</h4>${data.folders.map((f) => `<button data-go="${esc(f.path)}" title="${esc(f.path)}" class="${f.present ? "" : "absent"}">${esc(f.path.split("/").filter(Boolean).pop() || f.path)}</button>`).join("")}` : ""}`;
+    <h4>Emplacements</h4>${r.shortcuts.map((s) => `<button data-dir="${esc(s.path)}" class="${s.path === r.path ? "active" : ""}">${esc(s.label)}</button>`).join("")}
+    ${data.folders.length ? `<h4>Déjà analysés</h4>${data.folders.map((f) => `<button data-dir="${esc(f.path)}" title="${esc(f.path)}" class="${f.present ? "" : "absent"}">${esc(f.path.split("/").filter(Boolean).pop() || f.path)}</button>`).join("")}` : ""}`;
   renderList();
   renderPreview();
 }
@@ -154,7 +154,7 @@ function renderList() {
   // dossiers qui contiennent des vidéos de la caméra d'abord
   const dirs = here.dirs.filter((d) => !q || d.name.toLowerCase().includes(q))
     .sort((a, b) => (!!b.videos - !!a.videos) || a.name.localeCompare(b.name, "fr", { numeric: true }));
-  $("#fs-list").innerHTML = dirs.length ? dirs.map((d) => `<li data-go="${esc(d.path)}" class="${d.videos ? "has" : ""}">
+  $("#fs-list").innerHTML = dirs.length ? dirs.map((d) => `<li data-dir="${esc(d.path)}" class="${d.videos ? "has" : ""}">
       <span class="ico">${d.videos ? "🎞" : "📁"}</span><span class="nm">${esc(d.name)}</span>
       ${d.videos ? `<span class="badge">${d.videos} fichier${d.videos > 1 ? "s" : ""}</span>` : ""}<span class="chev">›</span></li>`).join("")
     : `<li class="hint empty">${q ? "Aucun dossier ne correspond." : "Aucun sous-dossier."}</li>`;
@@ -201,8 +201,8 @@ fs.addEventListener("click", (e) => {
   if (e.target === fs || e.target.closest("[data-close]")) return fs.close();
   const p = e.target.closest("[data-pick]");
   if (p) return pick(p.dataset.pick);
-  const g = e.target.closest("[data-go]");
-  if (g) return browse(g.dataset.go);
+  const g = e.target.closest("[data-dir]");
+  if (g) return browse(g.dataset.dir);
   if (e.target.closest("#fs-up") && here?.parent) return browse(here.parent);
   if (e.target.closest("#fs-pick") && here) return pick(here.path);
   if (e.target.closest("#fs-edit")) {   // saisie directe d'un chemin
