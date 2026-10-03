@@ -4,6 +4,8 @@ members = ["render", "core", "server"]
 
 [workspace.package]
 edition = "2024"
+license = "EUPL-1.2"
+repository = "https://github.com/PhilippeVienne/bike360"
 
 [profile.release]
 debug = false

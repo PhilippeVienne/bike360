@@ -4,3 +4,5 @@ exports/
 __pycache__/
 render/target/
 /target/
+# Réglages et copies de travail de l'assistant
+.claude/

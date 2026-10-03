@@ -5,6 +5,7 @@ synchronisation automatique et détection de moments candidats.
 Usage : python3 analyze.py [DCIM] [--force]
 Résultats dans data/cache/<session>.json.
 """
+import os
 import argparse
 import json
 import subprocess
@@ -20,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 CACHE = DATA / "cache"
 OVERRIDES = DATA / "overrides.json"
-DEFAULT_DCIM = "/run/media/philippe/Insta360 X5/DCIM"
+DEFAULT_DCIM = f"/run/media/{os.environ.get('USER', '')}/Insta360 X5/DCIM"
 
 SYNC_SEARCH_S = 120      # plage de recherche du décalage horloge caméra ↔ GPS
 SYNC_MIN_DURATION = 300  # en dessous, corrélation peu fiable : décalage du jour

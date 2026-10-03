@@ -22,17 +22,20 @@ use clap::Parser;
 
 use crate::app::{App, HORIZON_WORKERS};
 
-const DEFAULT_DCIM: &str = "/run/media/philippe/Insta360 X5/DCIM";
+/// Carte SD de la caméra telle que la monte le bureau Linux (utilisateur courant).
+fn default_dcim() -> String {
+    format!("/run/media/{}/Insta360 X5/DCIM", std::env::var("USER").unwrap_or_default())
+}
 
 #[derive(Parser)]
 #[command(about = "Serveur local de l'outil de tri et de montage Insta360 X5")]
 struct Args {
     /// Dossier des vidéos (carte SD)
-    #[arg(default_value = DEFAULT_DCIM)]
+    #[arg(default_value_t = default_dcim())]
     dcim: String,
     #[arg(long, default_value_t = 8360)]
     port: u16,
-    /// adresse d'écoute (ex. l'IP Wi-Fi pour un téléphone ; pas d'authentification)
+    /// adresse d'écoute (ex. l'IP Wi-Fi pour un téléphone) ; hors 127.0.0.1, définir BIKE360_PASSWORD
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
 }
