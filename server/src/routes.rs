@@ -503,7 +503,9 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                 let shown = if paths::cloud() { "Mes rushs".to_string() } else { f.clone() };
                 json!({"path": shown, "present": Path::new(&f).is_dir(), "removable": f != app.dcim, "sessions": n})
             }).collect();
-            return Ok(ok(json!({"scan": app.scan.lock().unwrap().clone(), "folders": folders, "cloud": paths::cloud()})));
+            // service hébergé : adresse de la Bibliothèque du client, d'où il a ouvert cet atelier
+            let library = std::env::var("BIKE360_LIBRARY_URL").ok().filter(|u| paths::cloud() && !u.is_empty());
+            return Ok(ok(json!({"scan": app.scan.lock().unwrap().clone(), "folders": folders, "cloud": paths::cloud(), "library": library})));
         }
         "/api/activite" => {
             let busy = app.jobs.lock().unwrap().values().any(|j| j.running())

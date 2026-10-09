@@ -43,6 +43,8 @@ function render() {
   const sc = data.scan, running = sc.state === "running";
   const cards = detected.filter((d) => !d.added);
   const cloud = !!data.cloud;   // service hébergé : les rushs arrivent par l'envoi, pas par un dossier du serveur
+  const back = $("#library-link");
+  if (back && data.library) { back.href = data.library; back.hidden = false; }
   panel.innerHTML = `
     <div class="src-head"><strong>📁 Dossiers de vidéos</strong>
       <span class="muted">${data.folders.length} dossier${data.folders.length > 1 ? "s" : ""}</span>
@@ -57,7 +59,7 @@ function render() {
       <span class="path" title="${esc(f.path)}"><bdi dir="ltr">${esc(f.path)}</bdi></span>
       <span>${f.sessions} session${f.sessions > 1 ? "s" : ""}${f.removable ? ` <button data-rm="${esc(f.path)}" ${running ? "disabled" : ""} title="Ne plus analyser ce dossier">✕</button>` : ""}</span></li>`).join("")}</ul>
     <div class="src-head"><strong>🛰 Traces GPS</strong>
-      <span class="muted">${gps.length ? `${gps.length} fichier${gps.length > 1 ? "s" : ""}` : "aucune : positions GeoRide si un compte est configuré"}</span>
+      <span class="muted">${gps.length ? `${gps.length} fichier${gps.length > 1 ? "s" : ""}` : cloud ? "aucune" : "aucune : positions GeoRide si un compte est configuré"}</span>
       <span class="spacer"></span>
       <label class="upload" title="Déposer une trace .gpx (téléphone, GPS, traceur) : elle sert de source de positions pour les sessions de ces jours-là">＋ Trace .gpx<input type="file" class="gps-upload" accept=".gpx" hidden ${running ? "disabled" : ""}></label>
     </div>

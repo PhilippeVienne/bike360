@@ -47,6 +47,8 @@ pub struct Launcher {
     pub idle_s: u64,
     /// Adresse de ce service vue des ateliers (ils y demandent leurs originaux).
     pub service_url: String,
+    /// Adresse publique du site : l'atelier y renvoie le client vers sa Bibliothèque.
+    pub site: String,
     running: Mutex<HashMap<String, Instance>>,
 }
 
@@ -80,8 +82,8 @@ async fn call(host: &str, port: u16, password: &str, method: &'static str, path:
 }
 
 impl Launcher {
-    pub fn new(bin: PathBuf, work: PathBuf, host: String, idle_s: u64, service_url: String) -> Launcher {
-        Launcher { bin, work, host, idle_s, service_url, running: Mutex::new(HashMap::new()) }
+    pub fn new(bin: PathBuf, work: PathBuf, host: String, idle_s: u64, service_url: String, site: String) -> Launcher {
+        Launcher { bin, work, host, idle_s, service_url, site, running: Mutex::new(HashMap::new()) }
     }
 
     fn dir(&self, client: &str) -> PathBuf {
@@ -162,6 +164,7 @@ impl Scope {
             .env("BIKE360_ROOT", dir.join("root")).env("BIKE360_DATA", &data).env("BIKE360_CACHE", &cache)
             .env("BIKE360_EXPORTS", dir.join("exports")).env("HOME", &dir)
             .env("BIKE360_ORIGINALS_URL", format!("{}/api/interne/originaux", l.service_url))
+            .env("BIKE360_LIBRARY_URL", format!("{}/ui/bibliotheque.html", l.site))
             .stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log)
             .kill_on_drop(true).spawn().context("lancement de l'atelier")?;
         let inst = Instance { child, port, password, pushed: HashMap::new() };

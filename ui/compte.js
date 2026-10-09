@@ -8,6 +8,20 @@ const next = () => {
 };
 
 let mode = "connexion";   // connexion | inscription | confirmation
+let waiting = null;       // attente de la confirmation de l'adresse : minuterie
+const WAIT_EVERY_MS = 3000, WAIT_TRIES = 60;
+
+/** Compte créé mais pas encore confirmé : on se connecte dès que l'adresse l'est, où qu'elle l'ait été
+ *  (code saisi ici, lien ouvert sur un autre appareil, confirmation par l'administration). */
+function waitForConfirmation(email, password, tries = WAIT_TRIES) {
+  clearTimeout(waiting);
+  if (mode !== "confirmation" || tries <= 0) return;
+  waiting = setTimeout(async () => {
+    const r = await post("connexion", { email, password });
+    if (r.ok) { location.href = next(); return; }
+    if (r.status === 403) waitForConfirmation(email, password, tries - 1);   // toujours pas confirmée
+  }, WAIT_EVERY_MS);
+}
 
 async function post(path, body) {
   const r = await fetch(`/api/compte/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -31,10 +45,18 @@ $("#form").addEventListener("submit", async (e) => {
   $("#submit").disabled = true;
   if (mode === "inscription") {
     const r = await post("inscription", { email, password });
-    if (r.ok) { mode = r.confirmed ? "connexion" : "confirmation"; render(r.confirmed ? "Compte créé." : "Un code t'a été envoyé par courriel."); }
+    if (r.ok) {
+      mode = r.confirmed ? "connexion" : "confirmation";
+      render(r.confirmed ? "Compte créé." : "Un code t'a été envoyé par courriel. La connexion se fera seule dès que l'adresse sera confirmée.");
+      waitForConfirmation(email, password);
+    }
     else render("⚠ " + (r.error || "inscription impossible"));
   } else if (mode === "confirmation") {
     const r = await post("confirmation", { email, code });
+    if (r.ok && password) {   // le mot de passe est encore dans le formulaire : connexion directe
+      const s = await post("connexion", { email, password });
+      if (s.ok) { location.href = next(); return; }
+    }
     if (r.ok) { mode = "connexion"; render("Adresse confirmée : tu peux te connecter."); }
     else render("⚠ " + (r.error || "confirmation impossible"));
   } else {
@@ -46,7 +68,7 @@ $("#form").addEventListener("submit", async (e) => {
   $("#submit").disabled = false;
 });
 
-$("#switch").addEventListener("click", () => { mode = mode === "connexion" ? "inscription" : "connexion"; render(); });
+$("#switch").addEventListener("click", () => { clearTimeout(waiting); mode = mode === "connexion" ? "inscription" : "connexion"; render(); });
 
 // déjà connecté, ou comptes désactivés sur ce service : rien à faire ici
 fetch("/api/compte").then((r) => r.json()).then((s) => { if (s.signed_in) location.href = next(); }).catch(() => {});
