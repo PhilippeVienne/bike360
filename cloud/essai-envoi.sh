@@ -84,9 +84,19 @@ echo "== Atelier à la demande"
 # l'original du même segment, s'il est à côté de l'aperçu, sert à essayer l'export final
 insv=$(echo "$lrv" | sed -E 's|LRV_([0-9]{8}_[0-9]{6})_[0-9]{2}_([0-9]{3})\.lrv$|VID_\1_00_\2.insv|')
 [ -f "$insv" ] || { insv=""; echo "   ? original absent à côté de l'aperçu : export final non essayé"; }
+# un segment qui n'est pas le premier de sa session commence après l'heure de son nom : l'écart sert à caler la trace d'essai
+shot=$(ffprobe -v error -show_entries format_tags=creation_time -of csv=p=0 "$lrv" | cut -c12-19)
+named=$(basename "$lrv" | sed -E 's/^LRV_[0-9]{8}_([0-9]{2})([0-9]{2})([0-9]{2})_.*/\1:\2:\3/')
+export BIKE360_DECALAGE_S=$(( $(date -u -d "1970-01-01 $shot" +%s) + 7200 - $(date -u -d "1970-01-01 $named" +%s) ))
 node "$repo/cloud/essai-atelier.mjs" "http://127.0.0.1:$port" "$work/jetons.json" "$lrv" ${insv:+"$insv"}
 saved=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "donnees/$client/atelier/selections/" --query 'length(Contents || `[]`)' --output text)
 [ "$saved" -ge 1 ] && echo "   ✓ le clip du compte est dans le stockage" || { echo "   ✗ travail de l'atelier absent du stockage" >&2; exit 1; }
+aws s3api head-object --bucket "$bucket" --key "donnees/$client/gps/essai.gpx" >/dev/null 2>&1 \
+    && echo "   ✓ la trace GPS de l'atelier est rangée avec celles que lit l'analyse" || { echo "   ✗ trace GPS absente de donnees/<client>/gps/" >&2; exit 1; }
+# la trace a fait redemander l'analyse des sessions de ce jour : l'exécutant la refait
+"$repo/cloud/service/target/release/bike360-worker" --bucket "$bucket" --table "$table" --queue "$queue" \
+    --tool "$repo/target/release/bike360-tool" --work "$work/worker" --once >> "$work/worker.log" 2>&1
+export BIKE360_GPS_ATTENDU=1
 
 echo "== Bibliothèque"
 node "$repo/cloud/essai-bibliotheque.mjs" "http://127.0.0.1:$port" "$lrv"

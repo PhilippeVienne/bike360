@@ -72,6 +72,15 @@ const B = await open(b);
 check(B.origin !== A.origin && (await atelier(B, "GET", "/api/sessions")).body.length === 0, "un autre compte a son propre atelier, sans les rushs du premier");
 check((await atelier(A, "GET", "/api/sessions", undefined, B.cookie)).status === 401, "la session d'un compte n'ouvre pas l'atelier d'un autre");
 
+// une trace GPS déposée dans l'atelier : elle doit servir aussi à l'analyse de la Bibliothèque
+// dix minutes autour de l'heure du rush, lue dans son nom (heure locale de la caméra, ici UTC+2)
+const m = /_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_/.exec(basename(path));
+const t0 = Date.UTC(+m[1], m[2] - 1, +m[3], +m[4] - 2, +m[5], +m[6]) + (Number(process.env.BIKE360_DECALAGE_S) || 0) * 1000 - 300000;
+const gpx = `<?xml version="1.0"?><gpx version="1.1"><trk><trkseg>${Array.from({ length: 600 }, (_, i) =>
+  `<trkpt lat="${(45.75 + i * 0.0001).toFixed(5)}" lon="4.85"><ele>200</ele><time>${new Date(t0 + i * 1000).toISOString()}</time></trkpt>`).join("")}</trkseg></trk></gpx>`;
+const up = await fetch(`${A.origin}/api/gps?name=essai.gpx`, { method: "POST", headers: { Cookie: A.cookie }, body: gpx });
+check(up.status === 200, "trace GPS déposée dans l'atelier");
+
 const closed = (await service(a, "POST", "/fermer")).body;
 const down = await fetch(`${A.origin}/login`).then(() => false, () => true);
 check(closed.saved >= 1 && down, `fermeture : ${closed.saved} fichier(s) enregistré(s), atelier arrêté`);

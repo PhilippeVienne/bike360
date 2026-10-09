@@ -59,6 +59,21 @@ struct Instance {
     password: String,
     /// Exports déjà déposés dans le stockage : nom → taille.
     pushed: HashMap<String, u64>,
+    /// État des traces GPS de l'atelier au dernier dépôt dans le stockage (noms, tailles, dates).
+    gps_sig: String,
+}
+
+/// Empreinte d'un dossier de traces : nom, taille et date de chaque fichier.
+fn gps_signature(dir: &Path) -> String {
+    let mut files: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            let at = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+            Some(format!("{}:{}:{at}", e.file_name().to_string_lossy(), m.len()))
+        })
+        .collect();
+    files.sort();
+    files.join("|")
 }
 
 fn random_hex() -> Result<String> {
@@ -119,14 +134,16 @@ impl Ctx {
         }
     }
 
-    /// Dépose dans le stockage les fichiers de `dir` (récursivement) sous `prefix`.
-    async fn push(&self, dir: &Path, prefix: &str) -> Result<usize> {
+    /// Dépose dans le stockage les fichiers de `dir` (récursivement) sous `prefix`, sauf le sous-dossier `skip`.
+    async fn push(&self, dir: &Path, prefix: &str, skip: &str) -> Result<usize> {
         let (mut stack, mut count) = (vec![dir.to_path_buf()], 0);
         while let Some(d) = stack.pop() {
             for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
                 let p = e.path();
                 if p.is_dir() {
-                    stack.push(p);
+                    if p != dir.join(skip) {
+                        stack.push(p);
+                    }
                 } else if let Ok(rel) = p.strip_prefix(dir) {
                     self.s3.put_object().bucket(&self.bucket).key(format!("{prefix}{}", rel.to_string_lossy()))
                         .body(ByteStream::from_path(&p).await?).send().await?;
@@ -154,7 +171,7 @@ impl Scope {
         self.pull(&format!("apercus/{c}/"), &rushs, |n| !n.contains('/')).await.context("copie des aperçus")?;
         self.pull(&format!("donnees/{c}/cache/"), &cache, |n| n.ends_with(".json") && !n.contains('/')).await?;
         self.pull(&format!("donnees/{c}/gps/"), &data.join("gps"), |n| n.ends_with(".gpx") && !n.contains('/')).await?;
-        self.pull(&format!("donnees/{c}/atelier/"), &data, |_| true).await.context("reprise du travail enregistré")?;
+        self.pull(&format!("donnees/{c}/atelier/"), &data, |n| !n.starts_with("gps/")).await.context("reprise du travail enregistré")?;
 
         let port = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
         let password = random_hex()?;
@@ -167,7 +184,7 @@ impl Scope {
             .env("BIKE360_LIBRARY_URL", format!("{}/ui/bibliotheque.html", l.site))
             .stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log)
             .kill_on_drop(true).spawn().context("lancement de l'atelier")?;
-        let inst = Instance { child, port, password, pushed: HashMap::new() };
+        let inst = Instance { child, port, password, pushed: HashMap::new(), gps_sig: gps_signature(&data.join("gps")) };
         let started = std::time::Instant::now();
         while call(&l.host, port, &inst.password, "GET", "/api/activite", None).await.is_err() {
             if started.elapsed() > START_TIMEOUT {
@@ -178,9 +195,51 @@ impl Scope {
         Ok(inst)
     }
 
-    /// Enregistre le travail du client dans le stockage (clips, projet, réglages).
+    /// Enregistre le travail du client dans le stockage (clips, projet, réglages). Les traces GPS ont
+    /// leur propre emplacement, commun à l'atelier et à l'analyse à l'arrivée : voir `sync_gps`.
     async fn save(&self, l: &Launcher) -> Result<usize> {
-        self.push(&l.dir(&self.client).join("data"), &format!("donnees/{}/atelier/", self.client)).await
+        self.push(&l.dir(&self.client).join("data"), &format!("donnees/{}/atelier/", self.client), "gps").await
+    }
+
+    /// Si les traces GPS de l'atelier ont changé : le stockage est mis à leur image (dépôts et retraits)
+    /// et l'analyse des sessions de ces jours-là est redemandée, pour que la Bibliothèque suive.
+    async fn sync_gps(&self, l: &Launcher, sig: &mut String) -> Result<()> {
+        let dir = l.dir(&self.client).join("data").join("gps");
+        let now = gps_signature(&dir);
+        if now == *sig {
+            return Ok(());
+        }
+        let prefix = format!("donnees/{}/gps/", self.client);
+        let local: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("gpx"))).collect();
+        let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        for p in &local {
+            self.s3.put_object().bucket(&self.bucket).key(format!("{prefix}{}", name(p))).body(ByteStream::from_path(p).await?).send().await?;
+        }
+        let remote = self.s3.list_objects_v2().bucket(&self.bucket).prefix(&prefix).send().await?;
+        for key in remote.contents().iter().filter_map(|o| o.key()) {
+            if !local.iter().any(|p| name(p) == key[prefix.len()..]) {
+                self.s3.delete_object().bucket(&self.bucket).key(key).send().await?;
+            }
+        }
+        // jours couverts par les traces, élargis d'un jour : l'heure de la caméra est locale, celle du GPS est UTC
+        let day = |t: f64| chrono::DateTime::from_timestamp(t as i64, 0).map(|d| d.date_naive());
+        let spans: Vec<(chrono::NaiveDate, chrono::NaiveDate)> = local.iter()
+            .filter_map(|p| bike360_core::gpx::summary(p).1)
+            .filter_map(|(a, b)| Some((day(a)?.pred_opt()?, day(b)?.succ_opt()?)))
+            .collect();
+        let mut asked: Vec<String> = vec![];
+        for item in self.rows("rush#").await.map_err(|f| anyhow::anyhow!(f.1))? {
+            let text = |k: &str| item.get(k).and_then(|v| v.as_s().ok()).cloned();
+            let (Some(session), Some(kind)) = (text("session"), text("nature")) else { continue };
+            let date = session.get(4..12).and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y%m%d").ok());
+            if kind == "apercus" && !asked.contains(&session) && date.is_some_and(|d| spans.iter().any(|(a, b)| *a <= d && d <= *b)) {
+                self.enqueue(&session).await;
+                asked.push(session);
+            }
+        }
+        *sig = now;
+        Ok(())
     }
 
     /// Dépose dans le stockage les vidéos exportées qui n'y sont pas encore ; `pushed` retient ce qui est fait.
@@ -274,6 +333,7 @@ pub async fn close(c: Scope) -> Result<Json<Value>, Fail> {
     let mut running = l.running.lock().await;
     let Some(mut inst) = running.remove(&c.client) else { return Ok(Json(json!({"ok": true, "saved": 0}))) };
     let saved = c.save(l).await.map_err(failed("enregistrement du travail"))?;
+    c.sync_gps(l, &mut inst.gps_sig).await.map_err(failed("enregistrement des traces GPS"))?;
     c.push_exports(l, &mut inst.pushed).await.map_err(failed("dépôt des exports"))?;
     let _ = inst.child.kill().await;
     Ok(Json(json!({"ok": true, "saved": saved})))
@@ -316,7 +376,7 @@ pub async fn close_all(ctx: &Arc<Ctx>) {
     let Some(l) = &ctx.launcher else { return };
     for (client, mut inst) in l.running.lock().await.drain() {
         let scope = Scope::of(ctx.clone(), client.clone());
-        if let Err(e) = scope.save(l).await.and(scope.push_exports(l, &mut inst.pushed).await) {
+        if let Err(e) = scope.save(l).await.and(scope.sync_gps(l, &mut inst.gps_sig).await).and(scope.push_exports(l, &mut inst.pushed).await) {
             eprintln!("atelier de {client} arrêté sans enregistrement complet : {e:#}");
         }
         let _ = inst.child.kill().await;
@@ -332,6 +392,10 @@ pub async fn watch(ctx: Arc<Ctx>) {
         for client in clients {
             let mut running = l.running.lock().await;
             let Some(inst) = running.get_mut(&client) else { continue };
+            // une trace GPS déposée ou retirée dans l'atelier rejoint le stockage sans attendre sa fermeture
+            if let Err(e) = Scope::of(ctx.clone(), client.clone()).sync_gps(l, &mut inst.gps_sig).await {
+                eprintln!("traces GPS de {client} : {e:#}");
+            }
             let gone = !inst.child.try_wait().is_ok_and(|s| s.is_none());
             let idle = match call(&l.host, inst.port, &inst.password, "GET", "/api/activite", None).await {
                 Ok(a) => a["idle_s"].as_u64().unwrap_or(0) > l.idle_s && a["busy"] == json!(false),

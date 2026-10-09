@@ -26,6 +26,9 @@ check(lib.rides.length === 1 && lib.rides[0].sessions.length === 1, "une balade,
 const image = s.thumb ? await fetch(s.thumb) : null;
 check(s.analysed && image && image.ok && (await image.arrayBuffer()).byteLength > 1000,
       `session analysée : ${s.duration_s} s, ${s.candidates} moment(s) fort(s), vignette lisible par son adresse signée`);
+if (process.env.BIKE360_GPS_ATTENDU) {   // la trace déposée dans l'atelier a servi à refaire l'analyse
+  check(s.gps_coverage > 0.5 && s.distance_km > 0, `analyse refaite avec la trace de l'atelier : GPS ${Math.round(s.gps_coverage * 100)} %, ${s.distance_km} km`);
+}
 check(s.previews.files === 1 && s.originals.files === 1 && lib.bytes === 2 * blob.size, `place occupée : ${lib.bytes} octets pour 2 fichiers`);
 check(s.originals.class === "GLACIER_IR" && s.previews.class === "INTELLIGENT_TIERING", "classes de stockage : aperçu et original rangés séparément");
 check(lib.suggestions.some((g) => g.session === s.id && g.reason === "courte"), `suggestion : ${lib.suggestions[0]?.text}`);

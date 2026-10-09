@@ -241,7 +241,7 @@ impl Scope {
     }
 
     /// Dépose l'analyse de la session dans la file (vignette, moments forts, statistiques pour la Bibliothèque).
-    async fn enqueue(&self, session: &str) {
+    pub(crate) async fn enqueue(&self, session: &str) {
         let Some(queue) = &self.queue else { return };
         let body = json!({"job": "analyse", "client": self.client, "session": session}).to_string();
         if let Err(e) = self.sqs.send_message().queue_url(queue).message_body(body).send().await {
