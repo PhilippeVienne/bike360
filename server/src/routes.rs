@@ -10,7 +10,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use bike360_core::{analyze, automontage, finishing, geometry, gpx, hyperlapse, insta360, musiclib};
+use bike360_core::{analyze, automontage, finishing, geometry, gpx, hyperlapse, insta360, musiclib, position, rides};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -303,10 +303,20 @@ fn job_json(app: &App, key: &str) -> Value {
 }
 
 fn result_json(s: &Sess) -> Map<String, Value> {
-    match serde_json::to_value(&s.result) {
+    let mut m = match serde_json::to_value(&s.result) {
         Ok(Value::Object(m)) => m,
         _ => Map::new(),
-    }
+    };
+    let pos = session_position(s);
+    m.insert("front_yaw".into(), position::front_yaw(&pos).into());
+    m.insert("position".into(), pos.into());
+    m
+}
+
+/// Position de la caméra pour cette session (choix de la session, sinon de sa caméra, sinon guidon).
+fn session_position(s: &Sess) -> String {
+    let store = read_json(&position::path()).unwrap_or(Value::Null);
+    position::resolve(&store, &s.result.id, s.session.camera.as_ref().map(|c| c.serial.as_str())).to_string()
 }
 
 // ---------------------------------------------------------------- aiguillage
@@ -373,8 +383,17 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
     match path {
         "/api/sessions" => {
             let sessions = app.sessions.read().unwrap();
-            let list: Vec<Value> = sessions.iter().map(|(sid, s)| {
+            let store = read_json(&position::path()).unwrap_or(Value::Null);
+            let serial = |s: &Sess| s.session.camera.as_ref().map(|c| c.serial.clone());
+            let serials: Vec<Option<String>> = sessions.values().map(|s| serial(s)).collect();
+            let spans: Vec<rides::Span> = sessions.values().zip(&serials).map(|(s, cam)| {
+                let start = s.result.utc_t0 + s.result.offset_s;
+                rides::Span { id: &s.result.id, start, end: start + s.result.duration as f64, camera: cam.as_deref() }
+            }).collect();
+            let groups = rides::group(&spans);
+            let list: Vec<Value> = sessions.iter().zip(&groups).map(|((sid, s), (ride, angles))| {
                 let r = &s.result;
+                let pos = position::resolve(&store, sid, s.session.camera.as_ref().map(|c| c.serial.as_str()));
                 let clips = app.get_selections(sid);
                 let clips_s: f64 = clips.iter().map(|c| float_of(c.get("end"), 0.0) - float_of(c.get("start"), 0.0)).sum();
                 json!({"id": r.id, "date": r.date, "time": r.time, "duration": r.duration,
@@ -382,7 +401,8 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                        "clips_s": bike360_core::numeric::round_nd(clips_s, 1),
                        "folder": r.extra.get("folder").cloned().unwrap_or(Value::Null),
                        "parts": r.extra.get("parts").cloned().unwrap_or(json!(1)),
-                       "camera": s.session.camera, "gps_source": r.gps_source})
+                       "camera": s.session.camera, "gps_source": r.gps_source,
+                       "position": pos, "front_yaw": position::front_yaw(pos), "ride": ride, "angles": angles})
             }).collect();
             return Ok(ok(Value::Array(list)));
         }
@@ -466,6 +486,7 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
             return Ok(ok(json!({"scan": app.scan.lock().unwrap().clone(), "folders": folders})));
         }
         "/api/gps" => return Ok(ok(Value::Array(gps_files()))),
+        "/api/positions" => return Ok(ok(position::list())),
         "/api/settings" => return Ok(ok(app.get_settings())),
         _ => {}
     }
@@ -479,7 +500,8 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                     None => Some(d),
                 }
             };
-            let vals = (num("t", s.result.duration as f64 / 3.0), num("yaw", 0.0), num("pitch", -10.0), num("fov", 100.0));
+            let front = position::front_yaw(&session_position(&s));
+            let vals = (num("t", s.result.duration as f64 / 3.0), num("yaw", front), num("pitch", -10.0), num("fov", 100.0));
             let (Some(t), Some(yaw), Some(pitch), Some(fov)) = vals else { return Ok(Reply::Error(500)) };
             // largeur facultative (w=…, 160 à 1280 px) pour les illustrations ; 320 px par défaut
             let width = num("w", 320.0).unwrap_or(320.0).clamp(160.0, 1280.0) as u32;
@@ -736,6 +758,20 @@ fn post(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Result
     }
     if p == ["api", "gps"] {
         return Ok(gps_upload(app, full, headers, body));
+    }
+    if p == ["api", "position"] {
+        // position de la caméra pour une session ; devient aussi le réglage par défaut de cette caméra
+        let b = body_obj(body)?;
+        let (Some(sid), Some(key)) = (b.get("sid").and_then(Value::as_str), b.get("position").and_then(Value::as_str)) else { return Ok(Reply::Error(400)) };
+        let Some(s) = app.sess(sid) else { return Ok(Reply::Error(404)) };
+        if !position::is_known(key) {
+            return Ok(err(400, "position inconnue"));
+        }
+        let _g = app.lock.lock().unwrap();
+        let mut store = read_json(&position::path()).unwrap_or(Value::Null);
+        position::assign(&mut store, sid, s.session.camera.as_ref().map(|c| c.serial.as_str()), key);
+        write_json_indent(&position::path(), &store).map_err(|_| ())?;
+        return Ok(ok(json!({"ok": true})));
     }
     if p == ["api", "montage"] {
         let b = body_obj(body)?;
@@ -1077,13 +1113,14 @@ fn automontage_route(app: &Arc<App>, b: &Value) -> Result<Reply, ()> {
     let mut added = vec![];
     for (sid, clips) in &plan {
         let mut all = existing[sid].clone();
+        let front = app.sess(sid).map_or(0.0, |s| position::front_yaw(&session_position(&s)));
         for c in clips {
             // même ordre de clés que la version Python
             let mut m = Map::new();
             m.insert("id".into(), json!(c.id));
             m.insert("start".into(), json!(c.start));
             m.insert("end".into(), json!(c.end));
-            m.insert("yaw".into(), json!(c.yaw));
+            m.insert("yaw".into(), json!(c.yaw + front));
             m.insert("pitch".into(), json!(c.pitch));
             m.insert("fov".into(), json!(c.fov));
             m.insert("roll".into(), json!(c.roll));

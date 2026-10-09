@@ -17,6 +17,8 @@ pub mod lean;
 pub mod musiclib;
 pub mod numeric;
 pub mod paths;
+pub mod position;
 pub mod privacy;
 pub mod ramp;
+pub mod rides;
 pub mod telemetry;

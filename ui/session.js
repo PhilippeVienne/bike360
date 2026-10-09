@@ -14,7 +14,10 @@ import { updateSteps } from "./steps.js";
 
 export async function loadSession(id) {
   video.pause();
+  const front = (st.s && st.s.front_yaw) || 0;
   st.s = await api("GET", `/api/session/${id}`);
+  // la vue suit la direction « avant » de la nouvelle session (caméra tournée vers l'arrière, par exemple)
+  st.view.yaw += (st.s.front_yaw || 0) - front;
   st.clips = st.s.selections || [];
   st.pvTracks = {};
   loadPrivacyTracks();
