@@ -10,7 +10,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use bike360_core::{analyze, automontage, finishing, geometry, gpx, hyperlapse, insta360, musiclib, position, rides};
+use bike360_core::{analyze, automontage, finishing, geometry, gpx, hyperlapse, insta360, musiclib, paths, position, rides};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -462,7 +462,10 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                 Err(e) => err(502, format!("catalogue indisponible : {e}")),
             });
         }
+        "/api/sources/detect" if paths::cloud() => return Ok(ok(json!([]))),
         "/api/sources/detect" => return Ok(ok(Value::Array(sources::detect(app)))),
+        // le disque du serveur ne s'explore pas en mode hébergé
+        "/api/fs" | "/api/fs/preview" if paths::cloud() => return Ok(Reply::Error(404)),
         "/api/fs" => {
             let dir = unquote(raw_query(full).get("path").and_then(Value::as_str).unwrap_or(""), false);
             return Ok(match sources::browse(&dir) {
@@ -481,9 +484,11 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
             let sessions = app.sessions.read().unwrap();
             let folders: Vec<Value> = app.source_folders().into_iter().map(|f| {
                 let n = sessions.values().filter(|s| s.result.extra.get("folder").and_then(Value::as_str) == Some(&f)).count();
-                json!({"path": f, "present": Path::new(&f).is_dir(), "removable": f != app.dcim, "sessions": n})
+                // en mode hébergé, le chemin du serveur ne regarde pas le client
+                let shown = if paths::cloud() { "Mes rushs".to_string() } else { f.clone() };
+                json!({"path": shown, "present": Path::new(&f).is_dir(), "removable": f != app.dcim, "sessions": n})
             }).collect();
-            return Ok(ok(json!({"scan": app.scan.lock().unwrap().clone(), "folders": folders})));
+            return Ok(ok(json!({"scan": app.scan.lock().unwrap().clone(), "folders": folders, "cloud": paths::cloud()})));
         }
         "/api/gps" => return Ok(ok(Value::Array(gps_files()))),
         "/api/positions" => return Ok(ok(position::list())),
@@ -981,6 +986,9 @@ fn sources(app: &Arc<App>, b: &Value) -> Result<Reply, ()> {
         let app2 = app.clone();
         spawn(move || app2.rescan());
         return Ok(ok(json!({"ok": true})));
+    }
+    if paths::cloud() {
+        return Ok(err(403, "les dossiers ne se choisissent pas en mode hébergé"));
     }
     let mut extra: Vec<String> = read_json(&sources_path()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     if truthy(b.get("add")) {

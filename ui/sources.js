@@ -42,12 +42,13 @@ function scanHtml(sc) {
 function render() {
   const sc = data.scan, running = sc.state === "running";
   const cards = detected.filter((d) => !d.added);
+  const cloud = !!data.cloud;   // service hébergé : les rushs arrivent par l'envoi, pas par un dossier du serveur
   panel.innerHTML = `
     <div class="src-head"><strong>📁 Dossiers de vidéos</strong>
       <span class="muted">${data.folders.length} dossier${data.folders.length > 1 ? "s" : ""}</span>
       <span class="spacer"></span>
-      <button data-a="browse" ${running ? "disabled" : ""} title="Choisir un dossier du PC (carte SD, copie sur disque…)">＋ Ajouter un dossier…</button>
-      <button data-a="rescan" ${running ? "disabled" : ""} title="Relancer l'analyse des dossiers : nouvelles vidéos, carte rebranchée">↻ Rescanner</button>
+      ${cloud ? "" : `<button data-a="browse" ${running ? "disabled" : ""} title="Choisir un dossier du PC (carte SD, copie sur disque…)">＋ Ajouter un dossier…</button>`}
+      <button data-a="rescan" ${running ? "disabled" : ""} title="Relancer l'analyse : nouvelles vidéos${cloud ? "" : ", carte rebranchée"}">↻ Rescanner</button>
     </div>
     ${cards.map((d) => `<div class="src-card">💾 <b>${esc(d.label)}</b> <span class="muted">carte détectée · ${d.sessions} session${d.sessions > 1 ? "s" : ""}</span>
       <span class="spacer"></span><button class="primary" data-add="${esc(d.path)}" ${running ? "disabled" : ""}>Utiliser cette carte</button></div>`).join("")}
@@ -67,7 +68,7 @@ function render() {
         <button data-gps-rm="${esc(g.name)}" ${running ? "disabled" : ""} title="Retirer cette trace">✕</button></span></li>`).join("")}</ul>
     ${scanHtml(sc)}
     ${notice ? `<div class="scan err">${esc(notice)}</div>` : ""}
-    <span class="hint">Les sous-dossiers sont parcourus. Les nouvelles vidéos sont repérées automatiquement ; les vidéos déjà analysées ne sont pas recalculées.</span>`;
+    <span class="hint">${cloud ? "Les vidéos déjà analysées ne sont pas recalculées." : "Les sous-dossiers sont parcourus. Les nouvelles vidéos sont repérées automatiquement ; les vidéos déjà analysées ne sont pas recalculées."}</span>`;
 }
 
 // ------------------------------------------------------------------ suivi
@@ -79,7 +80,7 @@ export async function refreshSources() {
     data = await api("GET", "/api/sources");
     if (performance.now() - lastDetect > DETECT_EVERY_MS || !lastDetect) {
       lastDetect = performance.now() || 1;
-      detected = await api("GET", "/api/sources/detect").catch(() => detected);
+      if (!data.cloud) detected = await api("GET", "/api/sources/detect").catch(() => detected);
       gps = await api("GET", "/api/gps").catch(() => gps);
     }
   } catch (e) { /* serveur injoignable : on réessaie plus tard */ }

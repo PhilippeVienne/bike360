@@ -123,6 +123,9 @@ fn migrate_ids(args: &[String]) -> Result<()> {
         }
     }
     let root = paths::root();
+    if paths::data() != root.join("data") || paths::exports() != root.join("exports") {
+        bail!("migrate-ids ne gère que la disposition par défaut (data/ et exports/ sous la racine)");
+    }
     let (mut mapping, mut assumed, mut skipped) = (vec![], 0, vec![]);
     for old in migrate::old_ids(&root) {
         match seen.get(&old).map(|ids| ids.iter().collect::<Vec<_>>()).as_deref() {

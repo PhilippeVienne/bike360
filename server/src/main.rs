@@ -55,7 +55,10 @@ async fn main() -> Result<()> {
         let app = app.clone();
         tokio::task::spawn_blocking(move || app.load_sessions()).await??;
     }
-    {
+    if bike360_core::paths::cloud() {
+        // pas de surveillance des dossiers : l'arrivée d'un rush est signalée par POST /api/sources {"rescan": true}
+        println!("Mode hébergé : dossier de rushs {}", a.dcim);
+    } else {
         let app = app.clone();
         std::thread::spawn(move || sources::watch(app));
     }
