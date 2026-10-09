@@ -17,6 +17,20 @@ Le script crée le stockage, envoie l'aperçu par morceaux en simulant une coupu
 télémétrie par lecture partielle, fait passer une tâche dans la file, inscrit le rush dans l'index,
 puis lance le serveur en mode hébergé (`BIKE360_CLOUD=1`) sur les rushs du client.
 
+## Module Envoi
+
+`cloud/envoi` est le service qui ouvre un envoi, signe l'adresse de chaque morceau et assemble le
+fichier ; les vidéos vont directement du navigateur au stockage. Il a son propre espace Cargo, car
+le kit AWS est long à compiler. La page est `ui/envoi.html`, son code d'envoi `ui/envoi-core.js`.
+
+```sh
+sh cloud/essai-envoi.sh "/chemin/vers/LRV_….lrv"    # demande aussi Node
+```
+
+L'essai fait tourner le code du navigateur contre le service : coupure après le premier morceau,
+reprise des seuls morceaux manquants, puis contrôle que le fichier assemblé est identique.
+Le client servi est fixé au lancement (`--client`) : l'authentification viendra avec le portail.
+
 ## Ce que Terraform crée
 
 | Ressource | Rôle |

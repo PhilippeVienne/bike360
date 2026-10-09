@@ -1,0 +1,20 @@
+[package]
+name = "bike360-envoi"
+version = "0.1.0"
+edition = "2024"
+license = "EUPL-1.2"
+
+# Hors de l'espace de travail principal : le kit AWS est long à compiler et ne sert qu'au service hébergé.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower-http = { version = "0.6", features = ["fs"] }

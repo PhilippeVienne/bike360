@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bike360 — envoi des rushs</title>
+<link rel="stylesheet" href="style.css">
+<style>
+header.top { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+header.top .spacer { flex: 1; }
+main.envoi { max-width: 760px; margin: 24px auto; padding: 0 16px; display: flex; flex-direction: column; gap: 14px; }
+main.envoi progress { width: 100%; }
+main.envoi .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+</style>
+</head>
+<!-- Module d'envoi, indépendant de l'atelier : il ne parle qu'au service d'envoi et au stockage. -->
+<body>
+<header class="top"><div class="brand">◉ Bike360</div><div class="spacer"></div><span class="muted">Envoi des rushs</span></header>
+<main class="envoi">
+  <h2>Envoyer mes rushs</h2>
+  <p class="muted">Choisis le dossier <strong>DCIM</strong> de ta carte SD. Les aperçus partent en premier : tu peux
+    trier et monter pendant que les originaux suivent. Garde cet onglet ouvert pendant l'envoi ; après une
+    coupure, rechoisis le même dossier et l'envoi reprend où il en était.</p>
+  <div class="row">
+    <label class="upload">📁 Choisir le dossier…<input id="pick" type="file" webkitdirectory multiple hidden></label>
+    <label><input id="originals" type="checkbox" checked> envoyer aussi les originaux</label>
+  </div>
+  <div id="found"></div>
+  <div class="row">
+    <button id="send" class="primary" disabled>Envoyer</button>
+    <button id="stop" hidden>Interrompre</button>
+  </div>
+  <progress id="progress" value="0" max="1" hidden></progress>
+  <div id="status" class="muted"></div>
+</main>
+<script type="module" src="envoi.js"></script>
+</body>
+</html>

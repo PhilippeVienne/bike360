@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["render", "core", "server"]
+# cloud/envoi a son propre espace de travail (kit AWS) : voir cloud/README.md
+exclude = ["cloud/envoi"]
 # render/ (moteur GPU) demande le kit CUDA (nvcc) : compilé seulement à la demande, voir packaging/install.sh
 default-members = ["core", "server"]
 
