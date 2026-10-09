@@ -120,7 +120,22 @@ async fn gate(uri: &Uri, method: &Method, headers: &HeaderMap, body: &Bytes, ip:
         }
         "/login" => Some(if auth::authorized(headers) { redirect(&query_next(), None) } else { page(200, auth::login_page("", &query_next()), None) }),
         "/logout" => Some(redirect("/login", Some(auth::set_cookie("", https)))),
-        _ if auth::authorized(headers) => None,
+        // ouverture depuis le service hébergé : un jeton à usage unique contre une session
+        "/ouvrir" => Some(match auth::open_with(&auth::form_field(uri.query().unwrap_or(""), "jeton")) {
+            _ if auth::blocked(ip) => page(429, auth::login_page("Trop d'essais : réessaie dans quelques minutes.", "/"), None),
+            Some(tok) => redirect("/", Some(auth::set_cookie(&tok, https))),
+            None => {
+                auth::record_fail(ip);
+                page(403, auth::login_page("Lien d'ouverture expiré ou déjà utilisé.", "/"), None)
+            }
+        }),
+        _ if auth::authorized(headers) => {
+            // les relevés du service qui surveille l'atelier ne comptent pas comme de l'activité
+            if !["/api/activite", "/api/ouverture"].contains(&uri.path()) {
+                auth::touch();
+            }
+            None
+        }
         p if p.starts_with("/api/") => Some(json_401()),
         _ if ["/media/", "/music/", "/exports/", "/thumb/", "/minimap"].iter().any(|x| uri.path().starts_with(x)) => Some(error_page(401)),
         _ => {
@@ -490,6 +505,11 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
             }).collect();
             return Ok(ok(json!({"scan": app.scan.lock().unwrap().clone(), "folders": folders, "cloud": paths::cloud()})));
         }
+        "/api/activite" => {
+            let busy = app.jobs.lock().unwrap().values().any(|j| j.running())
+                || app.scan.lock().unwrap().get("state").and_then(Value::as_str) == Some("running");
+            return Ok(ok(json!({"idle_s": crate::auth::idle_s(), "busy": busy})));
+        }
         "/api/gps" => return Ok(ok(Value::Array(gps_files()))),
         "/api/positions" => return Ok(ok(position::list())),
         "/api/settings" => return Ok(ok(app.get_settings())),
@@ -763,6 +783,12 @@ fn post(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Result
     }
     if p == ["api", "gps"] {
         return Ok(gps_upload(app, full, headers, body));
+    }
+    if p == ["api", "ouverture"] {
+        return Ok(match crate::auth::mint_open_token() {
+            Some(tok) => ok(json!({"jeton": tok})),
+            None => Reply::Error(500),
+        });
     }
     if p == ["api", "position"] {
         // position de la caméra pour une session ; devient aussi le réglage par défaut de cette caméra

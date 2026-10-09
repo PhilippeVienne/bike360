@@ -1,6 +1,6 @@
 // Essai automatique des comptes : inscription, confirmation, connexion, témoins, rafraîchissement.
 // Usage : node cloud/essai-comptes.mjs URL_DU_SERVICE GROUPE_COGNITO FICHIER_DES_JETONS
-// Écrit les jetons de deux comptes (a et b) pour les essais suivants.
+// Écrit les jetons de trois comptes (a, b et c) pour les essais suivants.
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
@@ -63,4 +63,9 @@ await call("POST", "/api/compte/inscription", { email: b, password });
 confirmByAdmin(b);
 const tokenB = (await call("POST", "/api/compte/connexion", { email: b, password })).set.bike360_acces.value;
 check(subOf(tokenA) !== subOf(tokenB), "deux comptes, deux identifiants de client distincts");
-writeFileSync(out, JSON.stringify({ a: { token: tokenA, sub: subOf(tokenA) }, b: { token: tokenB, sub: subOf(tokenB) } }));
+const cMail = `c-${stamp}@exemple.fr`;   // troisième compte, pour les essais qui lui déposent des rushs
+await call("POST", "/api/compte/inscription", { email: cMail, password });
+confirmByAdmin(cMail);
+const tokenC = (await call("POST", "/api/compte/connexion", { email: cMail, password })).set.bike360_acces.value;
+const entry = (token) => ({ token, sub: subOf(token) });
+writeFileSync(out, JSON.stringify({ a: entry(tokenA), b: entry(tokenB), c: entry(tokenC) }));

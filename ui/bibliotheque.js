@@ -76,4 +76,16 @@ document.addEventListener("click", async (e) => {
   refresh();
 });
 showAccount($("#account"));
+// atelier à la demande : le service le lance et renvoie une adresse à usage unique
+authFetch("/api/atelier").then((r) => r.json()).then((a) => { $("#atelier").hidden = !a.available; }).catch(() => {});
+$("#atelier").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = "Ouverture de l'atelier…";
+  const r = await authFetch("/api/atelier/ouvrir", { method: "POST" });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.url) { location.href = j.url; return; }
+  $("#error").textContent = `⚠ ${j.error || "atelier indisponible"}`;
+  e.target.disabled = false;
+  e.target.textContent = "Ouvrir l'atelier";
+});
 refresh();

@@ -118,6 +118,13 @@ pub struct Scope {
     pub client: String,
 }
 
+impl Scope {
+    /// Contexte pour un client déjà identifié (tâche de fond du service, sans requête).
+    pub fn of(ctx: Arc<Ctx>, client: String) -> Scope {
+        Scope { ctx, client }
+    }
+}
+
 impl Deref for Scope {
     type Target = Ctx;
     fn deref(&self) -> &Ctx {

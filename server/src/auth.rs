@@ -4,9 +4,14 @@
 //! soit le cookie de session (posé par /login, valable 30 jours, signé HMAC-SHA1 avec le mot de
 //! passe : changer le mot de passe déconnecte tout le monde), soit `Authorization: Bearer <mot de passe>`.
 //! Les essais ratés sont ralentis (1 s) puis bloqués par adresse (5 par 10 min).
+//!
+//! Service hébergé : le service qui lance cet atelier connaît son mot de passe, pas le navigateur du
+//! client. Il demande un jeton d'ouverture (POST /api/ouverture), à usage unique et valable une
+//! minute, que le navigateur échange contre une session en ouvrant /ouvrir?jeton=…
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,7 +22,11 @@ const SESSION_S: u64 = 30 * 24 * 3600;
 const MAX_FAILS: usize = 5;
 const FAIL_WINDOW: Duration = Duration::from_secs(600);
 
+const OPEN_TTL: Duration = Duration::from_secs(60);
+
 static PASSWORD: OnceLock<Option<String>> = OnceLock::new();
+static OPEN: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
 static FAILS: OnceLock<Mutex<HashMap<IpAddr, Vec<Instant>>>> = OnceLock::new();
 
 /// Lit BIKE360_PASSWORD (une valeur vide désactive l'authentification).
@@ -87,6 +96,36 @@ pub fn authorized(headers: &HeaderMap) -> bool {
         .flat_map(|c| c.split(';'))
         .filter_map(|c| c.trim().split_once('='))
         .any(|(k, v)| k == COOKIE && token_ok(v))
+}
+
+/// Jeton d'ouverture à usage unique (None si le hasard du système est indisponible).
+pub fn mint_open_token() -> Option<String> {
+    use std::io::Read;
+    let mut b = [0u8; 16];
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).ok()?;
+    let tok: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    let mut m = OPEN.get_or_init(Default::default).lock().unwrap();
+    m.retain(|_, t| t.elapsed() < OPEN_TTL);
+    m.insert(tok.clone(), Instant::now());
+    Some(tok)
+}
+
+/// Consomme un jeton d'ouverture ; s'il est valable, renvoie la valeur du cookie de session à poser.
+pub fn open_with(tok: &str) -> Option<String> {
+    let minted = OPEN.get_or_init(Default::default).lock().unwrap().remove(tok)?;
+    (minted.elapsed() < OPEN_TTL).then(|| token(now_s()))
+}
+
+/// Note une requête d'un utilisateur connecté (pour savoir depuis quand l'atelier ne sert plus).
+pub fn touch() {
+    LAST_SEEN.store(now_s(), Ordering::Relaxed);
+}
+
+/// Secondes écoulées depuis la dernière requête d'un utilisateur (depuis le démarrage s'il n'y en a pas eu).
+pub fn idle_s() -> u64 {
+    static STARTED: OnceLock<u64> = OnceLock::new();
+    let start = *STARTED.get_or_init(now_s);
+    now_s().saturating_sub(LAST_SEEN.load(Ordering::Relaxed).max(start))
 }
 
 /// Trop d'essais ratés récents depuis cette adresse ?

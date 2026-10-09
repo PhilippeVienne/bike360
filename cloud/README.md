@@ -63,6 +63,18 @@ la distance et les moments forts, et propose au nettoyage les sessions à l'arr�
 
 Une session de plusieurs fichiers reçoit une tâche par fichier ; refaire l'analyse est sans effet.
 
+## Atelier à la demande
+
+Avec `--atelier-bin`, le service lance un `bike360-server` par compte, en mode hébergé, quand le
+client ouvre son atelier depuis la Bibliothèque (`cloud/service/src/atelier.rs`). Le navigateur
+reçoit une adresse à usage unique, valable une minute, qu'il échange contre une session : le mot de
+passe de l'atelier n'est connu que du service. Un atelier inactif et sans calcul en cours est
+enregistré puis arrêté (`--atelier-idle-min`, 30 minutes par défaut) ; ses clips, son projet et ses
+réglages sont déposés sous `donnees/<client>/atelier/` et repris à l'ouverture suivante.
+
+Ici, l'atelier est un processus sur la machine du service et les aperçus du client y sont recopiés.
+Sur AWS, ce rôle reviendra à une tâche Fargate dont le stockage est monté.
+
 ## Ce que Terraform crée
 
 | Ressource | Rôle |

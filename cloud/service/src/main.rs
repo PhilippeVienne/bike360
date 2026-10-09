@@ -5,9 +5,10 @@
 //! adresses des morceaux et assemble le fichier à la fin.
 //!
 //! À l'arrivée d'un rush, sa télémétrie est lue par lectures partielles (caméra, durée), le rush est
-//! inscrit dans l'index et l'atelier, s'il tourne, est prévenu.
+//! inscrit dans l'index, son analyse est déposée dans la file et l'atelier du client, s'il tourne, le reçoit.
 //!
-//! Usage : bike360-envoi --bucket NOM [--client ID] [--table NOM] [--queue URL] [--atelier URL] [--ui DOSSIER] [--port 8370]
+//! Usage : bike360-envoi --bucket NOM [--table NOM] [--queue URL] [--issuer URL --app-client ID]
+//!                      [--atelier-bin CHEMIN] [--ui DOSSIER] [--port 8370]
 //! Routes (JSON) :
 //!   POST /api/envoi/start    {name, size}            → {done} ou {upload_id, part_size, parts, received}
 //!   POST /api/envoi/urls     {name, upload_id, parts} → {urls: {numéro: adresse signée}}
@@ -15,6 +16,7 @@
 //!   GET  /api/envoi/rushs                             → [{name, kind, size, class}]
 
 mod account;
+mod atelier;
 mod library;
 
 use std::collections::BTreeMap;
@@ -68,9 +70,18 @@ struct Args {
     /// File des tâches : une analyse y est déposée à l'arrivée de chaque aperçu
     #[arg(long, env = "BIKE360_QUEUE")]
     queue: Option<String>,
-    /// Adresse de l'atelier du client, prévenu à l'arrivée d'un aperçu (jeton : BIKE360_ATELIER_TOKEN)
-    #[arg(long, env = "BIKE360_ATELIER")]
-    atelier: Option<String>,
+    /// Exécutable de l'atelier (bike360-server) : permet d'ouvrir un atelier par compte, à la demande
+    #[arg(long, env = "BIKE360_ATELIER_BIN")]
+    atelier_bin: Option<std::path::PathBuf>,
+    /// Dossier de travail des ateliers
+    #[arg(long, default_value = "/tmp/bike360-ateliers")]
+    atelier_work: std::path::PathBuf,
+    /// Nom ou adresse de cette machine vue du navigateur du client
+    #[arg(long, default_value = "127.0.0.1")]
+    atelier_host: String,
+    /// Minutes d'inactivité avant l'arrêt d'un atelier
+    #[arg(long, default_value_t = 30)]
+    atelier_idle_min: u64,
     /// Place offerte au client, en Go (affichée par la jauge de la Bibliothèque)
     #[arg(long, env = "BIKE360_QUOTA_GO", default_value_t = 600)]
     quota_go: u64,
@@ -97,7 +108,7 @@ pub struct Ctx {
     client: String,
     part_size: u64,
     table: Option<String>,
-    atelier: Option<String>,
+    launcher: Option<atelier::Launcher>,
     quota_bytes: u64,
     trash_days: f64,
 }
@@ -232,21 +243,6 @@ impl Scope {
         }
     }
 
-    /// Prévient l'atelier qu'un aperçu est arrivé ; sans réponse, il le verra à son prochain démarrage.
-    async fn notify(&self) {
-        let Some(url) = self.atelier.clone() else { return };
-        let token = std::env::var("BIKE360_ATELIER_TOKEN").unwrap_or_default();
-        let sent = tokio::task::spawn_blocking(move || {
-            let mut req = ureq::post(&format!("{url}/api/sources")).timeout(Duration::from_secs(5));
-            if !token.is_empty() {
-                req = req.set("Authorization", &format!("Bearer {token}"));
-            }
-            req.send_json(json!({"rescan": true})).map(|_| ())
-        }).await;
-        if !matches!(sent, Ok(Ok(()))) {
-            eprintln!("atelier non prévenu : {sent:?}");
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -340,7 +336,7 @@ async fn complete(c: Scope, Json(b): Json<Complete>) -> Result<Json<Value>, Fail
     if key.starts_with("apercus/") {
         let parts: Vec<&str> = b.name.split(['_', '.']).collect();
         c.enqueue(&insta360::session_id(parts[1], parts[2], t.camera.as_ref())).await;
-        c.notify().await;
+        c.atelier_arrival().await;
     }
     Ok(Json(json!({"ok": true, "key": key, "camera": t.camera.map(|c| c.model), "duration_s": t.duration_s, "indexed": indexed})))
 }
@@ -385,7 +381,8 @@ async fn main() -> Result<()> {
         }
     };
     let ctx = Arc::new(Ctx { s3, db, sqs: aws_sdk_sqs::Client::new(&conf), queue: a.queue, auth, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
-                             table: a.table, atelier: a.atelier.map(|u| u.trim_end_matches('/').to_string()),
+                             table: a.table,
+                             launcher: a.atelier_bin.map(|bin| atelier::Launcher::new(bin, a.atelier_work, a.atelier_host, a.atelier_idle_min * 60)),
                              quota_bytes: a.quota_go * 1_000_000_000, trash_days: a.trash_days });
     let mut app = Router::new()
         .route("/api/envoi/start", post(start))
@@ -398,6 +395,9 @@ async fn main() -> Result<()> {
         .route("/api/compte/connexion", post(account::sign_in))
         .route("/api/compte/rafraichir", post(account::refresh))
         .route("/api/compte/deconnexion", post(account::sign_out))
+        .route("/api/atelier", get(atelier::status))
+        .route("/api/atelier/ouvrir", post(atelier::open))
+        .route("/api/atelier/fermer", post(atelier::close))
         .route("/api/bibliotheque", get(library::list))
         .route("/api/bibliotheque/marque", post(library::mark))
         .route("/api/bibliotheque/alleger", post(library::lighten))
@@ -406,10 +406,17 @@ async fn main() -> Result<()> {
     if let Some(ui) = &a.ui {
         app = app.nest_service("/ui", tower_http::services::ServeDir::new(ui));
     }
+    tokio::spawn(atelier::watch(ctx.clone()));
     let listener = tokio::net::TcpListener::bind((a.host.as_str(), a.port)).await.context("ouverture du port")?;
     println!("Service → http://{}:{}/ui/bibliotheque.html (compartiment {}, {})", a.host, a.port, ctx.bucket,
              if ctx.auth.is_some() { "comptes activés".to_string() } else { format!("sans comptes, client {}", ctx.client) });
-    axum::serve(listener, app).await?;
+    // à l'arrêt du service (SIGTERM, Ctrl-C), le travail des ateliers ouverts est enregistré avant de les arrêter
+    let stop = async {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("signal d'arrêt");
+        tokio::select! { _ = term.recv() => {}, _ = tokio::signal::ctrl_c() => {} }
+    };
+    axum::serve(listener, app).with_graceful_shutdown(stop).await?;
+    atelier::close_all(&ctx).await;
     Ok(())
 }
 

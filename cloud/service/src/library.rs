@@ -302,6 +302,14 @@ pub async fn purge(c: Scope) -> Result<Json<Value>, Fail> {
         for key in [format!("donnees/{}/vignettes/{id}.jpg", c.client), format!("donnees/{}/cache/{id}.json", c.client)] {
             c.s3.delete_object().bucket(&c.bucket).key(key).send().await.map_err(aws("suppression"))?;
         }
+        // ses clips, leur historique et ses zones de floutage, enregistrés par l'atelier
+        for dir in ["selections", "selections/historique", "privacy"] {
+            let prefix = format!("donnees/{}/atelier/{dir}/{id}", c.client);
+            let found = c.s3.list_objects_v2().bucket(&c.bucket).prefix(&prefix).send().await.map_err(aws("suppression"))?;
+            for key in found.contents().iter().filter_map(|o| o.key()) {
+                c.s3.delete_object().bucket(&c.bucket).key(key).send().await.map_err(aws("suppression"))?;
+            }
+        }
         for sk in [format!("marque#{id}"), format!("session#{id}")] {
             c.db.delete_item().table_name(table).key("pk", c.pk()).key("sk", AttributeValue::S(sk))
                 .send().await.map_err(aws("mise à jour de l'index"))?;
