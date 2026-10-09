@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use bike360_core::{analyze, automontage, basemap, endcard, finishing, geometry, horizon, hyperlapse, insta360, lean, migrate, musiclib, paths, telemetry};
+use bike360_core::{analyze, arrival, automontage, basemap, endcard, finishing, geometry, horizon, hyperlapse, insta360, lean, migrate, musiclib, paths, telemetry};
 use serde_json::{json, Value};
 
 #[path = "bike360-tool/privacy.rs"]
@@ -20,6 +20,8 @@ fn main() -> Result<()> {
         }
         Some("scan") => println!("{}", serde_json::to_string(&insta360::scan(Path::new(&args[2])))?),
         Some("migrate-ids") => migrate_ids(&args[2..])?,
+        // arrivee DOSSIER_RUSHS DOSSIER_VIGNETTES : analyse d'arrivée (service hébergé), résumé JSON sur la sortie
+        Some("arrivee") => println!("{}", serde_json::to_string(&arrival::run(Path::new(&args[2]), Path::new(&args[3]))?)?),
         Some("views") => {
             // views CLIPS.json TILT_PITCH TILT_ROLL : cadrage, matrice et angles v360 à 40 instants par clip
             let clips: Vec<geometry::Clip> = serde_json::from_reader(std::fs::File::open(&args[2])?)?;

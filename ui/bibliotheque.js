@@ -22,10 +22,14 @@ async function call(method, path, body) {
 function sessionRow(s) {
   const o = s.originals, p = s.previews;
   const state = s.mark === "corbeille" ? `<span class="badge">corbeille · supprimée dans ${s.trash_days_left} j</span>`
-    : !o.files ? `<span class="badge">allégée : aperçu seul</span>` : "";
+    : !o.files ? `<span class="badge">aperçu seul</span>` : "";
+  const facts = !s.analysed ? "analyse en attente"
+    : [s.distance_km != null ? `${String(s.distance_km).replace(".", ",")} km` : s.gps_coverage < 0.05 ? "sans GPS" : "",
+       s.candidates ? `${s.candidates} moment${s.candidates > 1 ? "s" : ""} fort${s.candidates > 1 ? "s" : ""}` : ""].filter(Boolean).join(" · ");
   return `<li class="lib-row${s.mark === "corbeille" ? " trashed" : ""}" data-sid="${esc(s.id)}">
+    ${s.thumb ? `<img class="thumb" loading="lazy" alt="" src="${esc(s.thumb)}">` : `<span class="thumb"></span>`}
     <span class="when"><strong>${s.time.slice(0, 2)}h${s.time.slice(2, 4)}</strong> · ${dur(s.duration_s)}</span>
-    <span class="muted grow">${esc(s.camera || "caméra inconnue")}${s.angles.length ? ` · ${s.angles.length + 1} angles` : ""}
+    <span class="muted grow">${facts ? `${facts} · ` : ""}${esc(s.camera || "caméra inconnue")}${s.angles.length ? ` · ${s.angles.length + 1} angles` : ""}
       · aperçu ${size(p.bytes)}${o.files ? ` · originaux ${size(o.bytes)}, ${CLASSES[o.class] || esc(o.class)}` : ""} ${state}</span>
     <span class="marks">${MARKS.map(([key, icon, title]) =>
       `<button data-mark="${key}" class="${s.mark === key ? "on" : ""}" title="${title}">${icon}</button>`).join("")}

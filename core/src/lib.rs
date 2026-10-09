@@ -1,6 +1,7 @@
 //! Cœur de l'outil de tri et de montage des balades Insta360 X5 (portage Rust des modules Python).
 
 pub mod analyze;
+pub mod arrival;
 pub mod automontage;
 pub mod basemap;
 pub mod chapters;

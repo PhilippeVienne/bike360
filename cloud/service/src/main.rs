@@ -7,7 +7,7 @@
 //! À l'arrivée d'un rush, sa télémétrie est lue par lectures partielles (caméra, durée), le rush est
 //! inscrit dans l'index et l'atelier, s'il tourne, est prévenu.
 //!
-//! Usage : bike360-envoi --bucket NOM [--client ID] [--table NOM] [--atelier URL] [--ui DOSSIER] [--port 8370]
+//! Usage : bike360-envoi --bucket NOM [--client ID] [--table NOM] [--queue URL] [--atelier URL] [--ui DOSSIER] [--port 8370]
 //! Routes (JSON) :
 //!   POST /api/envoi/start    {name, size}            → {done} ou {upload_id, part_size, parts, received}
 //!   POST /api/envoi/urls     {name, upload_id, parts} → {urls: {numéro: adresse signée}}
@@ -57,6 +57,9 @@ struct Args {
     /// Table DynamoDB de l'index (sans elle, les rushs ne sont pas inscrits)
     #[arg(long, env = "BIKE360_TABLE")]
     table: Option<String>,
+    /// File des tâches : une analyse y est déposée à l'arrivée de chaque aperçu
+    #[arg(long, env = "BIKE360_QUEUE")]
+    queue: Option<String>,
     /// Adresse de l'atelier du client, prévenu à l'arrivée d'un aperçu (jeton : BIKE360_ATELIER_TOKEN)
     #[arg(long, env = "BIKE360_ATELIER")]
     atelier: Option<String>,
@@ -78,6 +81,8 @@ struct Args {
 struct Ctx {
     s3: aws_sdk_s3::Client,
     db: aws_sdk_dynamodb::Client,
+    sqs: aws_sdk_sqs::Client,
+    queue: Option<String>,
     bucket: String,
     client: String,
     part_size: u64,
@@ -208,6 +213,15 @@ impl Ctx {
         Ok(())
     }
 
+    /// Dépose l'analyse de la session dans la file (vignette, moments forts, statistiques pour la Bibliothèque).
+    async fn enqueue(&self, session: &str) {
+        let Some(queue) = &self.queue else { return };
+        let body = json!({"job": "analyse", "client": self.client, "session": session}).to_string();
+        if let Err(e) = self.sqs.send_message().queue_url(queue).message_body(body).send().await {
+            eprintln!("analyse de {session} non déposée : {e:?}");
+        }
+    }
+
     /// Prévient l'atelier qu'un aperçu est arrivé ; sans réponse, il le verra à son prochain démarrage.
     async fn notify(&self) {
         let Some(url) = self.atelier.clone() else { return };
@@ -314,6 +328,8 @@ async fn complete(State(c): State<Arc<Ctx>>, Json(b): Json<Complete>) -> Result<
         None => false,
     };
     if key.starts_with("apercus/") {
+        let parts: Vec<&str> = b.name.split(['_', '.']).collect();
+        c.enqueue(&insta360::session_id(parts[1], parts[2], t.camera.as_ref())).await;
         c.notify().await;
     }
     Ok(Json(json!({"ok": true, "key": key, "camera": t.camera.map(|c| c.model), "duration_s": t.duration_s, "indexed": indexed})))
@@ -351,7 +367,7 @@ async fn main() -> Result<()> {
     let local = std::env::var("AWS_ENDPOINT_URL").is_ok_and(|v| !v.is_empty());
     let s3 = aws_sdk_s3::Client::from_conf(aws_sdk_s3::config::Builder::from(&conf).force_path_style(local).build());
     let db = aws_sdk_dynamodb::Client::new(&conf);
-    let ctx = Arc::new(Ctx { s3, db, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
+    let ctx = Arc::new(Ctx { s3, db, sqs: aws_sdk_sqs::Client::new(&conf), queue: a.queue, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
                              table: a.table, atelier: a.atelier.map(|u| u.trim_end_matches('/').to_string()),
                              quota_bytes: a.quota_go * 1_000_000_000, trash_days: a.trash_days });
     let mut app = Router::new()

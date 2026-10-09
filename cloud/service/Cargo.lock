@@ -274,6 +274,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-sqs"
+version = "1.114.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2551ccb129fd5668fcd948eac97715e383845495d9b9f030dc3bb45cbe0e7a23"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sso"
 version = "1.114.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -707,6 +732,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bike360-cloud"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "aws-sdk-s3",
+ "aws-sdk-sqs",
+ "axum",
+ "bike360-core",
+ "chrono",
+ "clap",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http",
+ "ureq",
+]
+
+[[package]]
 name = "bike360-core"
 version = "0.1.0"
 dependencies = [
@@ -718,26 +764,6 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "ureq",
-]
-
-[[package]]
-name = "bike360-envoi"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aws-config",
- "aws-sdk-dynamodb",
- "aws-sdk-s3",
- "axum",
- "bike360-core",
- "chrono",
- "clap",
- "regex",
- "serde",
- "serde_json",
- "tokio",
- "tower-http",
  "ureq",
 ]
 

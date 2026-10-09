@@ -18,7 +18,9 @@ for _ in $(seq 1 30); do aws s3api list-buckets >/dev/null 2>&1 && break; sleep 
 (cd "$repo/cloud/terraform" && terraform init -input=false >/dev/null && terraform apply -auto-approve -input=false -var local=true >/dev/null)
 bucket=$(cd "$repo/cloud/terraform" && terraform output -raw bucket)
 table=$(cd "$repo/cloud/terraform" && terraform output -raw table)
-cargo build --release --manifest-path "$repo/cloud/envoi/Cargo.toml" 2>/dev/null
+queue=$(cd "$repo/cloud/terraform" && terraform output -raw file_gpu)
+aws sqs purge-queue --queue-url "$queue" >/dev/null 2>&1 || true
+cargo build --release --manifest-path "$repo/cloud/service/Cargo.toml" 2>/dev/null
 name=$(basename "$lrv")
 aws s3 rm "s3://$bucket/apercus/essai/$name" >/dev/null 2>&1 || true
 aws dynamodb delete-item --table-name "$table" --key "{\"pk\":{\"S\":\"client#essai\"},\"sk\":{\"S\":\"rush#$name\"}}" >/dev/null 2>&1 || true
@@ -29,7 +31,7 @@ HOME="$work" BIKE360_CLOUD=1 BIKE360_PASSWORD= BIKE360_ROOT="$work/root" \
 atelier=$!
 # morceaux de 8 Mo pour qu'un petit aperçu en compte plusieurs
 # garde en corbeille nulle : l'essai vide la corbeille tout de suite
-BIKE360_TRASH_DAYS=0 BIKE360_PART_MB=8 "$repo/cloud/envoi/target/release/bike360-envoi" --bucket "$bucket" --client essai --table "$table" \
+BIKE360_TRASH_DAYS=0 BIKE360_PART_MB=8 "$repo/cloud/service/target/release/bike360-envoi" --bucket "$bucket" --client essai --table "$table" --queue "$queue" \
     --atelier "http://127.0.0.1:$atelier_port" --ui "$repo/ui" --port "$port" > "$work/envoi.log" 2>&1 &
 server=$!
 trap 'kill "$server" "$atelier" 2>/dev/null || true' EXIT
@@ -53,9 +55,23 @@ for page in envoi bibliotheque; do
     [ "$code" = 200 ] && echo "   ✓ page $page servie" || { echo "   ✗ page $page : $code" >&2; exit 1; }
 done
 
+echo "== Analyse à l'arrivée (file des tâches)"
+"$repo/cloud/service/target/release/bike360-worker" --bucket "$bucket" --table "$table" --queue "$queue" \
+    --tool "$repo/target/release/bike360-tool" --work "$work/worker" --once > "$work/worker.log" 2>&1 \
+    || { echo "   ✗ exécutant en échec (voir $work/worker.log)" >&2; exit 1; }
+grep -q "analyse de VID_" "$work/worker.log" && echo "   ✓ $(grep 'analyse de VID_' "$work/worker.log" | head -1 | sed -E 's/_[A-Z0-9]{4} :/_<caméra> :/')" \
+    || { echo "   ✗ aucune tâche traitée (voir $work/worker.log)" >&2; exit 1; }
+waiting=$(aws sqs get-queue-attributes --queue-url "$queue" --attribute-names ApproximateNumberOfMessages --query 'Attributes.ApproximateNumberOfMessages' --output text)
+[ "$waiting" = 0 ] && echo "   ✓ file vide après traitement" || { echo "   ✗ $waiting tâche(s) restée(s) dans la file" >&2; exit 1; }
+
 echo "== Bibliothèque"
 node "$repo/cloud/essai-bibliotheque.mjs" "http://127.0.0.1:$port" "$lrv"
 left=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "originaux/essai/" --query 'length(Contents || `[]`)' --output text)
 left2=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "apercus/essai/" --query 'length(Contents || `[]`)' --output text)
-[ "$left" = 0 ] && [ "$left2" = 0 ] && echo "   ✓ plus aucun fichier du client dans le stockage" || { echo "   ✗ fichiers restants : $left originaux, $left2 aperçus" >&2; exit 1; }
+left3=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "donnees/essai/" --query 'length(Contents || `[]`)' --output text)
+[ "$left" = 0 ] && [ "$left2" = 0 ] && [ "$left3" = 0 ] && echo "   ✓ plus aucun fichier du client dans le stockage" \
+    || { echo "   ✗ fichiers restants : $left originaux, $left2 aperçus, $left3 résultats d'analyse" >&2; exit 1; }
+rows=$(aws dynamodb query --table-name "$table" --key-condition-expression 'pk = :c' \
+    --expression-attribute-values '{":c":{"S":"client#essai"}}' --query Count --output text)
+[ "$rows" = 0 ] && echo "   ✓ plus aucune ligne du client dans l'index" || { echo "   ✗ $rows ligne(s) restée(s) dans l'index" >&2; exit 1; }
 echo "Essai réussi."

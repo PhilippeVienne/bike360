@@ -3,6 +3,7 @@
 //!
 //! Routes (JSON) :
 //!   GET  /api/bibliotheque                              → {bytes, quota_bytes, rides, suggestions}
+//!        (une session analysée porte aussi sa vignette, sa distance, son GPS et ses moments forts)
 //!   POST /api/bibliotheque/marque  {session, mark}       → {ok}   (mark : garder, favori, corbeille ou null)
 //!   POST /api/bibliotheque/alleger {session, confirm}    → {ok, freed_bytes}   supprime les originaux, garde les aperçus
 //!   POST /api/bibliotheque/purge                         → {ok, sessions, freed_bytes}   vide la corbeille échue
@@ -25,6 +26,22 @@ use crate::{aws, Ctx, Fail};
 const MARKS: [&str; 3] = ["garder", "favori", "corbeille"];
 /// En dessous, une session est proposée au nettoyage (déclenchement par erreur, essai).
 const SHORT_S: f64 = 60.0;
+/// Part du temps en mouvement sous laquelle la caméra a sans doute tourné à l'arrêt.
+const IDLE_SHARE: f64 = 0.1;
+/// Couverture GPS minimale pour se fier au temps en mouvement.
+const GPS_MIN: f64 = 0.3;
+/// Durée de validité de l'adresse d'une vignette.
+const THUMB_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Résumé d'analyse d'une session, écrit dans l'index par l'exécutant des tâches.
+struct Analysis {
+    duration_s: f64,
+    gps: f64,
+    candidates: f64,
+    distance_km: Option<f64>,
+    moving_s: Option<f64>,
+    thumb: Option<String>,
+}
 
 /// Fichier d'un rush tel que l'index le décrit.
 struct Rush {
@@ -45,14 +62,19 @@ struct Session {
     originals: Vec<Rush>,
     mark: Option<String>,
     marked_at: Option<String>,
+    analysis: Option<Analysis>,
 }
 
 impl Session {
     fn files(&self) -> impl Iterator<Item = &Rush> {
         self.previews.iter().chain(&self.originals)
     }
-    /// Durée d'après les aperçus (à défaut, les originaux) : un fichier par segment.
+    /// Durée de l'analyse si elle est faite ; sinon d'après les aperçus (à défaut, les originaux),
+    /// un fichier par segment.
     fn duration_s(&self) -> f64 {
+        if let Some(a) = &self.analysis {
+            return a.duration_s;
+        }
         let of = if self.previews.is_empty() { &self.originals } else { &self.previews };
         of.iter().map(|r| r.duration_s).sum()
     }
@@ -115,6 +137,24 @@ impl Ctx {
             let s = out.entry(session).or_default();
             if rush.originals { s.originals.push(rush) } else { s.previews.push(rush) }
         }
+        // résumés d'analyse ; les parties d'un enregistrement en boucle rejoignent leur bloc
+        for item in self.rows("session#").await? {
+            let (Some(id), Some(block)) = (text(&item, "sk").map(|sk| sk.trim_start_matches("session#").to_string()), text(&item, "bloc")) else { continue };
+            if id != block {
+                if let Some(part) = out.remove(&id) {
+                    let b = out.entry(block).or_default();
+                    b.previews.extend(part.previews);
+                    b.originals.extend(part.originals);
+                }
+                continue;
+            }
+            let opt = |k: &str| item.contains_key(k).then(|| number(&item, k));
+            out.entry(id).or_default().analysis = Some(Analysis {
+                duration_s: number(&item, "duree_s"), gps: number(&item, "gps"), candidates: number(&item, "candidats"),
+                distance_km: opt("distance_km"), moving_s: opt("mobile_s"), thumb: text(&item, "vignette"),
+            });
+        }
+        out.retain(|_, s| !s.previews.is_empty() || !s.originals.is_empty());
         for item in self.rows("marque#").await? {
             let Some(id) = text(&item, "sk").map(|sk| sk.trim_start_matches("marque#").to_string()) else { continue };
             if let Some(s) = out.get_mut(&id) {
@@ -162,14 +202,33 @@ pub async fn list(State(c): State<Arc<Ctx>>) -> Result<Json<Value>, Fail> {
         let side = |of: &[Rush]| json!({"files": of.len(), "bytes": of.iter().map(|r| r.bytes).sum::<u64>(),
                                         "class": of.first().map(|r| r.class.clone())});
         let trash_days = s.marked_at.as_deref().filter(|_| s.mark.as_deref() == Some("corbeille")).map(days_since);
-        if s.mark.is_none() && s.duration_s() < SHORT_S {
-            suggestions.push(json!({"session": id, "reason": "courte", "bytes": s.bytes(),
-                                    "text": format!("Session de {:.0} s : sans doute un déclenchement par erreur.", s.duration_s())}));
+        let a = s.analysis.as_ref();
+        let reason = if s.mark.is_some() {
+            None
+        } else if s.duration_s() < SHORT_S {
+            Some(("courte", format!("Session de {:.0} s : sans doute un déclenchement par erreur.", s.duration_s())))
+        } else if a.is_some_and(|a| a.gps >= GPS_MIN && a.moving_s.is_some_and(|m| m < IDLE_SHARE * a.duration_s)) {
+            Some(("arret", "La moto ne roule presque pas : la caméra a sans doute tourné à l'arrêt.".to_string()))
+        } else if a.is_some_and(|a| a.candidates == 0.0) {
+            Some(("sans-moment-fort", "Aucun moment fort repéré dans cette session.".to_string()))
+        } else {
+            None
+        };
+        if let Some((reason, text)) = reason {
+            suggestions.push(json!({"session": id, "reason": reason, "bytes": s.bytes(), "text": text}));
         }
+        let thumb = match a.and_then(|a| a.thumb.as_deref()) {
+            Some(key) => c.s3.get_object().bucket(&c.bucket).key(key)
+                .presigned(aws_sdk_s3::presigning::PresigningConfig::expires_in(THUMB_TTL).map_err(aws("signature"))?)
+                .await.map(|r| r.uri().to_string()).ok(),
+            None => None,
+        };
         by_ride.entry(ride).or_default().push(json!({
             "id": id, "date": id.get(4..12), "time": id.get(13..19), "duration_s": s.duration_s(), "bytes": s.bytes(),
             "camera": s.files().find_map(|r| r.camera.clone()), "angles": angles,
             "previews": side(&s.previews), "originals": side(&s.originals),
+            "analysed": a.is_some(), "thumb": thumb, "distance_km": a.and_then(|a| a.distance_km),
+            "gps_coverage": a.map(|a| a.gps), "candidates": a.map(|a| a.candidates),
             "mark": s.mark, "trash_days_left": trash_days.map(|d| (c.trash_days - d).max(0.0).ceil()),
         }));
     }
@@ -240,8 +299,14 @@ pub async fn purge(State(c): State<Arc<Ctx>>) -> Result<Json<Value>, Fail> {
             continue;
         }
         freed += c.delete(&s.files().collect::<Vec<_>>()).await?;
-        c.db.delete_item().table_name(table).key("pk", c.pk()).key("sk", AttributeValue::S(format!("marque#{id}")))
-            .send().await.map_err(aws("marqueur"))?;
+        // ce que l'analyse a produit pour cette session part avec elle
+        for key in [format!("donnees/{}/vignettes/{id}.jpg", c.client), format!("donnees/{}/cache/{id}.json", c.client)] {
+            c.s3.delete_object().bucket(&c.bucket).key(key).send().await.map_err(aws("suppression"))?;
+        }
+        for sk in [format!("marque#{id}"), format!("session#{id}")] {
+            c.db.delete_item().table_name(table).key("pk", c.pk()).key("sk", AttributeValue::S(sk))
+                .send().await.map_err(aws("mise à jour de l'index"))?;
+        }
         count += 1;
     }
     Ok(Json(json!({"ok": true, "sessions": count, "freed_bytes": freed})))

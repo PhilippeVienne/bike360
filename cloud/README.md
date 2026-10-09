@@ -19,7 +19,7 @@ puis lance le serveur en mode hébergé (`BIKE360_CLOUD=1`) sur les rushs du cli
 
 ## Module Envoi
 
-`cloud/envoi` est le service qui ouvre un envoi, signe l'adresse de chaque morceau et assemble le
+`cloud/service` est le service qui ouvre un envoi, signe l'adresse de chaque morceau et assemble le
 fichier ; les vidéos vont directement du navigateur au stockage. Il a son propre espace Cargo, car
 le kit AWS est long à compiler. La page est `ui/envoi.html`, son code d'envoi `ui/envoi-core.js`.
 
@@ -37,17 +37,27 @@ Le client servi est fixé au lancement (`--client`) : l'authentification viendra
 
 ## Bibliothèque
 
-Le même service sert la Bibliothèque (`cloud/envoi/src/library.rs`, page `ui/bibliotheque.html`) :
+Le même service sert la Bibliothèque (`cloud/service/src/library.rs`, page `ui/bibliotheque.html`) :
 les rushs du client regroupés en balades d'après l'index, la place occupée, les marqueurs (favori,
 garder, corbeille), l'allègement d'une session (ses originaux sont supprimés, son aperçu reste) et
 la corbeille, vidée après un délai de garde (`--trash-days`, 30 jours par défaut).
 `cloud/essai-envoi.sh` enchaîne l'essai de l'Envoi puis celui de la Bibliothèque.
 
+## Analyse à l'arrivée
+
+À chaque aperçu reçu, le service dépose une tâche dans la file. `bike360-worker` (second exécutable
+de `cloud/service`) la prend : il copie les aperçus de la session et les traces GPS du client sur
+son disque, lance `bike360-tool arrivee` (analyse et vignette), dépose les résultats sous
+`donnees/<client>/` et inscrit un résumé dans l'index. La Bibliothèque affiche alors la vignette,
+la distance et les moments forts, et propose au nettoyage les sessions à l'arrêt ou sans moment fort.
+
+Une session de plusieurs fichiers reçoit une tâche par fichier ; refaire l'analyse est sans effet.
+
 ## Ce que Terraform crée
 
 | Ressource | Rôle |
 | --- | --- |
-| Compartiment S3 | Rushs et exports, rangés par nature puis par client : `apercus/<client>/`, `originaux/<client>/`, `exports/<client>/` |
+| Compartiment S3 | Rushs, exports et résultats, rangés par nature puis par client : `apercus/<client>/`, `originaux/<client>/`, `exports/<client>/`, `donnees/<client>/` |
 | Règles d'archivage | Originaux en archive profonde après 90 jours, exports supprimés après 30 jours, envois abandonnés purgés après 7 jours |
 | Règle CORS | Envoi direct depuis le navigateur |
 | Table DynamoDB `bike360` | Index par client (`pk` = client, `sk` = nature et identifiant) |

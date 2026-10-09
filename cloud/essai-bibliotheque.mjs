@@ -21,6 +21,9 @@ await sendFile({ name: original, size: blob.size, slice: (a, b) => blob.slice(a,
 let lib = (await call("GET", "")).body;
 let s = only(lib);
 check(lib.rides.length === 1 && lib.rides[0].sessions.length === 1, "une balade, une session : aperçu et original réunis");
+const image = s.thumb ? await fetch(s.thumb) : null;
+check(s.analysed && image && image.ok && (await image.arrayBuffer()).byteLength > 1000,
+      `session analysée : ${s.duration_s} s, ${s.candidates} moment(s) fort(s), vignette lisible par son adresse signée`);
 check(s.previews.files === 1 && s.originals.files === 1 && lib.bytes === 2 * blob.size, `place occupée : ${lib.bytes} octets pour 2 fichiers`);
 check(s.originals.class === "GLACIER_IR" && s.previews.class === "INTELLIGENT_TIERING", "classes de stockage : aperçu et original rangés séparément");
 check(lib.suggestions.some((g) => g.session === s.id && g.reason === "courte"), `suggestion : ${lib.suggestions[0]?.text}`);
