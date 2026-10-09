@@ -1,6 +1,6 @@
 #!/bin/sh
 # Essai local du service commun sur l'émulateur floci : comptes, paliers et paiement, Envoi, analyse à
-# l'arrivée, atelier à la demande, Bibliothèque.
+# l'arrivée, atelier à la demande, Bibliothèque, vie du compte.
 #   sh cloud/essai-envoi.sh APERÇU.lrv
 set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -38,7 +38,8 @@ JSON
 export BIKE360_STRIPE_KEY=sk_test_essai BIKE360_STRIPE_WEBHOOK_SECRET=whsec_essai BIKE360_STRIPE_API=http://127.0.0.1:12111
 export BIKE360_STRIPE_PRICES=200go=price_200,600go=price_600,1to=price_1to,2to=price_2to
 # garde en corbeille nulle : l'essai vide la corbeille tout de suite
-BIKE360_TRASH_DAYS=0 BIKE360_PART_MB=8 "$repo/cloud/service/target/release/bike360-envoi" --bucket "$bucket" --table "$table" --queue "$queue" \
+# passage sur les échéances des comptes toutes les deux secondes
+BIKE360_SWEEP_MIN=0.03 BIKE360_TRASH_DAYS=0 BIKE360_PART_MB=8 "$repo/cloud/service/target/release/bike360-envoi" --bucket "$bucket" --table "$table" --queue "$queue" \
     --issuer "$issuer" --app-client "$app_client" \
     --atelier-bin "$repo/target/release/bike360-server" --atelier-work "$work/ateliers" --plans "$work/paliers.json" \
     --ui "$repo/ui" --port "$port" > "$work/envoi.log" 2>&1 &
@@ -113,4 +114,7 @@ for kind in rush session marque; do
     rows=$((rows + n))
 done
 [ "$rows" = 0 ] && echo "   ✓ plus aucune ligne de rush ou de session du client dans l'index" || { echo "   ✗ $rows ligne(s) restée(s) dans l'index" >&2; exit 1; }
+
+echo "== Vie du compte (mot de passe oublié, fin d'essai, crédit, résiliation, archive, suppression)"
+node "$repo/cloud/essai-echeances.mjs" "http://127.0.0.1:$port" "$pool" "$table" "$bucket" "$BIKE360_STRIPE_WEBHOOK_SECRET"
 echo "Essai réussi."

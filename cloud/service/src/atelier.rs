@@ -57,8 +57,8 @@ struct Instance {
     port: u16,
     /// Mot de passe de l'atelier, connu du seul service.
     password: String,
-    /// Exports déjà déposés dans le stockage : nom → taille.
-    pushed: HashMap<String, u64>,
+    /// Exports déjà déposés dans le stockage : nom → (taille, date du fichier).
+    pushed: HashMap<String, (u64, u64)>,
     /// État des traces GPS de l'atelier au dernier dépôt dans le stockage (noms, tailles, dates).
     gps_sig: String,
 }
@@ -243,12 +243,15 @@ impl Scope {
     }
 
     /// Dépose dans le stockage les vidéos exportées qui n'y sont pas encore ; `pushed` retient ce qui est fait.
-    async fn push_exports(&self, l: &Launcher, pushed: &mut HashMap<String, u64>) -> Result<usize> {
+    async fn push_exports(&self, l: &Launcher, pushed: &mut HashMap<String, (u64, u64)>) -> Result<usize> {
         let mut count = 0;
         for e in std::fs::read_dir(l.dir(&self.client).join("exports")).into_iter().flatten().flatten() {
             let (path, name) = (e.path(), e.file_name().to_string_lossy().to_string());
-            let size = e.metadata().map_or(0, |m| m.len());
-            if !path.is_file() || !name.ends_with(".mp4") || size == 0 || pushed.get(&name) == Some(&size) {
+            let Ok(meta) = e.metadata() else { continue };
+            // un export refait sous le même nom est un nouvel export : sa date le distingue
+            let made = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+            let size = meta.len();
+            if !path.is_file() || !name.ends_with(".mp4") || size == 0 || pushed.get(&name) == Some(&(size, made)) {
                 continue;
             }
             self.s3.put_object().bucket(&self.bucket).key(format!("exports/{}/{name}", self.client)).content_type("video/mp4")
@@ -257,12 +260,46 @@ impl Scope {
             if !name.contains("_preview_") {
                 let probed = path.clone();
                 let seconds = tokio::task::spawn_blocking(move || bike360_core::analyze::file_duration(&probed)).await.unwrap_or(0.0);
-                self.record_export(&name, seconds, size).await?;
+                self.record_export(&format!("{name}#{made}"), seconds, size).await?;
             }
-            pushed.insert(name, size);
+            pushed.insert(name, (size, made));
             count += 1;
         }
         Ok(count)
+    }
+
+    /// Arrête l'atelier du client. Avec `keep`, son travail est d'abord enregistré dans le stockage ;
+    /// sinon tout ce qu'il avait sur le disque du service est effacé (rushs supprimés, compte effacé).
+    pub async fn atelier_stop(&self, keep: bool) -> Result<usize> {
+        let Some(l) = &self.launcher else { return Ok(0) };
+        let mut running = l.running.lock().await;
+        let mut saved = 0;
+        if let Some(mut inst) = running.remove(&self.client) {
+            if keep {
+                let done = async {
+                    let saved = self.save(l).await.context("enregistrement du travail")?;
+                    self.sync_gps(l, &mut inst.gps_sig).await.context("enregistrement des traces GPS")?;
+                    self.push_exports(l, &mut inst.pushed).await.context("dépôt des exports")?;
+                    anyhow::Ok(saved)
+                }.await;
+                match done {
+                    Ok(n) => saved = n,
+                    // un atelier dont le travail n'a pas pu être enregistré reste ouvert
+                    Err(e) => {
+                        running.insert(self.client.clone(), inst);
+                        return Err(e);
+                    }
+                }
+            }
+            let _ = inst.child.kill().await;
+        }
+        if !keep {
+            let dir = l.dir(&self.client);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).with_context(|| format!("effacement de {}", dir.display()))?;
+            }
+        }
+        Ok(saved)
     }
 
     /// Dépose les exports terminés de l'atelier du client, s'il tourne et ne calcule rien.
@@ -311,6 +348,7 @@ pub async fn status(c: Scope) -> Json<Value> {
 /// Ouvre l'atelier du client (en le démarrant s'il le faut) et renvoie une adresse à usage unique.
 pub async fn open(c: Scope) -> Result<Json<Value>, Fail> {
     let l = c.launcher()?;
+    c.check_access().await?;
     let mut running = l.running.lock().await;
     let alive = match running.get_mut(&c.client) {
         Some(inst) => inst.child.try_wait().is_ok_and(|s| s.is_none()),
@@ -329,13 +367,8 @@ pub async fn open(c: Scope) -> Result<Json<Value>, Fail> {
 
 /// Enregistre le travail du client puis arrête son atelier.
 pub async fn close(c: Scope) -> Result<Json<Value>, Fail> {
-    let l = c.launcher()?;
-    let mut running = l.running.lock().await;
-    let Some(mut inst) = running.remove(&c.client) else { return Ok(Json(json!({"ok": true, "saved": 0}))) };
-    let saved = c.save(l).await.map_err(failed("enregistrement du travail"))?;
-    c.sync_gps(l, &mut inst.gps_sig).await.map_err(failed("enregistrement des traces GPS"))?;
-    c.push_exports(l, &mut inst.pushed).await.map_err(failed("dépôt des exports"))?;
-    let _ = inst.child.kill().await;
+    c.launcher()?;
+    let saved = c.atelier_stop(true).await.map_err(failed("enregistrement du travail"))?;
     Ok(Json(json!({"ok": true, "saved": saved})))
 }
 

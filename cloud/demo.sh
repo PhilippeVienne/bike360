@@ -2,6 +2,7 @@
 # Essai à la main de tout le service hébergé, sur cette machine, dans votre navigateur.
 #   sh cloud/demo.sh                    lance tout et reste au premier plan (Ctrl-C pour arrêter)
 #   sh cloud/demo.sh payer EMAIL PALIER simule la confirmation de paiement d'un palier (600go, 1to…)
+#   sh cloud/demo.sh crediter EMAIL MINUTES simule le paiement de minutes d'export
 # Rien ne sort de la machine : AWS et le prestataire de paiement sont émulés (floci, stripe-mock).
 # Les comptes créés sont confirmés d'office, puisqu'aucun courriel n'est envoyé.
 set -eu
@@ -18,12 +19,17 @@ state="$work/terraform.tfstate"
 tf() { (cd "$repo/cloud/terraform" && terraform "$@"); }
 out() { tf output -state="$state" -raw "$1"; }
 
-if [ "${1:-}" = payer ]; then
-    [ $# = 3 ] || { echo "usage : sh cloud/demo.sh payer EMAIL PALIER" >&2; exit 1; }
+if [ "${1:-}" = payer ] || [ "${1:-}" = crediter ]; then
+    [ $# = 3 ] || { echo "usage : sh cloud/demo.sh payer EMAIL PALIER | crediter EMAIL MINUTES" >&2; exit 1; }
     pool=$(out pool)
     sub=$(aws cognito-idp admin-get-user --user-pool-id "$pool" --username "$2" --query 'UserAttributes[?Name==`sub`].Value' --output text)
     [ -n "$sub" ] && [ "$sub" != None ] || { echo "compte inconnu : $2" >&2; exit 1; }
-    body="{\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"client_reference_id\":\"$sub\",\"metadata\":{\"palier\":\"$3\"},\"payment_status\":\"paid\",\"customer\":\"cus_demo\",\"subscription\":\"sub_demo\"}}}"
+    if [ "$1" = payer ]; then
+        what="\"metadata\":{\"palier\":\"$3\"},\"customer\":\"cus_demo\",\"subscription\":\"sub_demo\""
+    else
+        what="\"id\":\"cs_demo_$(date +%s)\",\"metadata\":{\"credit_min\":\"$3\"}"
+    fi
+    body="{\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"client_reference_id\":\"$sub\",\"payment_status\":\"paid\",$what}}}"
     t=$(date +%s)
     sig=$(printf '%s.%s' "$t" "$body" | openssl dgst -sha256 -hmac "$BIKE360_STRIPE_WEBHOOK_SECRET" | sed 's/^.* //')
     curl -s -X POST -H "Stripe-Signature: t=$t,v1=$sig" -d "$body" "$site/api/paiement/stripe"; echo
@@ -78,6 +84,8 @@ Parcours à essayer :
   4. Ouvrir l'atelier, poser un clip, exporter ; l'export apparaît dans « Mes exports ».
   5. Changer de palier : le bouton mène à une page factice. Pour simuler le paiement :
          sh cloud/demo.sh payer VOTRE_EMAIL 600go
+     Même chose pour le crédit d'export (page « Palier et crédit d'export ») :
+         sh cloud/demo.sh crediter VOTRE_EMAIL 10
 
 Journaux : $work/service.log et $work/worker.log. Ctrl-C arrête tout ; rien n'est conservé.
 TEXTE

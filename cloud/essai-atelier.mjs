@@ -1,6 +1,7 @@
 // Essai automatique de l'atelier à la demande.
 // Usage : node cloud/essai-atelier.mjs URL_DU_SERVICE FICHIER_DES_JETONS APERÇU.lrv [ORIGINAL.insv]
 // Le compte a doit avoir un rush analysé ; avec l'original, l'export final est essayé aussi.
+import { createHmac } from "node:crypto";
 import { openAsBlob, readFileSync } from "node:fs";
 import { sendFile } from "../ui/envoi-core.js";
 
@@ -66,6 +67,24 @@ if (insv) {
     if (job.state !== "running") break;
   }
   check(job.state === "error" && /quota d'export/.test(job.message), `second export refusé : ${job.message}`);
+  // du crédit acheté d'avance couvre ce qui dépasse les minutes du mois
+  const secret = process.env.BIKE360_STRIPE_WEBHOOK_SECRET;
+  const paid = JSON.stringify({ type: "checkout.session.completed", data: { object: {
+    id: `cs_atelier_${Date.now()}`, client_reference_id: a.sub, metadata: { credit_min: "10" }, payment_status: "paid" } } });
+  const t = Math.floor(Date.now() / 1000);
+  await fetch(`${base}/api/paiement/stripe`, { method: "POST", body: paid,
+    headers: { "Stripe-Signature": `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${paid}`).digest("hex")}` } });
+  await atelier(A, "POST", `/api/export/${sid}`, { quality: "final" });
+  for (let i = 0; i < 240; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    job = (await atelier(A, "GET", `/api/export/${sid}`)).body || {};
+    if (job.state !== "running") break;
+  }
+  check(job.state === "done", "avec 10 min de crédit acheté, le même export passe");
+  await fetch(`${base}/api/bibliotheque`, { headers: bearer(a.token) });   // l'export terminé est déposé et compté
+  const after = await (await fetch(`${base}/api/compte/palier`, { headers: bearer(a.token) })).json();
+  check(after.credit_s < 600 && after.credit_s > 580 && after.export_used_s > plan.export_used_s,
+        `le dépassement est pris sur le crédit : il reste ${after.credit_s} s sur 600`);
 }
 
 const B = await open(b);

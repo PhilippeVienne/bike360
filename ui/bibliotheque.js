@@ -41,9 +41,10 @@ function sessionRow(s) {
 function render() {
   const used = lib.bytes / lib.quota_bytes;
   $("#gauge").innerHTML = `<div class="row"><strong>${size(lib.bytes)}</strong> <span class="muted">sur ${size(lib.quota_bytes)} · palier ${esc(lib.plan)}
-      · exports ce mois-ci : ${Math.round(lib.export_used_s / 60 * 10) / 10} min sur ${Math.round(lib.export_s / 60)}</span>
-      <span style="flex:1"></span><a href="palier.html">Changer de palier</a></div>
-    <progress value="${Math.min(1, used)}" max="1"></progress>`;
+      · exports ce mois-ci : ${Math.round(lib.export_used_s / 60 * 10) / 10} min sur ${Math.round(lib.export_s / 60)}${lib.credit_s ? ` · crédit : ${Math.round(lib.credit_s / 60)} min` : ""}</span>
+      <span style="flex:1"></span><a href="palier.html">Palier et crédit d'export</a></div>
+    <progress value="${Math.min(1, used)}" max="1"></progress>
+    ${lib.standing?.notice ? `<p>${esc(lib.standing.notice)} <a href="palier.html">Voir les paliers</a></p>` : ""}`;
   $("#suggestions").innerHTML = lib.suggestions.length
     ? `<h3>Suggestions de nettoyage</h3><ul class="lib-list">${lib.suggestions.map((g) => `<li class="lib-row" data-sid="${esc(g.session)}">
         <span class="grow"><strong>${g.session.slice(10, 12)}/${g.session.slice(8, 10)} à ${g.session.slice(13, 15)}h${g.session.slice(15, 17)}</strong> · ${esc(g.text)} <span class="muted">${size(g.bytes)}</span></span>

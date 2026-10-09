@@ -129,6 +129,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "rushs" {
     }
   }
 
+  # Rushs d'un abonnement terminé : le service les étiquette à la fin du délai d'accès, cette règle
+  # les fait passer en archive profonde (180 jours facturés au minimum, soit la durée de leur garde).
+  rule {
+    id     = "rushs-archives"
+    status = "Enabled"
+    filter {
+      tag {
+        key   = "etat"
+        value = "archive"
+      }
+    }
+    transition {
+      days          = 0
+      storage_class = "DEEP_ARCHIVE"
+    }
+  }
+
   # Un envoi abandonné reste facturé tant que ses morceaux existent.
   rule {
     id     = "envois-interrompus"

@@ -36,7 +36,7 @@ queue=$(cd "$repo/cloud/terraform" && terraform output -raw file_gpu)
 table=$(cd "$repo/cloud/terraform" && terraform output -raw table)
 ok "compartiment $bucket, table $table, file $(basename "$queue")"
 rules=$(aws s3api get-bucket-lifecycle-configuration --bucket "$bucket" --query 'length(Rules)' --output text)
-[ "$rules" = 3 ] && ok "3 règles d'archivage en place" || fail "règles d'archivage : $rules au lieu de 3"
+[ "$rules" = 4 ] && ok "4 règles d'archivage en place" || fail "règles d'archivage : $rules au lieu de 4"
 
 step "Envoi par morceaux avec reprise ($name, morceaux de $part_mb Mo)"
 key="apercus/$client/$name"

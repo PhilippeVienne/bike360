@@ -99,15 +99,18 @@ impl Scope {
         AttributeValue::S(format!("client#{}", self.client))
     }
 
-    /// Toutes les lignes de l'index du client dont la clé de tri commence par `prefix`.
+    /// Toutes les lignes de l'index du client dont la clé de tri commence par `prefix` (toutes, s'il est vide).
     pub async fn rows(&self, prefix: &str) -> Result<Vec<HashMap<String, AttributeValue>>, Fail> {
         let table = self.table()?;
         let (mut out, mut from) = (vec![], None);
         loop {
-            let page = self.db.query().table_name(table)
-                .key_condition_expression("pk = :c and begins_with(sk, :p)")
-                .expression_attribute_values(":c", self.pk())
-                .expression_attribute_values(":p", AttributeValue::S(prefix.into()))
+            let mut query = self.db.query().table_name(table).expression_attribute_values(":c", self.pk());
+            query = if prefix.is_empty() {
+                query.key_condition_expression("pk = :c")
+            } else {
+                query.key_condition_expression("pk = :c and begins_with(sk, :p)").expression_attribute_values(":p", AttributeValue::S(prefix.into()))
+            };
+            let page = query
                 .set_exclusive_start_key(from.take())
                 .send().await.map_err(aws("lecture de l'index"))?;
             out.extend(page.items().iter().cloned());
@@ -255,9 +258,11 @@ pub async fn list(c: Scope) -> Result<Json<Value>, Fail> {
         json!({"id": ride, "date": ride.get(4..12), "bytes": bytes, "sessions": list})
     }).collect();
     let bytes: u64 = sessions.values().map(Session::bytes).sum();
-    let plan = c.plan().await?;
+    let acc = c.account().await?;
+    let plan = c.plan_of(&acc);
     Ok(Json(json!({"bytes": bytes, "quota_bytes": plan.quota_bytes(), "plan": plan.label,
                    "export_s": plan.export_s(), "export_used_s": c.export_used_s().await?,
+                   "credit_s": acc.credit_s, "standing": c.standing_of(&acc).json(),
                    "trash_days": c.trash_days, "rides": rides,
                    "suggestions": suggestions, "exports": exports(&c).await?})))
 }

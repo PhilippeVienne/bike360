@@ -1,4 +1,5 @@
-// Page du compte : connexion, inscription et confirmation de l'adresse par le code reçu par courriel.
+// Page du compte : connexion, inscription, confirmation de l'adresse par le code reçu par courriel,
+// et mot de passe oublié (un code reçu par courriel permet d'en choisir un nouveau).
 // Les jetons ne passent jamais par ce code : le service les pose dans des témoins que la page ne lit pas.
 
 const $ = (s) => document.querySelector(s);
@@ -7,7 +8,7 @@ const next = () => {
   return /^[a-z-]+\.html$/.test(n) ? n : "bibliotheque.html";   // jamais d'adresse extérieure
 };
 
-let mode = "connexion";   // connexion | inscription | confirmation
+let mode = "connexion";   // connexion | inscription | confirmation | oubli | reinitialisation
 let waiting = null;       // attente de la confirmation de l'adresse : minuterie
 const WAIT_EVERY_MS = 3000, WAIT_TRIES = 60;
 
@@ -30,12 +31,16 @@ async function post(path, body) {
 }
 
 function render(message = "") {
-  $("#title").textContent = { connexion: "Se connecter", inscription: "Créer un compte", confirmation: "Confirmer mon adresse" }[mode];
-  $("#password-row").hidden = mode === "confirmation";
-  $("#code-row").hidden = mode !== "confirmation";
-  $("#password").autocomplete = mode === "inscription" ? "new-password" : "current-password";
-  $("#submit").textContent = { connexion: "Se connecter", inscription: "Créer mon compte", confirmation: "Confirmer" }[mode];
+  $("#title").textContent = { connexion: "Se connecter", inscription: "Créer un compte", confirmation: "Confirmer mon adresse",
+                              oubli: "Mot de passe oublié", reinitialisation: "Nouveau mot de passe" }[mode];
+  $("#password-row").hidden = mode === "confirmation" || mode === "oubli";
+  $("#password-row").firstChild.textContent = mode === "reinitialisation" ? "Nouveau mot de passe " : "Mot de passe ";
+  $("#code-row").hidden = mode !== "confirmation" && mode !== "reinitialisation";
+  $("#password").autocomplete = mode === "connexion" ? "current-password" : "new-password";
+  $("#submit").textContent = { connexion: "Se connecter", inscription: "Créer mon compte", confirmation: "Confirmer",
+                               oubli: "Recevoir un code", reinitialisation: "Changer mon mot de passe" }[mode];
   $("#switch").textContent = mode === "connexion" ? "Pas encore de compte ? En créer un" : "J'ai déjà un compte";
+  $("#forgot").hidden = mode !== "connexion";
   $("#message").textContent = message;
 }
 
@@ -59,6 +64,18 @@ $("#form").addEventListener("submit", async (e) => {
     }
     if (r.ok) { mode = "connexion"; render("Adresse confirmée : tu peux te connecter."); }
     else render("⚠ " + (r.error || "confirmation impossible"));
+  } else if (mode === "oubli") {
+    const r = await post("oubli", { email });
+    if (r.ok) { mode = "reinitialisation"; $("#password").value = ""; render("Si un compte existe à cette adresse, un code vient de lui être envoyé."); }
+    else render("⚠ " + (r.error || "demande impossible"));
+  } else if (mode === "reinitialisation") {
+    const r = await post("reinitialisation", { email, code, password });
+    if (r.ok) {
+      const s = await post("connexion", { email, password });
+      if (s.ok) { location.href = next(); return; }
+      mode = "connexion"; render("Mot de passe changé : tu peux te connecter.");
+    }
+    else render("⚠ " + (r.error || "changement impossible"));
   } else {
     const r = await post("connexion", { email, password });
     if (r.ok) { location.href = next(); return; }
@@ -69,6 +86,7 @@ $("#form").addEventListener("submit", async (e) => {
 });
 
 $("#switch").addEventListener("click", () => { clearTimeout(waiting); mode = mode === "connexion" ? "inscription" : "connexion"; render(); });
+$("#forgot").addEventListener("click", () => { clearTimeout(waiting); mode = "oubli"; render(); });
 
 // déjà connecté, ou comptes désactivés sur ce service : rien à faire ici
 fetch("/api/compte").then((r) => r.json()).then((s) => { if (s.signed_in) location.href = next(); }).catch(() => {});

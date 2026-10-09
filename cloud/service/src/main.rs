@@ -20,6 +20,7 @@ mod atelier;
 mod library;
 mod payment;
 mod plans;
+mod upkeep;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -93,6 +94,27 @@ struct Args {
     /// Jours de garde en corbeille avant suppression définitive
     #[arg(long, env = "BIKE360_TRASH_DAYS", default_value_t = 30.0)]
     trash_days: f64,
+    /// Jours d'essai gratuit à compter du premier envoi ; ensuite les rushs du compte sont supprimés
+    #[arg(long, env = "BIKE360_TRIAL_DAYS", default_value_t = 7.0)]
+    trial_days: f64,
+    /// Jours d'accès aux rushs après la fin d'un abonnement
+    #[arg(long, env = "BIKE360_ACCESS_DAYS", default_value_t = 30.0)]
+    access_days: f64,
+    /// Jours de garde en archive profonde après cet accès, avant suppression
+    #[arg(long, env = "BIKE360_ARCHIVE_DAYS", default_value_t = 180.0)]
+    archive_days: f64,
+    /// Achat minimal de crédit d'export, en minutes
+    #[arg(long, default_value_t = 10)]
+    credit_min: u32,
+    /// Prix d'une minute de crédit d'export, en euros (3 € de l'heure)
+    #[arg(long, default_value_t = 0.05)]
+    credit_eur: f64,
+    /// Prix de la récupération de rushs archivés, en euros par tranche de 100 Go
+    #[arg(long, default_value_t = 1.5)]
+    recovery_eur_100go: f64,
+    /// Minutes entre deux passages sur les échéances des comptes
+    #[arg(long, env = "BIKE360_SWEEP_MIN", default_value_t = 60.0)]
+    sweep_min: f64,
     /// Dossier de l'interface web à servir (pages envoi.html et bibliotheque.html)
     #[arg(long)]
     ui: Option<String>,
@@ -117,6 +139,7 @@ pub struct Ctx {
     plans: Vec<plans::Plan>,
     payment: Option<payment::Payment>,
     trash_days: f64,
+    policy: plans::Policy,
 }
 
 /// Ce que la fin d'un rush dit de lui, sans le télécharger.
@@ -397,7 +420,9 @@ async fn main() -> Result<()> {
                                  None => plans::defaults(),
                              },
                              payment: payment::Payment::from_env(site)?,
-                             trash_days: a.trash_days });
+                             trash_days: a.trash_days,
+                             policy: plans::Policy { trial_days: a.trial_days, access_days: a.access_days, archive_days: a.archive_days,
+                                                     credit_min: a.credit_min, credit_eur: a.credit_eur, recovery_eur_100go: a.recovery_eur_100go } });
     let mut app = Router::new()
         .route("/api/envoi/start", post(start))
         .route("/api/envoi/urls", post(urls))
@@ -409,8 +434,13 @@ async fn main() -> Result<()> {
         .route("/api/compte/connexion", post(account::sign_in))
         .route("/api/compte/rafraichir", post(account::refresh))
         .route("/api/compte/deconnexion", post(account::sign_out))
+        .route("/api/compte/oubli", post(account::forgot))
+        .route("/api/compte/reinitialisation", post(account::reset))
+        .route("/api/compte/suppression", post(account::delete))
         .route("/api/compte/palier", get(plans::status))
         .route("/api/paiement/commande", post(payment::order))
+        .route("/api/paiement/credit", post(payment::credit))
+        .route("/api/paiement/resiliation", post(payment::cancel))
         .route("/api/paiement/stripe", post(payment::webhook))
         .route("/api/atelier", get(atelier::status))
         .route("/api/atelier/ouvrir", post(atelier::open))
@@ -425,6 +455,7 @@ async fn main() -> Result<()> {
         app = app.nest_service("/ui", tower_http::services::ServeDir::new(ui));
     }
     tokio::spawn(atelier::watch(ctx.clone()));
+    tokio::spawn(upkeep::watch(ctx.clone(), Duration::from_secs_f64((a.sweep_min * 60.0).max(1.0))));
     let listener = tokio::net::TcpListener::bind((a.host.as_str(), a.port)).await.context("ouverture du port")?;
     println!("Service → http://{}:{}/ui/bibliotheque.html (compartiment {}, {})", a.host, a.port, ctx.bucket,
              if ctx.auth.is_some() { "comptes activés".to_string() } else { format!("sans comptes, client {}", ctx.client) });

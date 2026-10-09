@@ -14,17 +14,37 @@ main.lib progress { width: 100%; }
 .lib-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .lib-row .grow { flex: 1; min-width: 220px; }
 .lib-row .muted { font-size: 12px; }
+.lib-row input { padding: 6px 8px; background: var(--bg, #111317); color: inherit; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+#credit-minutes { width: 80px; }
+.notice { padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px; }
 </style>
 </head>
 <body>
 <header class="top"><div class="brand">◉ Bike360</div><div class="spacer"></div><a href="bibliotheque.html">Mes rushs</a><span class="muted">Mon palier</span><span id="account"></span></header>
 <main class="lib">
   <h2>Mon palier</h2>
+  <div id="notice" class="notice" hidden></div>
   <div id="usage"></div>
   <div id="message" class="muted"></div>
   <h3>Paliers</h3>
   <ul id="plans" class="lib-list"></ul>
   <p class="muted">Abonnement annuel, payé en ligne. TVA non applicable, article 293 B du CGI.</p>
+  <div id="subscription"></div>
+  <h3>Crédit d'export</h3>
+  <p class="muted">Au-delà des minutes du mois, un export se paie d'avance, à la minute. Le crédit ne périme pas ;
+    un export plus long que ce qu'il te reste ne démarre pas.</p>
+  <form id="credit" class="lib-row">
+    <span class="grow" id="credit-balance"></span>
+    <label>Minutes <input id="credit-minutes" type="number" step="1" required></label>
+    <span id="credit-price"></span>
+    <button class="primary" type="submit">Acheter</button>
+  </form>
+  <h3>Supprimer mon compte</h3>
+  <p class="muted">Tes rushs, tes exports, ton travail et ton compte sont effacés pour de bon, et ton abonnement s'arrête sans remboursement.</p>
+  <form id="delete" class="lib-row">
+    <label class="grow">Mot de passe, pour confirmer <input id="delete-password" type="password" autocomplete="current-password" required></label>
+    <button class="danger" type="submit">Supprimer mon compte</button>
+  </form>
 </main>
 <script type="module" src="palier.js"></script>
 </body>

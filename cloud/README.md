@@ -43,8 +43,8 @@ ailleurs que sur sa machine.
 
 Chaque compte a un palier (`cloud/service/src/plans.rs`) qui fixe sa place de stockage et ses
 minutes d'export final par mois ; sans abonnement, c'est le palier d'essai. Un envoi qui ferait
-dépasser la place est refusé, de même qu'un export final qui ferait dépasser les minutes : l'atelier
-annonce chaque export final au service avant de le lancer. La grille par défaut se remplace par un
+dépasser la place est refusé, de même qu'un export final que ni les minutes du mois ni le crédit
+acheté d'avance ne couvrent : l'atelier annonce chaque export final au service avant de le lancer. La grille par défaut se remplace par un
 fichier (`--plans`).
 
 Le paiement passe par Stripe (`cloud/service/src/payment.rs`, page `ui/palier.html`) : le service
@@ -52,6 +52,37 @@ ouvre une page de paiement, et seule la notification signée de Stripe change le
 Les clés se donnent par variables d'environnement (`BIKE360_STRIPE_KEY`,
 `BIKE360_STRIPE_WEBHOOK_SECRET`, `BIKE360_STRIPE_PRICES`). L'essai local utilise l'émulateur
 `stripe-mock` et des notifications signées par le script.
+
+## Vie d'un compte
+
+La fiche d'un compte (`sk = compte` dans l'index) porte son palier, ses dates et son crédit ; sa
+situation s'en déduit (`plans::Standing`) et un passage régulier applique ce qu'elle demande
+(`cloud/service/src/upkeep.rs`, toutes les `--sweep-min` minutes, 60 par défaut).
+
+| Situation | Quand | Ce que le compte peut faire | Ce que fait le passage |
+|---|---|---|---|
+| essai | du premier envoi à `--trial-days` (7) | tout, dans les limites du palier d'essai | rien |
+| essai terminé | ensuite, sans abonnement | s'abonner | supprime ses rushs |
+| abonné | tant que l'abonnement court | tout | rien |
+| terminé | `--access-days` (30) après la fin de l'abonnement | tout sauf envoyer | rien |
+| archivé | ensuite, pendant `--archive-days` (180) | s'abonner, ce qui récupère ses rushs | étiquette ses rushs `etat=archive` ; une règle du compartiment les passe en archive profonde |
+| supprimé | au-delà | s'abonner, sans retrouver ses rushs | supprime ses rushs |
+| récupération | abonnement repris sur des rushs archivés | envoyer ; l'atelier attend | redemande les aperçus à l'archive, puis les remet dans leur classe |
+
+- **Mot de passe oublié** : un code part par courriel (Cognito) ; la réponse est la même que le compte existe ou non.
+- **Résiliation** : l'abonnement court jusqu'à son échéance, puis Stripe annonce sa fin ; tant
+  qu'elle n'est pas arrivée, la résiliation s'annule.
+- **Récupération payante** : reprendre un palier sur des rushs archivés ajoute à la commande des
+  frais par tranche de 100 Go (`--recovery-eur-100go`, 1,50 € par défaut : une estimation à valider,
+  qui couvre la garde en archive et la sortie d'archive au tarif de Paris). Les originaux restent en
+  archive, comme tout original de plus de 90 jours.
+- **Crédit d'export** : au-delà des minutes du mois, un export se paie d'avance, à la minute
+  (`--credit-eur`, 0,05 € soit 3 € de l'heure ; `--credit-min`, 10 minutes au moins par achat). Un
+  export plus long que ce qu'il reste au compte ne démarre pas. Le crédit ne périme pas.
+- **Suppression du compte** : confirmée par le mot de passe ; l'abonnement est arrêté chez Stripe,
+  puis fichiers (toutes leurs versions), envois en cours, index et compte Cognito sont effacés.
+
+`cloud/essai-echeances.mjs` déroule tout cela sur l'émulateur en reculant les dates dans l'index.
 
 ## Module Envoi
 
@@ -143,3 +174,6 @@ d'objets sur le compartiment, donc une règle qui supprime les anciennes version
 Le montage Amazon S3 Files, la facturation et les délais des classes de stockage, CloudFront, le
 GPU, les droits IAM, l'envoi des courriels de confirmation et la politique de mot de passe ne sont
 pas émulés ; le vrai parcours de paiement chez Stripe (carte, facture, résiliation) non plus : ils restent à essayer sur un compte AWS.
+L'émulateur n'applique pas les règles du compartiment et laisse lire un objet archivé : le passage
+en archive profonde, la demande de sortie d'archive et la recopie des aperçus revenus n'ont donc
+jamais tourné pour de bon.

@@ -12,6 +12,9 @@
 //!   POST /api/compte/connexion    {email, password} → {ok}  (pose les témoins)
 //!   POST /api/compte/rafraichir                     → {ok}  (nouveau jeton d'accès)
 //!   POST /api/compte/deconnexion                    → {ok}
+//!   POST /api/compte/oubli        {email}           → {ok}  (un code part par courriel si le compte existe)
+//!   POST /api/compte/reinitialisation {email, code, password} → {ok}
+//!   POST /api/compte/suppression  {password}        → {ok}  (efface le compte et tout ce qu'il contient)
 
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -249,6 +252,82 @@ pub async fn refresh(State(c): State<Arc<Ctx>>, headers: HeaderMap) -> Result<Re
 pub async fn sign_out(State(c): State<Arc<Ctx>>) -> Result<Response, Fail> {
     let auth = auth_of(&c)?;
     let mut res = Json(json!({"ok": true})).into_response();
+    for (name, path) in [(ACCESS_COOKIE, "/"), (REFRESH_COOKIE, "/api/compte")] {
+        res.headers_mut().append(SET_COOKIE, auth.cookie(name, "", path, 0).parse().unwrap());
+    }
+    Ok(res)
+}
+
+#[derive(Deserialize)]
+pub struct Forgot {
+    email: String,
+}
+
+/// Mot de passe oublié : un code part par courriel. La réponse est la même que le compte existe ou non.
+pub async fn forgot(State(c): State<Arc<Ctx>>, Json(b): Json<Forgot>) -> Result<Json<Value>, Fail> {
+    let auth = auth_of(&c)?;
+    match auth.idp.forgot_password().client_id(&auth.app_client).username(&b.email).send().await {
+        Ok(_) => Ok(Json(json!({"ok": true}))),
+        Err(e) => match e.as_service_error() {
+            Some(s) if s.is_limit_exceeded_exception() || s.is_too_many_requests_exception() => Err(Fail(StatusCode::TOO_MANY_REQUESTS, "trop de demandes : réessaie plus tard".into())),
+            // compte inconnu, non confirmé ou sans adresse vérifiée : rien ne le distingue d'un envoi réussi
+            Some(_) => Ok(Json(json!({"ok": true}))),
+            None => Err(unavailable(e)),
+        },
+    }
+}
+
+#[derive(Deserialize)]
+pub struct Reset {
+    email: String,
+    code: String,
+    password: String,
+}
+
+pub async fn reset(State(c): State<Arc<Ctx>>, Json(b): Json<Reset>) -> Result<Json<Value>, Fail> {
+    let auth = auth_of(&c)?;
+    match auth.idp.confirm_forgot_password().client_id(&auth.app_client).username(&b.email).confirmation_code(&b.code).password(&b.password).send().await {
+        Ok(_) => Ok(Json(json!({"ok": true}))),
+        Err(e) => Err(match e.as_service_error() {
+            Some(s) if s.is_invalid_password_exception() => Fail(StatusCode::BAD_REQUEST, "mot de passe trop faible".into()),
+            Some(s) if s.is_limit_exceeded_exception() || s.is_too_many_failed_attempts_exception() => Fail(StatusCode::TOO_MANY_REQUESTS, "trop d'essais : réessaie plus tard".into()),
+            Some(_) => Fail(StatusCode::BAD_REQUEST, "code incorrect ou expiré".into()),
+            None => unavailable(e),
+        }),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct Deletion {
+    password: String,
+}
+
+/// Efface le compte à la demande de son titulaire, qui le confirme par son mot de passe : abonnement
+/// arrêté, fichiers et index supprimés, puis le compte lui-même. Rien n'est récupérable ensuite.
+pub async fn delete(c: Scope, headers: HeaderMap, Json(b): Json<Deletion>) -> Result<Response, Fail> {
+    let auth = auth_of(&c)?;
+    let token = access_token(&headers).ok_or_else(|| Fail(StatusCode::UNAUTHORIZED, "connexion requise".into()))?;
+    let user = auth.idp.get_user().access_token(token).send().await.map_err(unavailable)?;
+    let email = user.user_attributes().iter().find(|a| a.name() == "email").and_then(|a| a.value()).ok_or_else(|| unavailable("compte sans adresse"))?;
+    auth.idp.initiate_auth().client_id(&auth.app_client).auth_flow(AuthFlowType::UserPasswordAuth)
+        .auth_parameters("USERNAME", email).auth_parameters("PASSWORD", &b.password).send().await
+        .map_err(|e| match e.as_service_error() {
+            Some(s) if s.is_not_authorized_exception() => Fail(StatusCode::FORBIDDEN, "mot de passe incorrect".into()),
+            _ => unavailable(e),
+        })?;
+    // l'abonnement d'abord : un compte effacé ne doit plus être prélevé
+    let acc = c.account().await?;
+    if let Some(sub) = &acc.subscription {
+        let p = c.payment.as_ref().ok_or_else(|| Fail(StatusCode::CONFLICT, "abonnement en cours, et le paiement n'est pas configuré sur ce service".into()))?;
+        p.end_now(sub).await?;
+    }
+    let files = c.erase(acc.customer.as_deref()).await.map_err(|e| {
+        eprintln!("effacement de {} : {e:#}", c.client);
+        Fail(StatusCode::BAD_GATEWAY, "effacement interrompu : recommence, rien de ce qui reste n'est perdu de vue".into())
+    })?;
+    auth.idp.delete_user().access_token(token).send().await.map_err(unavailable)?;
+    println!("compte {} effacé ({files} objet(s))", c.client);
+    let mut res = Json(json!({"ok": true, "files": files})).into_response();
     for (name, path) in [(ACCESS_COOKIE, "/"), (REFRESH_COOKIE, "/api/compte")] {
         res.headers_mut().append(SET_COOKIE, auth.cookie(name, "", path, 0).parse().unwrap());
     }
