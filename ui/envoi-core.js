@@ -45,7 +45,7 @@ const wait = (ms, signal) => new Promise((resolve, reject) => {
 /**
  * Envoie un fichier ; ne renvoie que les morceaux que le stockage n'a pas déjà.
  * `onProgress(octets déjà en place)` est appelé à l'ouverture puis après chaque morceau.
- * Résultat : {key, sent (morceaux envoyés), skipped (morceaux déjà en place)}.
+ * Résultat : {key, sent (morceaux envoyés), skipped (morceaux déjà en place), camera, duration_s, indexed}.
  */
 export async function sendFile(file, { base = "", onProgress = () => {}, signal, concurrency = 3, retries = 3 } = {}) {
   const head = { name: file.name, size: file.size };
@@ -91,5 +91,6 @@ export async function sendFile(file, { base = "", onProgress = () => {}, signal,
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, todo.length) }, worker));
   const done = await call(base, "complete", { ...head, upload_id: st.upload_id }, signal);
-  return { key: done.key, sent: todo.length, skipped: have.size, already: false };
+  return { key: done.key, sent: todo.length, skipped: have.size, already: false,
+           camera: done.camera, duration_s: done.duration_s, indexed: done.indexed };
 }

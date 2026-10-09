@@ -29,6 +29,8 @@ check(interrupted && afterCut >= 1, `envoi coupé après ${afterCut} morceau(x)`
 puts = 0;
 const resumed = await sendFile(file, { base });
 check(resumed.skipped >= 1 && puts === resumed.sent, `reprise : ${resumed.skipped} morceau(x) déjà en place, ${resumed.sent} envoyé(s)`);
+check(!!resumed.camera && resumed.duration_s > 0, `télémétrie lue à l'arrivée : ${resumed.camera}, ${resumed.duration_s && resumed.duration_s.toFixed(1)} s`);
+check(resumed.indexed === true, "rush inscrit dans l'index");
 
 // 3. fichier complet : rien n'est renvoyé
 puts = 0;

@@ -2,11 +2,14 @@
 //! après une coupure. Ce service ne voit jamais passer les vidéos : il ouvre l'envoi, signe les
 //! adresses des morceaux et assemble le fichier à la fin.
 //!
-//! Usage : bike360-envoi --bucket NOM [--client ID] [--ui DOSSIER] [--port 8370]
+//! À l'arrivée d'un rush, sa télémétrie est lue par lectures partielles (caméra, durée), le rush est
+//! inscrit dans l'index et l'atelier, s'il tourne, est prévenu.
+//!
+//! Usage : bike360-envoi --bucket NOM [--client ID] [--table NOM] [--atelier URL] [--ui DOSSIER] [--port 8370]
 //! Routes (JSON) :
 //!   POST /api/envoi/start    {name, size}            → {done} ou {upload_id, part_size, parts, received}
 //!   POST /api/envoi/urls     {name, upload_id, parts} → {urls: {numéro: adresse signée}}
-//!   POST /api/envoi/complete {name, size, upload_id}  → {ok, key}
+//!   POST /api/envoi/complete {name, size, upload_id}  → {ok, key, camera, duration_s, indexed}
 //!   GET  /api/envoi/rushs                             → [{name, kind, size, class}]
 
 use std::collections::BTreeMap;
@@ -14,6 +17,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart, StorageClass};
 use axum::extract::State;
@@ -21,6 +25,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use bike360_core::insta360::{self, Camera, TRAILER_TAIL};
 use clap::Parser;
 use regex::Regex;
 use serde::Deserialize;
@@ -45,6 +50,12 @@ struct Args {
     /// Taille d'un morceau en Mo (5 au minimum, imposé par S3)
     #[arg(long, env = "BIKE360_PART_MB", default_value_t = 16)]
     part_mb: u64,
+    /// Table DynamoDB de l'index (sans elle, les rushs ne sont pas inscrits)
+    #[arg(long, env = "BIKE360_TABLE")]
+    table: Option<String>,
+    /// Adresse de l'atelier du client, prévenu à l'arrivée d'un aperçu (jeton : BIKE360_ATELIER_TOKEN)
+    #[arg(long, env = "BIKE360_ATELIER")]
+    atelier: Option<String>,
     /// Dossier de l'interface web à servir (page envoi.html)
     #[arg(long)]
     ui: Option<String>,
@@ -56,9 +67,20 @@ struct Args {
 
 struct Ctx {
     s3: aws_sdk_s3::Client,
+    db: aws_sdk_dynamodb::Client,
     bucket: String,
     client: String,
     part_size: u64,
+    table: Option<String>,
+    atelier: Option<String>,
+}
+
+/// Ce que la fin d'un rush dit de lui, sans le télécharger.
+#[derive(Default)]
+struct Telemetry {
+    camera: Option<Camera>,
+    /// Durée déduite de l'IMU (1 000 mesures de 20 octets par seconde).
+    duration_s: Option<f64>,
 }
 
 /// Erreur renvoyée au navigateur : statut et message.
@@ -126,6 +148,67 @@ impl Ctx {
                 (Some(true), Some(next)) => marker = Some(next.to_string()),
                 _ => return Ok(out),
             }
+        }
+    }
+}
+
+impl Ctx {
+    async fn range(&self, key: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
+        let out = self.s3.get_object().bucket(&self.bucket).key(key)
+            .range(format!("bytes={offset}-{}", offset + length as u64 - 1)).send().await?;
+        Ok(out.body.collect().await?.into_bytes().to_vec())
+    }
+
+    /// Lit la télémétrie d'un rush en deux lectures partielles : l'index de fin, puis les métadonnées.
+    async fn telemetry(&self, key: &str, size: u64) -> Result<Telemetry> {
+        if size < TRAILER_TAIL as u64 {
+            return Ok(Telemetry::default());
+        }
+        let tail = self.range(key, size - TRAILER_TAIL as u64, TRAILER_TAIL).await?;
+        let index = insta360::trailer_index(&tail, size);
+        let mut t = Telemetry { duration_s: index.iter().find(|r| r.0 == 0x03).map(|r| r.2 as f64 / 20.0 / 1000.0), ..Default::default() };
+        if let Some((_, offset, length)) = index.iter().find(|r| r.0 == 0x0101) {
+            t.camera = insta360::camera_of_meta(&self.range(key, *offset, *length).await?);
+        }
+        Ok(t)
+    }
+
+    /// Inscrit le rush dans l'index du client (pk = client, sk = rush).
+    async fn index(&self, table: &str, name: &str, key: &str, size: u64, class: &StorageClass, t: &Telemetry) -> Result<()> {
+        let s = |v: &str| AttributeValue::S(v.to_string());
+        let parts: Vec<&str> = name.split(['_', '.']).collect();   // VID _ date _ heure _ 00 _ idx . insv
+        let mut put = self.db.put_item().table_name(table)
+            .item("pk", s(&format!("client#{}", self.client)))
+            .item("sk", s(&format!("rush#{name}")))
+            .item("cle", s(key))
+            .item("nature", s(key.split('/').next().unwrap_or_default()))
+            .item("classe", s(class.as_str()))
+            .item("octets", AttributeValue::N(size.to_string()))
+            .item("session", s(&insta360::session_id(parts[1], parts[2], t.camera.as_ref())))
+            .item("recu", s(&chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()));
+        if let Some(c) = &t.camera {
+            put = put.item("camera_serie", s(&c.serial)).item("camera_modele", s(&c.model));
+        }
+        if let Some(d) = t.duration_s {
+            put = put.item("duree_s", AttributeValue::N(format!("{d:.1}")));
+        }
+        put.send().await?;
+        Ok(())
+    }
+
+    /// Prévient l'atelier qu'un aperçu est arrivé ; sans réponse, il le verra à son prochain démarrage.
+    async fn notify(&self) {
+        let Some(url) = self.atelier.clone() else { return };
+        let token = std::env::var("BIKE360_ATELIER_TOKEN").unwrap_or_default();
+        let sent = tokio::task::spawn_blocking(move || {
+            let mut req = ureq::post(&format!("{url}/api/sources")).timeout(Duration::from_secs(5));
+            if !token.is_empty() {
+                req = req.set("Authorization", &format!("Bearer {token}"));
+            }
+            req.send_json(json!({"rescan": true})).map(|_| ())
+        }).await;
+        if !matches!(sent, Ok(Ok(()))) {
+            eprintln!("atelier non prévenu : {sent:?}");
         }
     }
 }
@@ -198,7 +281,7 @@ struct Complete {
 
 /// Assemble le fichier quand tous ses morceaux sont là, à la bonne taille.
 async fn complete(State(c): State<Arc<Ctx>>, Json(b): Json<Complete>) -> Result<Json<Value>, Fail> {
-    let (key, _) = c.key(&b.name)?;
+    let (key, class) = c.key(&b.name)?;
     let count = c.layout(b.size)?;
     let got = c.received(&key, &b.upload_id).await?;
     let missing: Vec<u64> = (1..=count).filter(|n| got.get(n).map(|p| p.0) != Some(c.part_len(b.size, *n))).collect();
@@ -209,7 +292,19 @@ async fn complete(State(c): State<Arc<Ctx>>, Json(b): Json<Complete>) -> Result<
     c.s3.complete_multipart_upload().bucket(&c.bucket).key(&key).upload_id(&b.upload_id)
         .multipart_upload(CompletedMultipartUpload::builder().set_parts(Some(parts)).build())
         .send().await.map_err(aws("assemblage"))?;
-    Ok(Json(json!({"ok": true, "key": key})))
+    // le fichier est en place : la suite renseigne l'index et l'atelier, et ne remet pas l'envoi en cause
+    let t = c.telemetry(&key, b.size).await.unwrap_or_else(|e| {
+        eprintln!("télémétrie de {key} illisible : {e:#}");
+        Telemetry::default()
+    });
+    let indexed = match &c.table {
+        Some(table) => c.index(table, &b.name, &key, b.size, &class, &t).await.inspect_err(|e| eprintln!("index de {key} : {e:#}")).is_ok(),
+        None => false,
+    };
+    if key.starts_with("apercus/") {
+        c.notify().await;
+    }
+    Ok(Json(json!({"ok": true, "key": key, "camera": t.camera.map(|c| c.model), "duration_s": t.duration_s, "indexed": indexed})))
 }
 
 /// Rushs du client déjà dans le stockage.
@@ -243,7 +338,9 @@ async fn main() -> Result<()> {
     // un émulateur ou un stockage compatible (AWS_ENDPOINT_URL) s'adresse par chemin, pas par sous-domaine
     let local = std::env::var("AWS_ENDPOINT_URL").is_ok_and(|v| !v.is_empty());
     let s3 = aws_sdk_s3::Client::from_conf(aws_sdk_s3::config::Builder::from(&conf).force_path_style(local).build());
-    let ctx = Arc::new(Ctx { s3, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024 });
+    let db = aws_sdk_dynamodb::Client::new(&conf);
+    let ctx = Arc::new(Ctx { s3, db, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
+                             table: a.table, atelier: a.atelier.map(|u| u.trim_end_matches('/').to_string()) });
     let mut app = Router::new()
         .route("/api/envoi/start", post(start))
         .route("/api/envoi/urls", post(urls))

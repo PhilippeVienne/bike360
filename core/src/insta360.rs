@@ -28,31 +28,40 @@ pub fn read_records(path: &Path) -> Result<HashMap<u16, Vec<u8>>> {
     read_records_of(path, &[0x03, 0x0101])
 }
 
+/// Fin de fichier à lire pour connaître les enregistrements : l'index (310 octets) puis le pied (78 octets).
+pub const TRAILER_TAIL: usize = 310 + 78;
+
+/// Enregistrements annoncés par la fin d'un fichier (ses `TRAILER_TAIL` derniers octets) :
+/// (identifiant, position dans le fichier, longueur). Vide sans trailer Insta360.
+/// Sert aussi à lire un fichier distant par lectures partielles, sans le télécharger.
+pub fn trailer_index(tail: &[u8], file_size: u64) -> Vec<(u16, u64, usize)> {
+    if tail.len() != TRAILER_TAIL || file_size < TRAILER_TAIL as u64 || &tail[TRAILER_TAIL - 32..] != MAGIC {
+        return vec![];
+    }
+    let (index, foot) = tail.split_at(310);
+    let u32_at = |b: &[u8], i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    let start = file_size.saturating_sub(u32_at(foot, 38) as u64);
+    (10..310).step_by(10)
+        .map(|i| (u16::from_le_bytes([index[i], index[i + 1]]), start + u32_at(index, i + 6) as u64, u32_at(index, i + 2) as usize))
+        .filter(|(_, _, length)| *length > 0)
+        .collect()
+}
+
 /// Enregistrements demandés du trailer {identifiant: contenu}, vide s'il est absent.
 fn read_records_of(path: &Path, wanted: &[u16]) -> Result<HashMap<u16, Vec<u8>>> {
     let mut f = File::open(path).with_context(|| format!("ouverture de {path:?}"))?;
     let size = f.seek(SeekFrom::End(0))?;
     let mut out = HashMap::new();
-    if size < 78 + 310 {
+    if size < TRAILER_TAIL as u64 {
         return Ok(out);
     }
-    let mut tail = [0u8; 78];
-    f.seek(SeekFrom::Start(size - 78))?;
+    let mut tail = [0u8; TRAILER_TAIL];
+    f.seek(SeekFrom::Start(size - TRAILER_TAIL as u64))?;
     f.read_exact(&mut tail)?;
-    if &tail[78 - 32..] != MAGIC {
-        return Ok(out);
-    }
-    let start = size - u32::from_le_bytes(tail[38..42].try_into()?) as u64;
-    let mut index = [0u8; 310];
-    f.seek(SeekFrom::Start(size - 78 - 310))?;
-    f.read_exact(&mut index)?;
-    for i in (10..310).step_by(10) {
-        let rid = u16::from_le_bytes(index[i..i + 2].try_into()?);
-        let length = u32::from_le_bytes(index[i + 2..i + 6].try_into()?) as usize;
-        let offset = u32::from_le_bytes(index[i + 6..i + 10].try_into()?) as u64;
-        if length > 0 && wanted.contains(&rid) {
+    for (rid, offset, length) in trailer_index(&tail, size) {
+        if wanted.contains(&rid) {
             let mut buf = vec![0u8; length];
-            f.seek(SeekFrom::Start(start + offset))?;
+            f.seek(SeekFrom::Start(offset))?;
             f.read_exact(&mut buf)?;
             out.insert(rid, buf);
         }
@@ -129,7 +138,12 @@ pub struct Camera {
 /// Caméra d'origine d'un fichier, None sans trailer ou sans numéro de série.
 pub fn read_camera(path: &Path) -> Option<Camera> {
     let rec = read_records_of(path, &[0x0101]).ok()?;
-    let meta = protobuf_fields(rec.get(&0x0101)?);
+    camera_of_meta(rec.get(&0x0101)?)
+}
+
+/// Caméra décrite par l'enregistrement de métadonnées 0x0101.
+pub fn camera_of_meta(meta: &[u8]) -> Option<Camera> {
+    let meta = protobuf_fields(meta);
     let text = |tag: u64| match meta.get(&tag).and_then(|v| v.first()) {
         Some(Field::Bytes(b)) => String::from_utf8_lossy(b).trim().to_string(),
         _ => String::new(),

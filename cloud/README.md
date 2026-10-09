@@ -29,6 +29,10 @@ sh cloud/essai-envoi.sh "/chemin/vers/LRV_….lrv"    # demande aussi Node
 
 L'essai fait tourner le code du navigateur contre le service : coupure après le premier morceau,
 reprise des seuls morceaux manquants, puis contrôle que le fichier assemblé est identique.
+À l'arrivée d'un rush, le service lit sa télémétrie par deux lectures partielles (caméra, durée
+approchée d'après l'IMU), l'inscrit dans l'index (`--table`) et prévient l'atelier du client s'il
+tourne (`--atelier`, jeton dans `BIKE360_ATELIER_TOKEN`).
+
 Le client servi est fixé au lancement (`--client`) : l'authentification viendra avec le portail.
 
 ## Ce que Terraform crée
