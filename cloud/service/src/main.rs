@@ -14,6 +14,7 @@
 //!   POST /api/envoi/complete {name, size, upload_id}  → {ok, key, camera, duration_s, indexed}
 //!   GET  /api/envoi/rushs                             → [{name, kind, size, class}]
 
+mod account;
 mod library;
 
 use std::collections::BTreeMap;
@@ -24,12 +25,13 @@ use anyhow::{Context, Result};
 use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart, StorageClass};
-use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bike360_core::insta360::{self, Camera, TRAILER_TAIL};
+
+use crate::account::{Auth, Scope};
 use clap::Parser;
 use regex::Regex;
 use serde::Deserialize;
@@ -48,9 +50,15 @@ struct Args {
     /// Compartiment S3 des rushs
     #[arg(long, env = "BIKE360_BUCKET")]
     bucket: String,
-    /// Client servi par cette instance (l'authentification viendra avec le portail)
+    /// Client servi quand les comptes ne sont pas activés (essai local sur une seule machine)
     #[arg(long, env = "BIKE360_CLIENT", default_value = "demo")]
     client: String,
+    /// Émetteur des jetons (groupe d'utilisateurs Cognito) : active les comptes, avec --app-client
+    #[arg(long, env = "BIKE360_ISSUER", requires = "app_client")]
+    issuer: Option<String>,
+    /// Application cliente Cognito
+    #[arg(long, env = "BIKE360_APP_CLIENT")]
+    app_client: Option<String>,
     /// Taille d'un morceau en Mo (5 au minimum, imposé par S3)
     #[arg(long, env = "BIKE360_PART_MB", default_value_t = 16)]
     part_mb: u64,
@@ -78,11 +86,13 @@ struct Args {
     host: String,
 }
 
-struct Ctx {
+pub struct Ctx {
     s3: aws_sdk_s3::Client,
     db: aws_sdk_dynamodb::Client,
     sqs: aws_sdk_sqs::Client,
     queue: Option<String>,
+    /// Comptes activés : chaque requête agit pour le compte connecté. Sinon, pour `client`.
+    auth: Option<Auth>,
     bucket: String,
     client: String,
     part_size: u64,
@@ -101,7 +111,7 @@ struct Telemetry {
 }
 
 /// Erreur renvoyée au navigateur : statut et message.
-struct Fail(StatusCode, String);
+pub struct Fail(pub StatusCode, pub String);
 
 impl IntoResponse for Fail {
     fn into_response(self) -> Response {
@@ -130,7 +140,7 @@ fn kind(name: &str) -> Option<(&'static str, StorageClass)> {
     }
 }
 
-impl Ctx {
+impl Scope {
     /// Clé S3 d'un rush du client ; le nom est validé, donc jamais de chemin fourni par le navigateur.
     fn key(&self, name: &str) -> Result<(String, StorageClass), Fail> {
         let (prefix, class) = kind(name).ok_or_else(|| Fail(StatusCode::BAD_REQUEST, "nom de fichier Insta360 attendu (VID_….insv ou LRV_….lrv)".into()))?;
@@ -169,7 +179,7 @@ impl Ctx {
     }
 }
 
-impl Ctx {
+impl Scope {
     async fn range(&self, key: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
         let out = self.s3.get_object().bucket(&self.bucket).key(key)
             .range(format!("bytes={offset}-{}", offset + length as u64 - 1)).send().await?;
@@ -246,7 +256,7 @@ struct Start {
 }
 
 /// Ouvre ou reprend l'envoi d'un rush. Un fichier déjà complet n'est pas renvoyé.
-async fn start(State(c): State<Arc<Ctx>>, Json(b): Json<Start>) -> Result<Json<Value>, Fail> {
+async fn start(c: Scope, Json(b): Json<Start>) -> Result<Json<Value>, Fail> {
     let (key, class) = c.key(&b.name)?;
     let count = c.layout(b.size)?;
     if let Ok(head) = c.s3.head_object().bucket(&c.bucket).key(&key).send().await {
@@ -283,7 +293,7 @@ struct Urls {
 }
 
 /// Adresses signées où le navigateur dépose les morceaux demandés.
-async fn urls(State(c): State<Arc<Ctx>>, Json(b): Json<Urls>) -> Result<Json<Value>, Fail> {
+async fn urls(c: Scope, Json(b): Json<Urls>) -> Result<Json<Value>, Fail> {
     let (key, _) = c.key(&b.name)?;
     if b.parts.len() > MAX_URLS || b.parts.iter().any(|n| *n == 0 || *n > MAX_PARTS) {
         return Err(Fail(StatusCode::BAD_REQUEST, format!("{MAX_URLS} morceaux au plus par appel, numérotés de 1 à {MAX_PARTS}")));
@@ -306,7 +316,7 @@ struct Complete {
 }
 
 /// Assemble le fichier quand tous ses morceaux sont là, à la bonne taille.
-async fn complete(State(c): State<Arc<Ctx>>, Json(b): Json<Complete>) -> Result<Json<Value>, Fail> {
+async fn complete(c: Scope, Json(b): Json<Complete>) -> Result<Json<Value>, Fail> {
     let (key, class) = c.key(&b.name)?;
     let count = c.layout(b.size)?;
     let got = c.received(&key, &b.upload_id).await?;
@@ -336,7 +346,7 @@ async fn complete(State(c): State<Arc<Ctx>>, Json(b): Json<Complete>) -> Result<
 }
 
 /// Rushs du client déjà dans le stockage.
-async fn rushs(State(c): State<Arc<Ctx>>) -> Result<Json<Value>, Fail> {
+async fn rushs(c: Scope) -> Result<Json<Value>, Fail> {
     let mut out = vec![];
     for prefix in ["apercus", "originaux"] {
         let dir = format!("{prefix}/{}/", c.client);
@@ -367,7 +377,14 @@ async fn main() -> Result<()> {
     let local = std::env::var("AWS_ENDPOINT_URL").is_ok_and(|v| !v.is_empty());
     let s3 = aws_sdk_s3::Client::from_conf(aws_sdk_s3::config::Builder::from(&conf).force_path_style(local).build());
     let db = aws_sdk_dynamodb::Client::new(&conf);
-    let ctx = Arc::new(Ctx { s3, db, sqs: aws_sdk_sqs::Client::new(&conf), queue: a.queue, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
+    let auth = match (a.issuer, a.app_client) {
+        (Some(issuer), Some(app)) => Some(Auth::new(&conf, issuer, app).await.context("activation des comptes")?),
+        _ => {
+            anyhow::ensure!(a.host == "127.0.0.1" || a.host == "localhost", "sans comptes (--issuer), le service n'écoute que sur cette machine");
+            None
+        }
+    };
+    let ctx = Arc::new(Ctx { s3, db, sqs: aws_sdk_sqs::Client::new(&conf), queue: a.queue, auth, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
                              table: a.table, atelier: a.atelier.map(|u| u.trim_end_matches('/').to_string()),
                              quota_bytes: a.quota_go * 1_000_000_000, trash_days: a.trash_days });
     let mut app = Router::new()
@@ -375,6 +392,12 @@ async fn main() -> Result<()> {
         .route("/api/envoi/urls", post(urls))
         .route("/api/envoi/complete", post(complete))
         .route("/api/envoi/rushs", get(rushs))
+        .route("/api/compte", get(account::status))
+        .route("/api/compte/inscription", post(account::sign_up))
+        .route("/api/compte/confirmation", post(account::confirm))
+        .route("/api/compte/connexion", post(account::sign_in))
+        .route("/api/compte/rafraichir", post(account::refresh))
+        .route("/api/compte/deconnexion", post(account::sign_out))
         .route("/api/bibliotheque", get(library::list))
         .route("/api/bibliotheque/marque", post(library::mark))
         .route("/api/bibliotheque/alleger", post(library::lighten))
@@ -384,7 +407,8 @@ async fn main() -> Result<()> {
         app = app.nest_service("/ui", tower_http::services::ServeDir::new(ui));
     }
     let listener = tokio::net::TcpListener::bind((a.host.as_str(), a.port)).await.context("ouverture du port")?;
-    println!("Envoi → http://{}:{}/ui/envoi.html (compartiment {}, client {})", a.host, a.port, ctx.bucket, ctx.client);
+    println!("Service → http://{}:{}/ui/bibliotheque.html (compartiment {}, {})", a.host, a.port, ctx.bucket,
+             if ctx.auth.is_some() { "comptes activés".to_string() } else { format!("sans comptes, client {}", ctx.client) });
     axum::serve(listener, app).await?;
     Ok(())
 }

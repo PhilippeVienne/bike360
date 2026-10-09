@@ -17,6 +17,16 @@ Le script crée le stockage, envoie l'aperçu par morceaux en simulant une coupu
 télémétrie par lecture partielle, fait passer une tâche dans la file, inscrit le rush dans l'index,
 puis lance le serveur en mode hébergé (`BIKE360_CLOUD=1`) sur les rushs du client.
 
+## Comptes
+
+Les comptes reposent sur Amazon Cognito (`cloud/service/src/account.rs`, page `ui/compte.html`) :
+inscription, confirmation de l'adresse par code, connexion. Le navigateur ne parle qu'au service,
+qui pose les jetons dans des témoins que la page ne peut pas lire. Chaque requête agit pour le
+compte connecté, dont l'identifiant sert de préfixe à ses rushs, ses résultats et ses lignes d'index.
+
+Lancé sans émetteur (`--issuer`), le service sert un seul client (`--client`) et refuse d'écouter
+ailleurs que sur sa machine.
+
 ## Module Envoi
 
 `cloud/service` est le service qui ouvre un envoi, signe l'adresse de chaque morceau et assemble le
@@ -33,7 +43,7 @@ reprise des seuls morceaux manquants, puis contrôle que le fichier assemblé es
 approchée d'après l'IMU), l'inscrit dans l'index (`--table`) et prévient l'atelier du client s'il
 tourne (`--atelier`, jeton dans `BIKE360_ATELIER_TOKEN`).
 
-Le client servi est fixé au lancement (`--client`) : l'authentification viendra avec le portail.
+
 
 ## Bibliothèque
 
@@ -41,7 +51,7 @@ Le même service sert la Bibliothèque (`cloud/service/src/library.rs`, page `ui
 les rushs du client regroupés en balades d'après l'index, la place occupée, les marqueurs (favori,
 garder, corbeille), l'allègement d'une session (ses originaux sont supprimés, son aperçu reste) et
 la corbeille, vidée après un délai de garde (`--trash-days`, 30 jours par défaut).
-`cloud/essai-envoi.sh` enchaîne l'essai de l'Envoi puis celui de la Bibliothèque.
+`cloud/essai-envoi.sh` enchaîne les essais : comptes, Envoi, analyse à l'arrivée, Bibliothèque.
 
 ## Analyse à l'arrivée
 
@@ -60,6 +70,7 @@ Une session de plusieurs fichiers reçoit une tâche par fichier ; refaire l'ana
 | Compartiment S3 | Rushs, exports et résultats, rangés par nature puis par client : `apercus/<client>/`, `originaux/<client>/`, `exports/<client>/`, `donnees/<client>/` |
 | Règles d'archivage | Originaux en archive profonde après 90 jours, exports supprimés après 30 jours, envois abandonnés purgés après 7 jours |
 | Règle CORS | Envoi direct depuis le navigateur |
+| Groupe d'utilisateurs Cognito | Comptes : une adresse de courriel confirmée, mot de passe d'au moins 10 caractères |
 | Table DynamoDB `bike360` | Index par client (`pk` = client, `sk` = nature et identifiant) |
 | Files SQS `bike360-gpu` et `bike360-gpu-rebut` | Tâches du moteur GPU, et celles qui ont échoué trois fois |
 
@@ -77,4 +88,5 @@ Non testé à ce jour sur AWS.
 ## Ce que l'émulateur ne dit pas
 
 Le montage Amazon S3 Files, la facturation et les délais des classes de stockage, CloudFront, le
-GPU et les droits IAM ne sont pas émulés : ils restent à essayer sur un compte AWS.
+GPU, les droits IAM, l'envoi des courriels de confirmation et la politique de mot de passe ne sont
+pas émulés : ils restent à essayer sur un compte AWS.

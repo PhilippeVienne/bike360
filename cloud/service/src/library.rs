@@ -9,10 +9,8 @@
 //!   POST /api/bibliotheque/purge                         → {ok, sessions, freed_bytes}   vide la corbeille échue
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 
 use aws_sdk_dynamodb::types::AttributeValue;
-use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use bike360_core::rides;
@@ -20,7 +18,8 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{aws, Ctx, Fail};
+use crate::account::Scope;
+use crate::{aws, Fail};
 
 /// Marqueurs qu'un client peut poser sur une session.
 const MARKS: [&str; 3] = ["garder", "favori", "corbeille"];
@@ -91,7 +90,7 @@ fn number(item: &HashMap<String, AttributeValue>, key: &str) -> f64 {
     item.get(key).and_then(|v| v.as_n().ok()).and_then(|n| n.parse().ok()).unwrap_or(0.0)
 }
 
-impl Ctx {
+impl Scope {
     fn table(&self) -> Result<&str, Fail> {
         self.table.as_deref().ok_or_else(|| Fail(StatusCode::SERVICE_UNAVAILABLE, "index non configuré (--table)".into()))
     }
@@ -189,7 +188,7 @@ fn days_since(iso: &str) -> f64 {
     DateTime::parse_from_rfc3339(iso).map_or(0.0, |t| (Utc::now() - t.with_timezone(&Utc)).num_seconds() as f64 / 86400.0)
 }
 
-pub async fn list(State(c): State<Arc<Ctx>>) -> Result<Json<Value>, Fail> {
+pub async fn list(c: Scope) -> Result<Json<Value>, Fail> {
     let sessions = c.sessions().await?;
     let spans: Vec<rides::Span> = sessions.iter().map(|(id, s)| {
         let start = start_of(id);
@@ -247,7 +246,7 @@ pub struct Mark {
 }
 
 /// Pose ou retire le marqueur d'une session. La corbeille ne supprime rien : elle date la demande.
-pub async fn mark(State(c): State<Arc<Ctx>>, Json(b): Json<Mark>) -> Result<Json<Value>, Fail> {
+pub async fn mark(c: Scope, Json(b): Json<Mark>) -> Result<Json<Value>, Fail> {
     let table = c.table()?;
     if !c.sessions().await?.contains_key(&b.session) {
         return Err(Fail(StatusCode::NOT_FOUND, "session inconnue".into()));
@@ -276,7 +275,7 @@ pub struct Lighten {
 }
 
 /// Allège une session : ses originaux sont supprimés pour de bon, ses aperçus restent.
-pub async fn lighten(State(c): State<Arc<Ctx>>, Json(b): Json<Lighten>) -> Result<Json<Value>, Fail> {
+pub async fn lighten(c: Scope, Json(b): Json<Lighten>) -> Result<Json<Value>, Fail> {
     if !b.confirm {
         return Err(Fail(StatusCode::BAD_REQUEST, "suppression définitive : confirmation requise".into()));
     }
@@ -290,7 +289,7 @@ pub async fn lighten(State(c): State<Arc<Ctx>>, Json(b): Json<Lighten>) -> Resul
 }
 
 /// Vide la corbeille : supprime pour de bon les sessions qui y sont depuis le délai de garde.
-pub async fn purge(State(c): State<Arc<Ctx>>) -> Result<Json<Value>, Fail> {
+pub async fn purge(c: Scope) -> Result<Json<Value>, Fail> {
     let table = c.table()?;
     let (mut freed, mut count) = (0, 0);
     for (id, s) in c.sessions().await? {

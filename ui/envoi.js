@@ -3,6 +3,7 @@
 // Refermer l'onglet interrompt l'envoi ; rechoisir le même dossier le reprend là où il en était.
 
 import { RUSH_RE, sessionsOf, queueOf, sendFile } from "./envoi-core.js";
+import { authFetch, showAccount } from "./compte-session.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -43,6 +44,7 @@ $("#send").addEventListener("click", async () => {
     for (const [i, f] of queue.entries()) {
       await sendFile(f, {
         signal: abort.signal,
+        apiFetch: authFetch,
         onProgress: (placed) => {
           const done = before + placed;
           first ??= done;                       // ce qui était déjà en place ne compte pas dans le débit
@@ -68,4 +70,6 @@ $("#send").addEventListener("click", async () => {
 $("#stop").addEventListener("click", () => abort && abort.abort());
 // fermer l'onglet interrompt l'envoi : le navigateur demande confirmation
 addEventListener("beforeunload", (e) => { if (abort) e.preventDefault(); });
+showAccount($("#account"));
+authFetch("/api/envoi/rushs");   // renvoie à la connexion si la session est absente
 render();

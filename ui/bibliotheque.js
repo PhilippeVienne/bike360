@@ -1,6 +1,8 @@
 // Bibliothèque (module séparé de l'atelier) : tous les rushs du compte, par balade, avec la place
 // occupée, les marqueurs (favori, garder, corbeille), l'allègement et les suggestions de nettoyage.
 
+import { authFetch, showAccount } from "./compte-session.js";
+
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const size = (b) => b >= 1e11 ? `${Math.round(b / 1e9)} Go` : b >= 1e9 ? `${(b / 1e9).toFixed(1).replace(".", ",")} Go` : `${Math.round(b / 1e6)} Mo`;
@@ -12,7 +14,7 @@ const MARKS = [["favori", "★", "Favori"], ["garder", "✓", "À garder"], ["co
 let lib = null;
 
 async function call(method, path, body) {
-  const r = await fetch(`/api/bibliotheque${path}`, { method, headers: { "Content-Type": "application/json" },
+  const r = await authFetch(`/api/bibliotheque${path}`, { method, headers: { "Content-Type": "application/json" },
                                                      body: body === undefined ? undefined : JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || `${r.status}`);
@@ -73,4 +75,5 @@ document.addEventListener("click", async (e) => {
   } catch (err) { $("#error").textContent = `⚠ ${err.message}`; return; }
   refresh();
 });
+showAccount($("#account"));
 refresh();

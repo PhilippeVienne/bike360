@@ -7,8 +7,10 @@ import { sendFile } from "../ui/envoi-core.js";
 const [base, path] = process.argv.slice(2);
 const blob = await openAsBlob(path);
 const check = (ok, text) => { console.log(`   ${ok ? "✓" : "✗"} ${text}`); if (!ok) process.exit(1); };
-const call = async (method, p, body) => {
-  const r = await fetch(`${base}/api/bibliotheque${p}`, { method, headers: { "Content-Type": "application/json" },
+const bearer = (t) => (t ? { Authorization: `Bearer ${t}` } : {});
+const headers = bearer(process.env.BIKE360_TOKEN);
+const call = async (method, p, body, auth = headers) => {
+  const r = await fetch(`${base}/api/bibliotheque${p}`, { method, headers: { "Content-Type": "application/json", ...auth },
                                                          body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: r.status, body: await r.json().catch(() => ({})) };
 };
@@ -16,7 +18,7 @@ const only = (lib) => lib.rides[0]?.sessions[0];
 
 // un original pour la même session : même contenu que l'aperçu, donc même caméra dans sa télémétrie
 const original = basename(path).replace(/^LRV_(\d{8}_\d{6})_\d{2}/i, "VID_$1_00").replace(/\.lrv$/i, ".insv");
-await sendFile({ name: original, size: blob.size, slice: (a, b) => blob.slice(a, b) }, { base });
+await sendFile({ name: original, size: blob.size, slice: (a, b) => blob.slice(a, b) }, { base, headers });
 
 let lib = (await call("GET", "")).body;
 let s = only(lib);
@@ -27,6 +29,15 @@ check(s.analysed && image && image.ok && (await image.arrayBuffer()).byteLength 
 check(s.previews.files === 1 && s.originals.files === 1 && lib.bytes === 2 * blob.size, `place occupée : ${lib.bytes} octets pour 2 fichiers`);
 check(s.originals.class === "GLACIER_IR" && s.previews.class === "INTELLIGENT_TIERING", "classes de stockage : aperçu et original rangés séparément");
 check(lib.suggestions.some((g) => g.session === s.id && g.reason === "courte"), `suggestion : ${lib.suggestions[0]?.text}`);
+
+if (process.env.BIKE360_TOKEN_B) {   // un autre compte ne voit ni ne touche les rushs de celui-ci
+  const other = bearer(process.env.BIKE360_TOKEN_B);
+  const theirs = (await call("GET", "", undefined, other)).body;
+  const touch = await call("POST", "/alleger", { session: s.id, confirm: true }, other);
+  const mark = await call("POST", "/marque", { session: s.id, mark: "corbeille" }, other);
+  check(theirs.rides.length === 0 && theirs.bytes === 0 && touch.status === 404 && mark.status === 404,
+        "un autre compte : bibliothèque vide, et la session du premier lui est inconnue (alléger et marquer refusés)");
+}
 
 await call("POST", "/marque", { session: s.id, mark: "favori" });
 lib = (await call("GET", "")).body;

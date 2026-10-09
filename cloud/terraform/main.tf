@@ -68,9 +68,10 @@ provider "aws" {
   dynamic "endpoints" {
     for_each = var.local ? [var.endpoint] : []
     content {
-      s3       = endpoints.value
-      dynamodb = endpoints.value
-      sqs      = endpoints.value
+      s3         = endpoints.value
+      dynamodb   = endpoints.value
+      sqs        = endpoints.value
+      cognitoidp = endpoints.value
     }
   }
 }
@@ -173,6 +174,52 @@ resource "aws_sqs_queue" "gpu" {
     deadLetterTargetArn = aws_sqs_queue.gpu_rebut.arn
     maxReceiveCount     = 3
   })
+}
+
+# ---------------------------------------------------------------- comptes
+
+# Un compte = une adresse de courriel confirmée. L'identifiant du compte sert de préfixe à ses rushs.
+resource "aws_cognito_user_pool" "comptes" {
+  name                     = "bike360"
+  username_attributes      = ["email"]
+  auto_verified_attributes = ["email"]
+
+  password_policy {
+    minimum_length    = 10
+    require_lowercase = true
+    require_numbers   = true
+    require_symbols   = false
+    require_uppercase = false
+  }
+
+  account_recovery_setting {
+    recovery_mechanism {
+      name     = "verified_email"
+      priority = 1
+    }
+  }
+}
+
+# Application sans secret : c'est le service, pas le navigateur, qui parle à Cognito.
+resource "aws_cognito_user_pool_client" "web" {
+  name                          = "bike360-web"
+  user_pool_id                  = aws_cognito_user_pool.comptes.id
+  generate_secret               = false
+  explicit_auth_flows           = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
+  prevent_user_existence_errors = "ENABLED"
+}
+
+output "pool" {
+  value = aws_cognito_user_pool.comptes.id
+}
+
+output "app_client" {
+  value = aws_cognito_user_pool_client.web.id
+}
+
+# Émetteur des jetons : le service y lit les clés publiques qui les signent.
+output "issuer" {
+  value = var.local ? "${replace(var.endpoint, "127.0.0.1", "localhost")}/${aws_cognito_user_pool.comptes.id}" : "https://${aws_cognito_user_pool.comptes.endpoint}"
 }
 
 output "bucket" {

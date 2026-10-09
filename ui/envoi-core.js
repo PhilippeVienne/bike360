@@ -29,9 +29,10 @@ export function queueOf(sessions, { originals = true } = {}) {
   return originals ? previews.concat(sessions.flatMap((s) => s.originals).sort(byName)) : previews;
 }
 
-async function call(base, path, body, signal) {
-  const r = await fetch(`${base}/api/envoi/${path}`, { method: "POST", signal, headers: { "Content-Type": "application/json" },
-                                                       body: JSON.stringify(body) });
+/** Appel au service d'envoi ; `api` = {base, fetch, headers} (fetch et en-têtes du compte connecté). */
+async function call(api, path, body, signal) {
+  const r = await api.fetch(`${api.base}/api/envoi/${path}`, { method: "POST", signal, headers: { "Content-Type": "application/json", ...api.headers },
+                                                               body: JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || `${path} → ${r.status}`);
   return j;
@@ -45,11 +46,14 @@ const wait = (ms, signal) => new Promise((resolve, reject) => {
 /**
  * Envoie un fichier ; ne renvoie que les morceaux que le stockage n'a pas déjà.
  * `onProgress(octets déjà en place)` est appelé à l'ouverture puis après chaque morceau.
+ * `apiFetch` et `headers` portent la session du compte ; les morceaux, eux, partent vers des adresses signées.
  * Résultat : {key, sent (morceaux envoyés), skipped (morceaux déjà en place), camera, duration_s, indexed}.
  */
-export async function sendFile(file, { base = "", onProgress = () => {}, signal, concurrency = 3, retries = 3 } = {}) {
+export async function sendFile(file, { base = "", onProgress = () => {}, signal, concurrency = 3, retries = 3,
+                                       apiFetch = (...a) => fetch(...a), headers = {} } = {}) {
+  const api = { base, fetch: apiFetch, headers };
   const head = { name: file.name, size: file.size };
-  const st = await call(base, "start", head, signal);
+  const st = await call(api, "start", head, signal);
   if (st.done) { onProgress(file.size); return { key: st.key, sent: 0, skipped: 0, already: true }; }
   const len = (n) => Math.min(st.part_size, file.size - (n - 1) * st.part_size);
   const have = new Set(st.received);
@@ -62,7 +66,7 @@ export async function sendFile(file, { base = "", onProgress = () => {}, signal,
   const urlFor = async (n) => {
     if (!urls[n]) {   // lot d'adresses à partir de ce morceau
       const from = todo.indexOf(n);
-      urls = (await call(base, "urls", { name: file.name, upload_id: st.upload_id, parts: todo.slice(from, from + URLS_PER_CALL) }, signal)).urls;
+      urls = (await call(api, "urls", { name: file.name, upload_id: st.upload_id, parts: todo.slice(from, from + URLS_PER_CALL) }, signal)).urls;
     }
     return urls[n];
   };
@@ -90,7 +94,7 @@ export async function sendFile(file, { base = "", onProgress = () => {}, signal,
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, todo.length) }, worker));
-  const done = await call(base, "complete", { ...head, upload_id: st.upload_id }, signal);
+  const done = await call(api, "complete", { ...head, upload_id: st.upload_id }, signal);
   return { key: done.key, sent: todo.length, skipped: have.size, already: false,
            camera: done.camera, duration_s: done.duration_s, indexed: done.indexed };
 }
