@@ -17,6 +17,18 @@ Le script crée le stockage, envoie l'aperçu par morceaux en simulant une coupu
 télémétrie par lecture partielle, fait passer une tâche dans la file, inscrit le rush dans l'index,
 puis lance le serveur en mode hébergé (`BIKE360_CLOUD=1`) sur les rushs du client.
 
+## Essai à la main
+
+```sh
+sh cloud/demo.sh
+```
+
+Le script lance les émulateurs, l'infrastructure, le service avec les comptes, l'exécutant de tâches
+et l'atelier à la demande, puis affiche l'adresse à ouvrir dans le navigateur et le parcours à
+essayer. Les comptes créés sont confirmés d'office, puisqu'aucun courriel n'est envoyé ;
+`sh cloud/demo.sh payer EMAIL PALIER` simule la confirmation d'un paiement. Ctrl-C arrête tout et
+rien n'est conservé.
+
 ## Comptes
 
 Les comptes reposent sur Amazon Cognito (`cloud/service/src/account.rs`, page `ui/compte.html`) :

@@ -4,3 +4,4 @@
 .terraform.lock.hcl
 essai/
 target/
+demo/
