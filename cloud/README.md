@@ -116,6 +116,13 @@ cd cloud/terraform && terraform apply -var bucket=<nom-unique> -var site=https:/
 
 Non testé à ce jour sur AWS.
 
+## Essai sur un compte AWS
+
+`cloud/aws-essai` est un essai réduit, indépendant du reste : un compartiment monté avec Amazon S3
+Files sur une machine GPU, pour mesurer ce que l'émulateur ne dit pas. Voir son
+[mode d'emploi](aws-essai/README.md). À savoir dès maintenant : S3 Files exige les versions
+d'objets sur le compartiment, donc une règle qui supprime les anciennes versions.
+
 ## Ce que l'émulateur ne dit pas
 
 Le montage Amazon S3 Files, la facturation et les délais des classes de stockage, CloudFront, le
