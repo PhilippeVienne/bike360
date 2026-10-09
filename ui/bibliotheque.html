@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bike360 — bibliothèque</title>
+<link rel="stylesheet" href="style.css">
+<style>
+header.top { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+header.top .spacer { flex: 1; }
+main.lib { max-width: 980px; margin: 24px auto; padding: 0 16px; display: flex; flex-direction: column; gap: 14px; }
+main.lib progress { width: 100%; }
+main.lib .row { display: flex; align-items: baseline; gap: 8px; }
+.lib-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.lib-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.lib-row.trashed { opacity: .55; }
+.lib-row .when { min-width: 120px; }
+.lib-row .grow { flex: 1; min-width: 220px; }
+.lib-row .muted { font-size: 12px; }
+main.lib .ride { margin-top: 6px; }
+.lib-row .marks { display: flex; gap: 4px; }
+.lib-row .marks button.on { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<!-- Bibliothèque : indépendante de l'atelier, elle ne parle qu'au service commun (index des rushs). -->
+<body>
+<header class="top"><div class="brand">◉ Bike360</div><div class="spacer"></div><a href="envoi.html">Envoyer des rushs</a><span class="muted">Bibliothèque</span></header>
+<main class="lib">
+  <h2>Mes rushs</h2>
+  <div id="gauge"></div>
+  <div id="error" class="muted"></div>
+  <div id="suggestions"></div>
+  <div id="rides"></div>
+  <div id="trash" class="muted"></div>
+</main>
+<script type="module" src="bibliotheque.js"></script>
+</body>
+</html>

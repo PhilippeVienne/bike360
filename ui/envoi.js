@@ -6,7 +6,7 @@ import { RUSH_RE, sessionsOf, queueOf, sendFile } from "./envoi-core.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const size = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(1)} Go` : `${Math.max(1, Math.round(b / 1e6))} Mo`;
+const size = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(1).replace(".", ",")} Go` : `${Math.max(1, Math.round(b / 1e6))} Mo`;
 const clock = (s) => { s = Math.round(s); return s >= 3600 ? `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s`; };
 
 let sessions = [];

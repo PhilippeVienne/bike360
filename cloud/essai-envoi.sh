@@ -1,5 +1,5 @@
 #!/bin/sh
-# Essai local du module Envoi sur l'émulateur floci : service d'envoi + code du navigateur.
+# Essai local de l'Envoi puis de la Bibliothèque sur l'émulateur floci : service commun + code du navigateur.
 #   sh cloud/essai-envoi.sh APERÇU.lrv
 set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -28,11 +28,13 @@ HOME="$work" BIKE360_CLOUD=1 BIKE360_PASSWORD= BIKE360_ROOT="$work/root" \
     "$repo/target/release/bike360-server" "$work/rushs" --host 127.0.0.1 --port "$atelier_port" > "$work/atelier.log" 2>&1 &
 atelier=$!
 # morceaux de 8 Mo pour qu'un petit aperçu en compte plusieurs
-BIKE360_PART_MB=8 "$repo/cloud/envoi/target/release/bike360-envoi" --bucket "$bucket" --client essai --table "$table" \
+# garde en corbeille nulle : l'essai vide la corbeille tout de suite
+BIKE360_TRASH_DAYS=0 BIKE360_PART_MB=8 "$repo/cloud/envoi/target/release/bike360-envoi" --bucket "$bucket" --client essai --table "$table" \
     --atelier "http://127.0.0.1:$atelier_port" --ui "$repo/ui" --port "$port" > "$work/envoi.log" 2>&1 &
 server=$!
 trap 'kill "$server" "$atelier" 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do curl -sf -o /dev/null "http://127.0.0.1:$port/api/envoi/rushs" && break; sleep 1; done
+for _ in $(seq 1 60); do curl -sf -o /dev/null "http://127.0.0.1:$atelier_port/api/sessions" && break; sleep 1; done   # l'atelier doit écouter avant le premier envoi
 echo "   ✓ service d'envoi sur le port $port, compartiment $bucket"
 
 echo "== Envoi par le code du navigateur"
@@ -46,6 +48,14 @@ item=$(aws dynamodb get-item --table-name "$table" --key "{\"pk\":{\"S\":\"clien
     --query 'Item.[camera_modele.S, duree_s.N, nature.S, session.S]' --output text | sed -E 's/_[A-Z0-9]{4}$/_<caméra>/')
 [ -n "$item" ] && [ "$item" != None ] && echo "   ✓ index : $item" || { echo "   ✗ rush absent de l'index" >&2; exit 1; }
 grep -q '"POST /api/sources" 200' "$work/atelier.log" && echo "   ✓ atelier prévenu de l'arrivée de l'aperçu" || { echo "   ✗ atelier non prévenu" >&2; exit 1; }
-code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/ui/envoi.html")
-[ "$code" = 200 ] && echo "   ✓ page d'envoi servie" || { echo "   ✗ page d'envoi : $code" >&2; exit 1; }
+for page in envoi bibliotheque; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/ui/$page.html")
+    [ "$code" = 200 ] && echo "   ✓ page $page servie" || { echo "   ✗ page $page : $code" >&2; exit 1; }
+done
+
+echo "== Bibliothèque"
+node "$repo/cloud/essai-bibliotheque.mjs" "http://127.0.0.1:$port" "$lrv"
+left=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "originaux/essai/" --query 'length(Contents || `[]`)' --output text)
+left2=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "apercus/essai/" --query 'length(Contents || `[]`)' --output text)
+[ "$left" = 0 ] && [ "$left2" = 0 ] && echo "   ✓ plus aucun fichier du client dans le stockage" || { echo "   ✗ fichiers restants : $left originaux, $left2 aperçus" >&2; exit 1; }
 echo "Essai réussi."

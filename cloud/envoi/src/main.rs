@@ -1,3 +1,5 @@
+//! Service commun à tous les clients : l'Envoi (ci-dessous) et la Bibliothèque (library.rs).
+//!
 //! Module Envoi : le navigateur dépose les rushs directement dans S3, par morceaux, et reprend
 //! après une coupure. Ce service ne voit jamais passer les vidéos : il ouvre l'envoi, signe les
 //! adresses des morceaux et assemble le fichier à la fin.
@@ -11,6 +13,8 @@
 //!   POST /api/envoi/urls     {name, upload_id, parts} → {urls: {numéro: adresse signée}}
 //!   POST /api/envoi/complete {name, size, upload_id}  → {ok, key, camera, duration_s, indexed}
 //!   GET  /api/envoi/rushs                             → [{name, kind, size, class}]
+
+mod library;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -56,7 +60,13 @@ struct Args {
     /// Adresse de l'atelier du client, prévenu à l'arrivée d'un aperçu (jeton : BIKE360_ATELIER_TOKEN)
     #[arg(long, env = "BIKE360_ATELIER")]
     atelier: Option<String>,
-    /// Dossier de l'interface web à servir (page envoi.html)
+    /// Place offerte au client, en Go (affichée par la jauge de la Bibliothèque)
+    #[arg(long, env = "BIKE360_QUOTA_GO", default_value_t = 600)]
+    quota_go: u64,
+    /// Jours de garde en corbeille avant suppression définitive
+    #[arg(long, env = "BIKE360_TRASH_DAYS", default_value_t = 30.0)]
+    trash_days: f64,
+    /// Dossier de l'interface web à servir (pages envoi.html et bibliotheque.html)
     #[arg(long)]
     ui: Option<String>,
     #[arg(long, default_value_t = 8370)]
@@ -73,6 +83,8 @@ struct Ctx {
     part_size: u64,
     table: Option<String>,
     atelier: Option<String>,
+    quota_bytes: u64,
+    trash_days: f64,
 }
 
 /// Ce que la fin d'un rush dit de lui, sans le télécharger.
@@ -340,12 +352,17 @@ async fn main() -> Result<()> {
     let s3 = aws_sdk_s3::Client::from_conf(aws_sdk_s3::config::Builder::from(&conf).force_path_style(local).build());
     let db = aws_sdk_dynamodb::Client::new(&conf);
     let ctx = Arc::new(Ctx { s3, db, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
-                             table: a.table, atelier: a.atelier.map(|u| u.trim_end_matches('/').to_string()) });
+                             table: a.table, atelier: a.atelier.map(|u| u.trim_end_matches('/').to_string()),
+                             quota_bytes: a.quota_go * 1_000_000_000, trash_days: a.trash_days });
     let mut app = Router::new()
         .route("/api/envoi/start", post(start))
         .route("/api/envoi/urls", post(urls))
         .route("/api/envoi/complete", post(complete))
         .route("/api/envoi/rushs", get(rushs))
+        .route("/api/bibliotheque", get(library::list))
+        .route("/api/bibliotheque/marque", post(library::mark))
+        .route("/api/bibliotheque/alleger", post(library::lighten))
+        .route("/api/bibliotheque/purge", post(library::purge))
         .with_state(ctx.clone());
     if let Some(ui) = &a.ui {
         app = app.nest_service("/ui", tower_http::services::ServeDir::new(ui));

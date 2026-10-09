@@ -35,6 +35,14 @@ tourne (`--atelier`, jeton dans `BIKE360_ATELIER_TOKEN`).
 
 Le client servi est fixé au lancement (`--client`) : l'authentification viendra avec le portail.
 
+## Bibliothèque
+
+Le même service sert la Bibliothèque (`cloud/envoi/src/library.rs`, page `ui/bibliotheque.html`) :
+les rushs du client regroupés en balades d'après l'index, la place occupée, les marqueurs (favori,
+garder, corbeille), l'allègement d'une session (ses originaux sont supprimés, son aperçu reste) et
+la corbeille, vidée après un délai de garde (`--trash-days`, 30 jours par défaut).
+`cloud/essai-envoi.sh` enchaîne l'essai de l'Envoi puis celui de la Bibliothèque.
+
 ## Ce que Terraform crée
 
 | Ressource | Rôle |
