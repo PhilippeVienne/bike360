@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use bike360_core::{analyze, automontage, basemap, endcard, finishing, geometry, horizon, hyperlapse, insta360, lean, musiclib, paths, telemetry};
+use bike360_core::{analyze, automontage, basemap, endcard, finishing, geometry, horizon, hyperlapse, insta360, lean, migrate, musiclib, paths, telemetry};
 use serde_json::{json, Value};
 
 #[path = "bike360-tool/privacy.rs"]
@@ -19,6 +19,7 @@ fn main() -> Result<()> {
                                   "acc_mean": mean(&imu.acc), "gyro_mean": mean(&imu.gyro)}));
         }
         Some("scan") => println!("{}", serde_json::to_string(&insta360::scan(Path::new(&args[2])))?),
+        Some("migrate-ids") => migrate_ids(&args[2..])?,
         Some("views") => {
             // views CLIPS.json TILT_PITCH TILT_ROLL : cadrage, matrice et angles v360 à 40 instants par clip
             let clips: Vec<geometry::Clip> = serde_json::from_reader(std::fs::File::open(&args[2])?)?;
@@ -103,6 +104,63 @@ fn main() -> Result<()> {
 }
 
 /// Sessions de plusieurs dossiers (première occurrence gardée), fusionnées en blocs continus.
+/// migrate-ids [--apply] [DOSSIER...] : passe les données de la racine aux identifiants de session
+/// avec caméra. Les dossiers donnés s'ajoutent à ceux de data/sources.json ; sans --apply, rien n'est écrit.
+fn migrate_ids(args: &[String]) -> Result<()> {
+    let apply = args.iter().any(|a| a == "--apply");
+    let mut dirs: Vec<String> = std::fs::read_to_string(paths::data().join("sources.json")).ok()
+        .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    dirs.extend(args.iter().filter(|a| *a != "--apply").cloned());
+    // sessions dont les fichiers sont lisibles : identifiant sans caméra → nouveaux identifiants
+    let mut seen: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = Default::default();
+    let mut suffixes = std::collections::BTreeSet::new();
+    for dir in &dirs {
+        for s in insta360::scan(Path::new(dir)) {
+            if let Some(c) = &s.camera {
+                suffixes.insert(insta360::camera_suffix(&c.serial));
+                seen.entry(insta360::bare_id(&s.id).to_string()).or_default().insert(s.id.clone());
+            }
+        }
+    }
+    let root = paths::root();
+    let (mut mapping, mut assumed, mut skipped) = (vec![], 0, vec![]);
+    for old in migrate::old_ids(&root) {
+        match seen.get(&old).map(|ids| ids.iter().collect::<Vec<_>>()).as_deref() {
+            Some([new]) => mapping.push((old, (*new).clone())),
+            Some(_) => skipped.push(format!("{old} : filmée par plusieurs caméras, à départager à la main")),
+            // fichiers absents (carte retirée) : une seule caméra connue, on la suppose
+            None if suffixes.len() == 1 => {
+                assumed += 1;
+                mapping.push((old.clone(), format!("{old}_{}", suffixes.first().unwrap())));
+            }
+            None => skipped.push(format!("{old} : fichiers absents et caméra inconnue")),
+        }
+    }
+    let plan = migrate::plan(&root, &mapping)?;
+    println!("Racine : {}", root.display());
+    println!("Dossiers lus : {}", if dirs.is_empty() { "aucun".into() } else { dirs.join(", ") });
+    println!("Caméras reconnues : {}", suffixes.len());
+    println!("Sessions à renommer : {} (dont {} dont les fichiers sont absents, caméra supposée)", mapping.len(), assumed);
+    for (old, new) in &mapping {
+        println!("  {old} → {new}");
+    }
+    for s in &skipped {
+        println!("  laissée telle quelle : {s}");
+    }
+    println!("Fichiers et dossiers à renommer : {}", plan.renames.len());
+    println!("Fichiers JSON à corriger : {}", plan.edits.len());
+    for f in &plan.edits {
+        println!("  {}", f.display());
+    }
+    if !apply {
+        println!("Essai à blanc : rien n'a été écrit. Relancer avec --apply, serveur arrêté, pour migrer.");
+        return Ok(());
+    }
+    migrate::apply(&root, &mapping, &plan)?;
+    println!("Migration faite ; journal dans data/migration-ids.json.");
+    Ok(())
+}
+
 fn load_blocks(dirs: &[String]) -> Vec<insta360::Session> {
     let mut sessions: Vec<insta360::Session> = vec![];
     for dir in dirs {

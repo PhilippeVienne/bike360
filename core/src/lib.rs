@@ -14,6 +14,7 @@ pub mod horizon;
 pub mod hyperlapse;
 pub mod insta360;
 pub mod lean;
+pub mod migrate;
 pub mod musiclib;
 pub mod numeric;
 pub mod paths;

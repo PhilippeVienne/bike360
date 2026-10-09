@@ -180,9 +180,39 @@ pub struct Segment {
     pub duration: f64,
 }
 
+/// Longueur de la partie `VID_<date>_<heure>` d'un identifiant de session.
+const BARE_ID_LEN: usize = 19;
+/// Caractères du numéro de série repris dans l'identifiant.
+const CAMERA_SUFFIX_LEN: usize = 4;
+
+/// Suffixe de caméra d'un identifiant : les derniers caractères alphanumériques du numéro de série.
+pub fn camera_suffix(serial: &str) -> String {
+    let alnum: Vec<char> = serial.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_uppercase()).collect();
+    alnum[alnum.len().saturating_sub(CAMERA_SUFFIX_LEN)..].iter().collect()
+}
+
+/// `token` a-t-il la forme d'un suffixe de caméra ?
+pub fn is_camera_suffix(token: &str) -> bool {
+    token.len() == CAMERA_SUFFIX_LEN && token.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
+/// Identifiant d'une session : `VID_<date>_<heure>`, suivi de la caméra quand elle est connue
+/// (deux caméras lancées à la même seconde ne se confondent pas).
+pub fn session_id(date: &str, time: &str, camera: Option<&Camera>) -> String {
+    match camera.map(|c| camera_suffix(&c.serial)).filter(|s| is_camera_suffix(s)) {
+        Some(suffix) => format!("VID_{date}_{time}_{suffix}"),
+        None => format!("VID_{date}_{time}"),
+    }
+}
+
+/// Partie `VID_<date>_<heure>` d'un identifiant (l'identifiant d'avant les suffixes de caméra).
+pub fn bare_id(id: &str) -> &str {
+    id.get(..BARE_ID_LEN).unwrap_or(id)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
-    /// ex. VID_20260829_112347
+    /// ex. VID_20260829_112347_K7Q2
     pub id: String,
     /// YYYYMMDD et HHMMSS (heure locale caméra)
     pub date: String,
@@ -250,6 +280,7 @@ pub fn scan(dcim: &Path) -> Vec<Session> {
     sessions.retain(|s| s.segments.iter().all(|seg| seg.lrv.is_some()));
     for s in &mut sessions {
         s.camera = s.segments.first().and_then(|seg| seg.lrv.as_deref()).and_then(read_camera);
+        s.id = session_id(&s.date, &s.time, s.camera.as_ref());
     }
     sessions
 }
