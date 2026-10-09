@@ -406,7 +406,7 @@ mod tests {
     use super::*;
 
     fn policy() -> Policy {
-        Policy { trial_days: 7.0, access_days: 30.0, archive_days: 180.0, credit_min: 10, credit_eur: 0.05, recovery_eur_100go: 1.5 }
+        Policy { trial_days: 7.0, access_days: 30.0, archive_days: 180.0, credit_min: 60, credit_eur: 0.05, recovery_eur_100go: 2.0 }
     }
 
     fn ago(days: i64) -> Option<String> {
@@ -438,8 +438,8 @@ mod tests {
     #[test]
     fn recovery_is_priced_by_started_100_go() {
         let p = policy();
-        assert_eq!(p.recovery_eur(1), 1.5);
-        assert_eq!(p.recovery_eur(100_000_000_000), 1.5);
-        assert_eq!(p.recovery_eur(600_000_000_001), 10.5);
+        assert_eq!(p.recovery_eur(1), 2.0);
+        assert_eq!(p.recovery_eur(100_000_000_000), 2.0);
+        assert_eq!(p.recovery_eur(600_000_000_001), 14.0);
     }
 }

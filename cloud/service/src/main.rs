@@ -104,13 +104,13 @@ struct Args {
     #[arg(long, env = "BIKE360_ARCHIVE_DAYS", default_value_t = 180.0)]
     archive_days: f64,
     /// Achat minimal de crédit d'export, en minutes
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 60)]
     credit_min: u32,
     /// Prix d'une minute de crédit d'export, en euros (3 € de l'heure)
     #[arg(long, default_value_t = 0.05)]
     credit_eur: f64,
     /// Prix de la récupération de rushs archivés, en euros par tranche de 100 Go
-    #[arg(long, default_value_t = 1.5)]
+    #[arg(long, default_value_t = 2.0)]
     recovery_eur_100go: f64,
     /// Minutes entre deux passages sur les échéances des comptes
     #[arg(long, env = "BIKE360_SWEEP_MIN", default_value_t = 60.0)]

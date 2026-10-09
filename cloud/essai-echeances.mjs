@@ -108,13 +108,13 @@ check((await call("POST", "/api/paiement/resiliation", {}, d.token)).status === 
 await notify(paid(d, "600go", "d"));
 s = await standing(d);
 check(s.standing.state === "abonne" && s.subscribed && (await call("POST", "/api/envoi/start", lrv, d.token)).status === 200, "abonnement payé après l'essai : l'envoi reprend");
-check((await call("POST", "/api/paiement/credit", { minutes: 9 }, d.token)).status === 400, "crédit d'export : moins de 10 minutes, refusé");
-r = await call("POST", "/api/paiement/credit", { minutes: 10 }, d.token);
-check(r.status === 200 && /^https?:\/\//.test(r.body.url), "crédit d'export : page de paiement pour 10 minutes");
-const credit = { type: "checkout.session.completed", data: { object: { id: `cs_${stamp}`, client_reference_id: d.sub, metadata: { credit_min: "10" }, payment_status: "paid" } } };
+check((await call("POST", "/api/paiement/credit", { minutes: 59 }, d.token)).status === 400, "crédit d'export : moins de 60 minutes, refusé");
+r = await call("POST", "/api/paiement/credit", { minutes: 60 }, d.token);
+check(r.status === 200 && /^https?:\/\//.test(r.body.url), "crédit d'export : page de paiement pour 60 minutes");
+const credit = { type: "checkout.session.completed", data: { object: { id: `cs_${stamp}`, client_reference_id: d.sub, metadata: { credit_min: "60" }, payment_status: "paid" } } };
 const first = await notify(credit), again = await notify(credit);
 s = await standing(d);
-check(first === "crédit ajouté" && again.startsWith("ignorée") && s.credit_s === 600, `crédit payé : ${s.credit_s / 60} min ; la même notification représentée n'ajoute rien`);
+check(first === "crédit ajouté" && again.startsWith("ignorée") && s.credit_s === 3600, `crédit payé : ${s.credit_s / 60} min ; la même notification représentée n'ajoute rien`);
 check(s.plan.key === "600go", "l'achat de crédit ne touche pas au palier");
 r = await call("POST", "/api/paiement/resiliation", {}, d.token);
 s = await standing(d);
@@ -127,13 +127,13 @@ rush(d, lrv.name); rush(d, "VID_20260101_000000_00_001.insv");
 const ended = { type: "customer.subscription.deleted", data: { object: { customer: `cus_d${stamp}` } } };
 await notify(ended);
 s = await standing(d);
-check(s.standing.state === "termine" && s.standing.days_left === 30 && s.credit_s === 600, `fin de l'abonnement : ${s.standing.notice}`);
+check(s.standing.state === "termine" && s.standing.days_left === 30 && s.credit_s === 3600, `fin de l'abonnement : ${s.standing.notice}`);
 check((await call("POST", "/api/envoi/start", { ...lrv, name: "LRV_20260102_000000_01_001.lrv" }, d.token)).status === 402, "plus d'envoi sans abonnement");
 check((await notify(ended)).startsWith("ignorée"), "la fin d'abonnement représentée ne relance pas le délai");
 backdate(d, "fin_abonnement", 31);
 s = await until(d, "archive");
 for (let i = 0; i < 40 && tagged(d).length < 2; i++) await new Promise((r) => setTimeout(r, 500));
-check(s.standing.state === "archive" && tagged(d).length === 2 && s.recovery_eur === 1.5,
+check(s.standing.state === "archive" && tagged(d).length === 2 && s.recovery_eur === 2,
       `au bout de 31 jours : rushs étiquetés pour l'archive profonde, récupération à ${s.recovery_eur} €`);
 check((await call("POST", "/api/atelier/ouvrir", undefined, d.token)).status === 402, "atelier refusé sur des rushs archivés");
 check((await call("POST", "/api/paiement/commande", { plan: "600go" }, d.token)).status === 200, "reprise d'un palier : commande avec les frais de récupération");

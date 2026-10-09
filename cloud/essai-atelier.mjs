@@ -70,7 +70,7 @@ if (insv) {
   // du crédit acheté d'avance couvre ce qui dépasse les minutes du mois
   const secret = process.env.BIKE360_STRIPE_WEBHOOK_SECRET;
   const paid = JSON.stringify({ type: "checkout.session.completed", data: { object: {
-    id: `cs_atelier_${Date.now()}`, client_reference_id: a.sub, metadata: { credit_min: "10" }, payment_status: "paid" } } });
+    id: `cs_atelier_${Date.now()}`, client_reference_id: a.sub, metadata: { credit_min: "60" }, payment_status: "paid" } } });
   const t = Math.floor(Date.now() / 1000);
   await fetch(`${base}/api/paiement/stripe`, { method: "POST", body: paid,
     headers: { "Stripe-Signature": `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${paid}`).digest("hex")}` } });
@@ -80,11 +80,11 @@ if (insv) {
     job = (await atelier(A, "GET", `/api/export/${sid}`)).body || {};
     if (job.state !== "running") break;
   }
-  check(job.state === "done", "avec 10 min de crédit acheté, le même export passe");
+  check(job.state === "done", "avec 60 min de crédit acheté, le même export passe");
   await fetch(`${base}/api/bibliotheque`, { headers: bearer(a.token) });   // l'export terminé est déposé et compté
   const after = await (await fetch(`${base}/api/compte/palier`, { headers: bearer(a.token) })).json();
-  check(after.credit_s < 600 && after.credit_s > 580 && after.export_used_s > plan.export_used_s,
-        `le dépassement est pris sur le crédit : il reste ${after.credit_s} s sur 600`);
+  check(after.credit_s < 3600 && after.credit_s > 3580 && after.export_used_s > plan.export_used_s,
+        `le dépassement est pris sur le crédit : il reste ${after.credit_s} s sur 3600`);
 }
 
 const B = await open(b);

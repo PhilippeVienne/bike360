@@ -73,11 +73,12 @@ situation s'en déduit (`plans::Standing`) et un passage régulier applique ce q
 - **Résiliation** : l'abonnement court jusqu'à son échéance, puis Stripe annonce sa fin ; tant
   qu'elle n'est pas arrivée, la résiliation s'annule.
 - **Récupération payante** : reprendre un palier sur des rushs archivés ajoute à la commande des
-  frais par tranche de 100 Go (`--recovery-eur-100go`, 1,50 € par défaut : une estimation à valider,
-  qui couvre la garde en archive et la sortie d'archive au tarif de Paris). Les originaux restent en
+  frais par tranche de 100 Go (`--recovery-eur-100go`, 2 € par défaut, pour un coût d'environ 1,57 € :
+  le mois d'accès, la garde en archive et la sortie d'archive au tarif de Paris). Les originaux restent en
   archive, comme tout original de plus de 90 jours.
 - **Crédit d'export** : au-delà des minutes du mois, un export se paie d'avance, à la minute
-  (`--credit-eur`, 0,05 € soit 3 € de l'heure ; `--credit-min`, 10 minutes au moins par achat). Un
+  (`--credit-eur`, 0,05 € soit 3 € de l'heure ; `--credit-min`, 60 minutes au moins par achat, pour que la commission du
+  prestataire de paiement ne mange pas la marge). Un
   export plus long que ce qu'il reste au compte ne démarre pas. Le crédit ne périme pas.
 - **Suppression du compte** : confirmée par le mot de passe ; l'abonnement est arrêté chez Stripe,
   puis fichiers (toutes leurs versions), envois en cours, index et compte Cognito sont effacés.

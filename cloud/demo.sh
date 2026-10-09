@@ -85,7 +85,7 @@ Parcours à essayer :
   5. Changer de palier : le bouton mène à une page factice. Pour simuler le paiement :
          sh cloud/demo.sh payer VOTRE_EMAIL 600go
      Même chose pour le crédit d'export (page « Palier et crédit d'export ») :
-         sh cloud/demo.sh crediter VOTRE_EMAIL 10
+         sh cloud/demo.sh crediter VOTRE_EMAIL 60
 
 Journaux : $work/service.log et $work/worker.log. Ctrl-C arrête tout ; rien n'est conservé.
 TEXTE
