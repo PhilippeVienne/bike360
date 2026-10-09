@@ -15,10 +15,11 @@ pub fn service_url() -> Option<String> {
     std::env::var("BIKE360_ORIGINALS_URL").ok().filter(|u| !u.is_empty())
 }
 
-/// Demande les originaux de ces sessions ; revient quand ils sont dans le dossier de rushs.
-pub fn request(url: &str, sessions: &[String]) -> Result<()> {
+/// Annonce un export final de `seconds` secondes et demande les originaux qui manquent pour ces
+/// sessions ; revient quand ils sont dans le dossier de rushs, ou échoue si le service refuse l'export.
+pub fn request(url: &str, sessions: &[String], seconds: f64) -> Result<()> {
     let token = std::env::var("BIKE360_PASSWORD").unwrap_or_default();
-    match ureq::post(url).set("Authorization", &format!("Bearer {token}")).timeout(TIMEOUT).send_json(json!({"sessions": sessions})) {
+    match ureq::post(url).set("Authorization", &format!("Bearer {token}")).timeout(TIMEOUT).send_json(json!({"sessions": sessions, "seconds": seconds})) {
         Ok(_) => Ok(()),
         Err(ureq::Error::Status(_, res)) => {
             let reason = res.into_json::<Value>().ok().and_then(|v| v["error"].as_str().map(String::from));

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Essai local du service commun sur l'émulateur floci : comptes, Envoi, analyse à l'arrivée, atelier
-# à la demande, Bibliothèque.
+# Essai local du service commun sur l'émulateur floci : comptes, paliers et paiement, Envoi, analyse à
+# l'arrivée, atelier à la demande, Bibliothèque.
 #   sh cloud/essai-envoi.sh APERÇU.lrv
 set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -26,10 +26,21 @@ aws sqs purge-queue --queue-url "$queue" >/dev/null 2>&1 || true
 cargo build --release --manifest-path "$repo/cloud/service/Cargo.toml" 2>/dev/null
 name=$(basename "$lrv")
 rm -rf "$work"; mkdir -p "$work"
+# grille de l'essai : celle par défaut, sauf 9 secondes d'export au palier d'essai (un export passe, le suivant non)
+cat > "$work/paliers.json" <<'JSON'
+[{"key": "essai", "label": "Essai", "quota_go": 128, "export_min": 0.15, "eur_year": 0},
+ {"key": "200go", "label": "200 Go", "quota_go": 200, "export_min": 15, "eur_year": 19},
+ {"key": "600go", "label": "600 Go", "quota_go": 600, "export_min": 30, "eur_year": 39},
+ {"key": "1to", "label": "1 To", "quota_go": 1000, "export_min": 60, "eur_year": 65},
+ {"key": "2to", "label": "2 To", "quota_go": 2000, "export_min": 120, "eur_year": 105}]
+JSON
+# paiement : clés factices, appels dirigés vers l'émulateur du prestataire
+export BIKE360_STRIPE_KEY=sk_test_essai BIKE360_STRIPE_WEBHOOK_SECRET=whsec_essai BIKE360_STRIPE_API=http://127.0.0.1:12111
+export BIKE360_STRIPE_PRICES=200go=price_200,600go=price_600,1to=price_1to,2to=price_2to
 # garde en corbeille nulle : l'essai vide la corbeille tout de suite
 BIKE360_TRASH_DAYS=0 BIKE360_PART_MB=8 "$repo/cloud/service/target/release/bike360-envoi" --bucket "$bucket" --table "$table" --queue "$queue" \
     --issuer "$issuer" --app-client "$app_client" \
-    --atelier-bin "$repo/target/release/bike360-server" --atelier-work "$work/ateliers" \
+    --atelier-bin "$repo/target/release/bike360-server" --atelier-work "$work/ateliers" --plans "$work/paliers.json" \
     --ui "$repo/ui" --port "$port" > "$work/envoi.log" 2>&1 &
 server=$!
 trap 'kill "$server" 2>/dev/null || true' EXIT
@@ -42,6 +53,9 @@ token() { node -e "console.log(JSON.parse(require('fs').readFileSync('$work/jeto
 export BIKE360_TOKEN=$(token a token) BIKE360_TOKEN_B=$(token b token)
 client=$(token a sub)
 
+echo "== Paliers, quotas et paiement"
+node "$repo/cloud/essai-paiement.mjs" "http://127.0.0.1:$port" "$work/jetons.json" "$BIKE360_STRIPE_WEBHOOK_SECRET"
+
 echo "== Envoi par le code du navigateur"
 node "$repo/cloud/essai-envoi.mjs" "http://127.0.0.1:$port" "$lrv"
 
@@ -52,7 +66,7 @@ rm -f "$repo/cloud/essai-retour.lrv"
 item=$(aws dynamodb get-item --table-name "$table" --key "{\"pk\":{\"S\":\"client#$client\"},\"sk\":{\"S\":\"rush#$name\"}}" \
     --query 'Item.[camera_modele.S, duree_s.N, nature.S, session.S]' --output text | sed -E 's/_[A-Z0-9]{4}$/_<caméra>/')
 [ -n "$item" ] && [ "$item" != None ] && echo "   ✓ index : $item" || { echo "   ✗ rush absent de l'index" >&2; exit 1; }
-for page in compte envoi bibliotheque; do
+for page in compte envoi bibliotheque palier; do
     code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/ui/$page.html")
     [ "$code" = 200 ] && echo "   ✓ page $page servie" || { echo "   ✗ page $page : $code" >&2; exit 1; }
 done
@@ -81,7 +95,12 @@ left2=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "apercus/$client/"
 left3=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "donnees/$client/" --query 'length(Contents[?contains(Key, `VID_`)] || `[]`)' --output text)
 [ "$left" = 0 ] && [ "$left2" = 0 ] && [ "$left3" = 0 ] && echo "   ✓ plus aucun fichier de cette session dans le stockage" \
     || { echo "   ✗ fichiers restants : $left originaux, $left2 aperçus, $left3 résultats d'analyse" >&2; exit 1; }
-rows=$(aws dynamodb query --table-name "$table" --key-condition-expression 'pk = :c' \
-    --expression-attribute-values "{\":c\":{\"S\":\"client#$client\"}}" --query Count --output text)
-[ "$rows" = 0 ] && echo "   ✓ plus aucune ligne du client dans l'index" || { echo "   ✗ $rows ligne(s) restée(s) dans l'index" >&2; exit 1; }
+# la consommation d'export du mois reste comptée : supprimer une session ne rend pas ses minutes
+rows=0
+for kind in rush session marque; do
+    n=$(aws dynamodb query --table-name "$table" --key-condition-expression 'pk = :c and begins_with(sk, :k)' \
+        --expression-attribute-values "{\":c\":{\"S\":\"client#$client\"},\":k\":{\"S\":\"$kind#\"}}" --query Count --output text)
+    rows=$((rows + n))
+done
+[ "$rows" = 0 ] && echo "   ✓ plus aucune ligne de rush ou de session du client dans l'index" || { echo "   ✗ $rows ligne(s) restée(s) dans l'index" >&2; exit 1; }
 echo "Essai réussi."

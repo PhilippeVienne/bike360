@@ -27,6 +27,20 @@ compte connecté, dont l'identifiant sert de préfixe à ses rushs, ses résulta
 Lancé sans émetteur (`--issuer`), le service sert un seul client (`--client`) et refuse d'écouter
 ailleurs que sur sa machine.
 
+## Paliers, quotas et paiement
+
+Chaque compte a un palier (`cloud/service/src/plans.rs`) qui fixe sa place de stockage et ses
+minutes d'export final par mois ; sans abonnement, c'est le palier d'essai. Un envoi qui ferait
+dépasser la place est refusé, de même qu'un export final qui ferait dépasser les minutes : l'atelier
+annonce chaque export final au service avant de le lancer. La grille par défaut se remplace par un
+fichier (`--plans`).
+
+Le paiement passe par Stripe (`cloud/service/src/payment.rs`, page `ui/palier.html`) : le service
+ouvre une page de paiement, et seule la notification signée de Stripe change le palier du compte.
+Les clés se donnent par variables d'environnement (`BIKE360_STRIPE_KEY`,
+`BIKE360_STRIPE_WEBHOOK_SECRET`, `BIKE360_STRIPE_PRICES`). L'essai local utilise l'émulateur
+`stripe-mock` et des notifications signées par le script.
+
 ## Module Envoi
 
 `cloud/service` est le service qui ouvre un envoi, signe l'adresse de chaque morceau et assemble le
@@ -51,7 +65,8 @@ Le même service sert la Bibliothèque (`cloud/service/src/library.rs`, page `ui
 les rushs du client regroupés en balades d'après l'index, la place occupée, les marqueurs (favori,
 garder, corbeille), l'allègement d'une session (ses originaux sont supprimés, son aperçu reste) et
 la corbeille, vidée après un délai de garde (`--trash-days`, 30 jours par défaut).
-`cloud/essai-envoi.sh` enchaîne les essais : comptes, Envoi, analyse à l'arrivée, Bibliothèque.
+`cloud/essai-envoi.sh` enchaîne les essais : comptes, paliers et paiement, Envoi, analyse à l'arrivée,
+atelier à la demande et export final, Bibliothèque.
 
 ## Analyse à l'arrivée
 
@@ -105,4 +120,4 @@ Non testé à ce jour sur AWS.
 
 Le montage Amazon S3 Files, la facturation et les délais des classes de stockage, CloudFront, le
 GPU, les droits IAM, l'envoi des courriels de confirmation et la politique de mot de passe ne sont
-pas émulés : ils restent à essayer sur un compte AWS.
+pas émulés ; le vrai parcours de paiement chez Stripe (carte, facture, résiliation) non plus : ils restent à essayer sur un compte AWS.

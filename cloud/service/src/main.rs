@@ -18,6 +18,8 @@
 mod account;
 mod atelier;
 mod library;
+mod payment;
+mod plans;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -82,9 +84,12 @@ struct Args {
     /// Minutes d'inactivité avant l'arrêt d'un atelier
     #[arg(long, default_value_t = 30)]
     atelier_idle_min: u64,
-    /// Place offerte au client, en Go (affichée par la jauge de la Bibliothèque)
-    #[arg(long, env = "BIKE360_QUOTA_GO", default_value_t = 600)]
-    quota_go: u64,
+    /// Grille des paliers (JSON) à la place de celle par défaut
+    #[arg(long, env = "BIKE360_PLANS")]
+    plans: Option<std::path::PathBuf>,
+    /// Adresse publique du site, où le prestataire de paiement renvoie le client
+    #[arg(long, env = "BIKE360_SITE")]
+    site: Option<String>,
     /// Jours de garde en corbeille avant suppression définitive
     #[arg(long, env = "BIKE360_TRASH_DAYS", default_value_t = 30.0)]
     trash_days: f64,
@@ -109,7 +114,8 @@ pub struct Ctx {
     part_size: u64,
     table: Option<String>,
     launcher: Option<atelier::Launcher>,
-    quota_bytes: u64,
+    plans: Vec<plans::Plan>,
+    payment: Option<payment::Payment>,
     trash_days: f64,
 }
 
@@ -254,12 +260,13 @@ struct Start {
 /// Ouvre ou reprend l'envoi d'un rush. Un fichier déjà complet n'est pas renvoyé.
 async fn start(c: Scope, Json(b): Json<Start>) -> Result<Json<Value>, Fail> {
     let (key, class) = c.key(&b.name)?;
-    let count = c.layout(b.size)?;
     if let Ok(head) = c.s3.head_object().bucket(&c.bucket).key(&key).send().await {
         if head.content_length() == Some(b.size as i64) {
             return Ok(Json(json!({"done": true, "key": key})));
         }
     }
+    c.check_storage(b.size).await?;
+    let count = c.layout(b.size)?;
     // envoi déjà commencé pour ce fichier (onglet fermé, coupure) : on le reprend
     let open = c.s3.list_multipart_uploads().bucket(&c.bucket).prefix(&key).send().await.map_err(aws("envois en cours"))?;
     let resumed = open.uploads().iter()
@@ -384,7 +391,12 @@ async fn main() -> Result<()> {
                              table: a.table,
                              launcher: a.atelier_bin.map(|bin| atelier::Launcher::new(bin, a.atelier_work, a.atelier_host, a.atelier_idle_min * 60,
                                                                                    format!("http://127.0.0.1:{}", a.port))),
-                             quota_bytes: a.quota_go * 1_000_000_000, trash_days: a.trash_days });
+                             plans: match &a.plans {
+                                 Some(file) => plans::load(file)?,
+                                 None => plans::defaults(),
+                             },
+                             payment: payment::Payment::from_env(a.site.unwrap_or_else(|| format!("http://{}:{}", a.host, a.port)))?,
+                             trash_days: a.trash_days });
     let mut app = Router::new()
         .route("/api/envoi/start", post(start))
         .route("/api/envoi/urls", post(urls))
@@ -396,6 +408,9 @@ async fn main() -> Result<()> {
         .route("/api/compte/connexion", post(account::sign_in))
         .route("/api/compte/rafraichir", post(account::refresh))
         .route("/api/compte/deconnexion", post(account::sign_out))
+        .route("/api/compte/palier", get(plans::status))
+        .route("/api/paiement/commande", post(payment::order))
+        .route("/api/paiement/stripe", post(payment::webhook))
         .route("/api/atelier", get(atelier::status))
         .route("/api/atelier/ouvrir", post(atelier::open))
         .route("/api/atelier/fermer", post(atelier::close))

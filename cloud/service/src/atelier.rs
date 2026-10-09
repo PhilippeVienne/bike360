@@ -191,6 +191,12 @@ impl Scope {
             }
             self.s3.put_object().bucket(&self.bucket).key(format!("exports/{}/{name}", self.client)).content_type("video/mp4")
                 .body(ByteStream::from_path(&path).await?).send().await?;
+            // un export en pleine qualité compte dans les minutes du mois ; un aperçu, non
+            if !name.contains("_preview_") {
+                let probed = path.clone();
+                let seconds = tokio::task::spawn_blocking(move || bike360_core::analyze::file_duration(&probed)).await.unwrap_or(0.0);
+                self.record_export(&name, seconds, size).await?;
+            }
             pushed.insert(name, size);
             count += 1;
         }
@@ -273,6 +279,9 @@ pub async fn close(c: Scope) -> Result<Json<Value>, Fail> {
 #[derive(Deserialize)]
 pub struct Originals {
     sessions: Vec<String>,
+    /// Durée de l'export à venir (s), comptée dans les minutes du mois.
+    #[serde(default)]
+    seconds: f64,
 }
 
 /// Amène dans le dossier de rushs d'un atelier les originaux des sessions qu'il va exporter.
@@ -283,6 +292,8 @@ pub async fn originals(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Json(b):
     let same = |a: &str, b: &str| a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0;
     let client = l.running.lock().await.iter().find(|(_, inst)| same(&inst.password, given)).map(|(c, _)| c.clone())
         .ok_or_else(|| Fail(StatusCode::UNAUTHORIZED, "atelier inconnu".into()))?;
+    // l'export doit tenir dans les minutes que le palier du client lui laisse ce mois-ci
+    Scope::of(ctx.clone(), client.clone()).check_export(b.seconds).await?;
     // fichiers VID_<date>_<heure>_… des sessions demandées, et rien d'autre
     let wanted: Vec<String> = b.sessions.iter().filter_map(|s| s.get(..19)).filter(|s| s.starts_with("VID_")).map(|s| format!("{s}_")).collect();
     ctx.pull(&format!("originaux/{client}/"), &l.dir(&client).join("rushs"), |n| !n.contains('/') && wanted.iter().any(|w| n.starts_with(w.as_str())))

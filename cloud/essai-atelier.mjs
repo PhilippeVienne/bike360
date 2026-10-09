@@ -56,6 +56,16 @@ if (insv) {
   const video = mine ? await fetch(mine.url) : null;
   check(mine && video.ok && Number(video.headers.get("content-length")) === mine.bytes && mine.bytes > 100000,
         `l'export apparaît dans la Bibliothèque et se télécharge (${mine && (mine.bytes / 1e6).toFixed(1)} Mo)`);
+  // l'export compte dans les minutes du mois ; le suivant dépasserait le quota du palier d'essai (réduit pour l'essai)
+  const plan = await (await fetch(`${base}/api/compte/palier`, { headers: bearer(a.token) })).json();
+  check(plan.export_used_s > 4 && plan.export_used_s < 9, `export compté : ${plan.export_used_s} s sur ${plan.plan.export_s} ce mois-ci`);
+  await atelier(A, "POST", `/api/export/${sid}`, { quality: "final" });
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    job = (await atelier(A, "GET", `/api/export/${sid}`)).body || {};
+    if (job.state !== "running") break;
+  }
+  check(job.state === "error" && /quota d'export/.test(job.message), `second export refusé : ${job.message}`);
 }
 
 const B = await open(b);

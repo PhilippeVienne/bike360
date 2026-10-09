@@ -40,7 +40,9 @@ function sessionRow(s) {
 
 function render() {
   const used = lib.bytes / lib.quota_bytes;
-  $("#gauge").innerHTML = `<div class="row"><strong>${size(lib.bytes)}</strong> <span class="muted">sur ${size(lib.quota_bytes)}</span></div>
+  $("#gauge").innerHTML = `<div class="row"><strong>${size(lib.bytes)}</strong> <span class="muted">sur ${size(lib.quota_bytes)} · palier ${esc(lib.plan)}
+      · exports ce mois-ci : ${Math.round(lib.export_used_s / 60 * 10) / 10} min sur ${Math.round(lib.export_s / 60)}</span>
+      <span style="flex:1"></span><a href="palier.html">Changer de palier</a></div>
     <progress value="${Math.min(1, used)}" max="1"></progress>`;
   $("#suggestions").innerHTML = lib.suggestions.length
     ? `<h3>Suggestions de nettoyage</h3><ul class="lib-list">${lib.suggestions.map((g) => `<li class="lib-row" data-sid="${esc(g.session)}">

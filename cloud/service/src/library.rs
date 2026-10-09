@@ -100,7 +100,7 @@ impl Scope {
     }
 
     /// Toutes les lignes de l'index du client dont la clé de tri commence par `prefix`.
-    async fn rows(&self, prefix: &str) -> Result<Vec<HashMap<String, AttributeValue>>, Fail> {
+    pub async fn rows(&self, prefix: &str) -> Result<Vec<HashMap<String, AttributeValue>>, Fail> {
         let table = self.table()?;
         let (mut out, mut from) = (vec![], None);
         loop {
@@ -255,7 +255,10 @@ pub async fn list(c: Scope) -> Result<Json<Value>, Fail> {
         json!({"id": ride, "date": ride.get(4..12), "bytes": bytes, "sessions": list})
     }).collect();
     let bytes: u64 = sessions.values().map(Session::bytes).sum();
-    Ok(Json(json!({"bytes": bytes, "quota_bytes": c.quota_bytes, "trash_days": c.trash_days, "rides": rides,
+    let plan = c.plan().await?;
+    Ok(Json(json!({"bytes": bytes, "quota_bytes": plan.quota_bytes(), "plan": plan.label,
+                   "export_s": plan.export_s(), "export_used_s": c.export_used_s().await?,
+                   "trash_days": c.trash_days, "rides": rides,
                    "suggestions": suggestions, "exports": exports(&c).await?})))
 }
 

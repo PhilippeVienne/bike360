@@ -350,9 +350,10 @@ fn v360_filter(fov: f64, w: u32, h: u32, source: &str, masks: &[[f64; 4]], size:
     chain.join(";")
 }
 
-/// Atelier hébergé : s'il manque des originaux pour ces clips, ils sont demandés au service, puis
-/// les dossiers sont relus pour les rattacher à leurs sessions. Sans service configuré, rien n'est fait.
-fn fetch_originals(app: &App, job: &Job, clips: &[(String, Map<String, Value>)]) -> Result<()> {
+/// Atelier hébergé : l'export final est annoncé au service, qui peut le refuser (minutes du mois
+/// épuisées) et amène les originaux qui manquent ; les dossiers sont alors relus pour les rattacher
+/// à leurs sessions. Sans service configuré, rien n'est fait.
+fn fetch_originals(app: &App, job: &Job, clips: &[(String, Map<String, Value>)], total_s: f64) -> Result<()> {
     let Some(url) = bike360_core::originals::service_url() else { return Ok(()) };
     let mut wanted: Vec<String> = vec![];
     for (sid, _) in clips {
@@ -368,11 +369,11 @@ fn fetch_originals(app: &App, job: &Job, clips: &[(String, Map<String, Value>)])
             }
         }
     }
+    job.set("message", if wanted.is_empty() { "vérification du quota d'export" } else { "récupération des originaux" });
+    bike360_core::originals::request(&url, &wanted, total_s)?;
     if wanted.is_empty() {
         return Ok(());
     }
-    job.set("message", "récupération des originaux");
-    bike360_core::originals::request(&url, &wanted)?;
     let _g = app.lock.lock().unwrap();
     app.load_sessions()
 }
@@ -682,7 +683,7 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
         }
     }
     if q.source == "insv" {
-        fetch_originals(app, job, clips)?;
+        fetch_originals(app, job, clips, total_s)?;
     }
     let out_dir = exports_dir().join(key).join(&name);
     std::fs::create_dir_all(&out_dir)?;
