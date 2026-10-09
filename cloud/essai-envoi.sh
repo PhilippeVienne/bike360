@@ -67,7 +67,10 @@ waiting=$(aws sqs get-queue-attributes --queue-url "$queue" --attribute-names Ap
 [ "$waiting" = 0 ] && echo "   ✓ file vide après traitement" || { echo "   ✗ $waiting tâche(s) restée(s) dans la file" >&2; exit 1; }
 
 echo "== Atelier à la demande"
-node "$repo/cloud/essai-atelier.mjs" "http://127.0.0.1:$port" "$work/jetons.json" "$lrv"
+# l'original du même segment, s'il est à côté de l'aperçu, sert à essayer l'export final
+insv=$(echo "$lrv" | sed -E 's|LRV_([0-9]{8}_[0-9]{6})_[0-9]{2}_([0-9]{3})\.lrv$|VID_\1_00_\2.insv|')
+[ -f "$insv" ] || { insv=""; echo "   ? original absent à côté de l'aperçu : export final non essayé"; }
+node "$repo/cloud/essai-atelier.mjs" "http://127.0.0.1:$port" "$work/jetons.json" "$lrv" ${insv:+"$insv"}
 saved=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "donnees/$client/atelier/selections/" --query 'length(Contents || `[]`)' --output text)
 [ "$saved" -ge 1 ] && echo "   ✓ le clip du compte est dans le stockage" || { echo "   ✗ travail de l'atelier absent du stockage" >&2; exit 1; }
 

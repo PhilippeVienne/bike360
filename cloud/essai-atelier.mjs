@@ -1,9 +1,11 @@
 // Essai automatique de l'atelier à la demande.
-// Usage : node cloud/essai-atelier.mjs URL_DU_SERVICE FICHIER_DES_JETONS APERÇU.lrv   (le compte a doit avoir un rush analysé)
+// Usage : node cloud/essai-atelier.mjs URL_DU_SERVICE FICHIER_DES_JETONS APERÇU.lrv [ORIGINAL.insv]
+// Le compte a doit avoir un rush analysé ; avec l'original, l'export final est essayé aussi.
 import { openAsBlob, readFileSync } from "node:fs";
 import { sendFile } from "../ui/envoi-core.js";
 
-const [base, tokens, path] = process.argv.slice(2);
+import { basename } from "node:path";
+const [base, tokens, path, insv] = process.argv.slice(2);
 const { a, b, c } = JSON.parse(readFileSync(tokens));
 const check = (ok, text) => { console.log(`   ${ok ? "✓" : "✗"} ${text}`); if (!ok) process.exit(1); };
 const bearer = (t) => ({ Authorization: `Bearer ${t}` });
@@ -36,6 +38,25 @@ check((await atelier(A, "GET", "/api/fs?path=/")).status === 404, "atelier en mo
 const sid = sessions[0].id;
 const clip = { id: "abcd1234", start: 2, end: 8, yaw: 0, pitch: -10, fov: 100, horizon: "fixe" };
 check((await atelier(A, "PUT", `/api/selections/${sid}`, [clip])).status === 200, "un clip est posé dans l'atelier");
+
+if (insv) {
+  // export en pleine qualité : l'original n'est pas sur la machine de l'atelier, qui le demande au service
+  const blobO = await openAsBlob(insv);
+  await sendFile({ name: basename(insv), size: blobO.size, slice: (x, y) => blobO.slice(x, y) }, { base, headers: bearer(a.token) });
+  check((await atelier(A, "POST", `/api/export/${sid}`, { quality: "final" })).status === 200, `export final lancé (original de ${(blobO.size / 1e6).toFixed(0)} Mo déposé dans le stockage)`);
+  let job = {};
+  for (let i = 0; i < 240; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    job = (await atelier(A, "GET", `/api/export/${sid}`)).body || {};
+    if (job.state !== "running") break;
+  }
+  check(job.state === "done", `export final terminé : ${job.output || job.message} (moteur ${job.engine})`);
+  const lib = await (await fetch(`${base}/api/bibliotheque`, { headers: bearer(a.token) })).json();
+  const mine = lib.exports.find((x) => x.name === job.output);
+  const video = mine ? await fetch(mine.url) : null;
+  check(mine && video.ok && Number(video.headers.get("content-length")) === mine.bytes && mine.bytes > 100000,
+        `l'export apparaît dans la Bibliothèque et se télécharge (${mine && (mine.bytes / 1e6).toFixed(1)} Mo)`);
+}
 
 const B = await open(b);
 check(B.origin !== A.origin && (await atelier(B, "GET", "/api/sessions")).body.length === 0, "un autre compte a son propre atelier, sans les rushs du premier");

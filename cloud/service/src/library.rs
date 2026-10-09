@@ -2,7 +2,7 @@
 //! marqueurs (garder, favori, corbeille), la place occupée et les suggestions de nettoyage.
 //!
 //! Routes (JSON) :
-//!   GET  /api/bibliotheque                              → {bytes, quota_bytes, rides, suggestions}
+//!   GET  /api/bibliotheque                              → {bytes, quota_bytes, rides, suggestions, exports}
 //!        (une session analysée porte aussi sa vignette, sa distance, son GPS et ses moments forts)
 //!   POST /api/bibliotheque/marque  {session, mark}       → {ok}   (mark : garder, favori, corbeille ou null)
 //!   POST /api/bibliotheque/alleger {session, confirm}    → {ok, freed_bytes}   supprime les originaux, garde les aperçus
@@ -188,7 +188,26 @@ fn days_since(iso: &str) -> f64 {
     DateTime::parse_from_rfc3339(iso).map_or(0.0, |t| (Utc::now() - t.with_timezone(&Utc)).num_seconds() as f64 / 86400.0)
 }
 
+/// Vidéos exportées du client, la plus récente d'abord, chacune avec une adresse de téléchargement signée.
+async fn exports(c: &Scope) -> Result<Vec<Value>, Fail> {
+    let prefix = format!("exports/{}/", c.client);
+    let page = c.s3.list_objects_v2().bucket(&c.bucket).prefix(&prefix).send().await.map_err(aws("liste des exports"))?;
+    let mut found: Vec<_> = page.contents().iter().filter(|o| o.key().is_some()).collect();
+    found.sort_by_key(|o| std::cmp::Reverse(o.last_modified().map(|t| t.secs())));
+    let mut out = vec![];
+    for o in found {
+        let key = o.key().unwrap_or_default();
+        let url = c.s3.get_object().bucket(&c.bucket).key(key)
+            .presigned(aws_sdk_s3::presigning::PresigningConfig::expires_in(THUMB_TTL).map_err(aws("signature"))?)
+            .await.map_err(aws("signature"))?;
+        out.push(json!({"name": &key[prefix.len()..], "bytes": o.size(), "url": url.uri(),
+                        "modified": o.last_modified().map(|t| t.secs())}));
+    }
+    Ok(out)
+}
+
 pub async fn list(c: Scope) -> Result<Json<Value>, Fail> {
+    c.sync_exports().await;   // un export terminé dans l'atelier ouvert apparaît ici
     let sessions = c.sessions().await?;
     let spans: Vec<rides::Span> = sessions.iter().map(|(id, s)| {
         let start = start_of(id);
@@ -236,7 +255,8 @@ pub async fn list(c: Scope) -> Result<Json<Value>, Fail> {
         json!({"id": ride, "date": ride.get(4..12), "bytes": bytes, "sessions": list})
     }).collect();
     let bytes: u64 = sessions.values().map(Session::bytes).sum();
-    Ok(Json(json!({"bytes": bytes, "quota_bytes": c.quota_bytes, "trash_days": c.trash_days, "rides": rides, "suggestions": suggestions})))
+    Ok(Json(json!({"bytes": bytes, "quota_bytes": c.quota_bytes, "trash_days": c.trash_days, "rides": rides,
+                   "suggestions": suggestions, "exports": exports(&c).await?})))
 }
 
 #[derive(Deserialize)]

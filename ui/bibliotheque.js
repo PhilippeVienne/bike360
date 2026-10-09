@@ -50,6 +50,11 @@ function render() {
     ? lib.rides.map((r) => `<section class="ride"><div class="day-head">${day(r.date)} · ${r.sessions.length} session${r.sessions.length > 1 ? "s" : ""} · ${size(r.bytes)}</div>
         <ul class="lib-list">${r.sessions.map(sessionRow).join("")}</ul></section>`).join("")
     : `<p class="muted">Aucun rush pour l'instant. <a href="envoi.html">Envoyer mes rushs</a></p>`;
+  $("#exports").innerHTML = lib.exports.length
+    ? `<h3>Mes exports</h3><ul class="lib-list">${lib.exports.map((x) => `<li class="lib-row">
+        <span class="grow">${esc(x.name)} <span class="muted">${size(x.bytes)}${x.modified ? ` · ${new Date(x.modified * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "long" })}` : ""}</span></span>
+        <a class="upload" href="${esc(x.url)}" download="${esc(x.name)}">Télécharger</a></li>`).join("")}</ul>
+       <p class="muted">Les exports sont gardés 30 jours et ne comptent pas dans la place occupée.</p>` : "";
   const trashed = lib.rides.flatMap((r) => r.sessions).filter((s) => s.mark === "corbeille").length;
   $("#trash").textContent = trashed ? `${trashed} session${trashed > 1 ? "s" : ""} à la corbeille, gardée${trashed > 1 ? "s" : ""} ${lib.trash_days} jours avant suppression.` : "";
 }

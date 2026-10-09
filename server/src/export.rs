@@ -350,6 +350,33 @@ fn v360_filter(fov: f64, w: u32, h: u32, source: &str, masks: &[[f64; 4]], size:
     chain.join(";")
 }
 
+/// Atelier hébergé : s'il manque des originaux pour ces clips, ils sont demandés au service, puis
+/// les dossiers sont relus pour les rattacher à leurs sessions. Sans service configuré, rien n'est fait.
+fn fetch_originals(app: &App, job: &Job, clips: &[(String, Map<String, Value>)]) -> Result<()> {
+    let Some(url) = bike360_core::originals::service_url() else { return Ok(()) };
+    let mut wanted: Vec<String> = vec![];
+    for (sid, _) in clips {
+        let Some(s) = app.sess(sid) else { continue };
+        if s.session.segments.iter().all(|seg| seg.insv.is_some()) {
+            continue;
+        }
+        // un enregistrement en boucle réunit plusieurs sessions d'origine
+        let ids = if s.session.parts.is_empty() { vec![s.session.id.clone()] } else { s.session.parts.clone() };
+        for id in ids {
+            if !wanted.contains(&id) {
+                wanted.push(id);
+            }
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    job.set("message", "récupération des originaux");
+    bike360_core::originals::request(&url, &wanted)?;
+    let _g = app.lock.lock().unwrap();
+    app.load_sessions()
+}
+
 /// Découpe un clip (temps de session) en morceaux par segment de fichier : (segment, début, durée).
 pub fn clip_parts<'a>(session: &'a Session, result: &Analysis, start: f64, end: f64) -> Vec<(&'a Segment, f64, f64)> {
     session.segments.iter().zip(&result.segments).filter_map(|(seg, info)| {
@@ -653,6 +680,9 @@ fn export_inner(app: &App, job: &Job, key: &str, clips: &[(String, Map<String, V
         if !todo.is_empty() {
             privacy::analyze(app, job, &todo, false, &format!("confidentialité ({} clip(s) à analyser) · ", todo.len()))?;
         }
+    }
+    if q.source == "insv" {
+        fetch_originals(app, job, clips)?;
     }
     let out_dir = exports_dir().join(key).join(&name);
     std::fs::create_dir_all(&out_dir)?;

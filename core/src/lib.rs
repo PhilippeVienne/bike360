@@ -18,6 +18,7 @@ pub mod lean;
 pub mod migrate;
 pub mod musiclib;
 pub mod numeric;
+pub mod originals;
 pub mod paths;
 pub mod position;
 pub mod privacy;

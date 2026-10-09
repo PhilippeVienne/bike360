@@ -382,7 +382,8 @@ async fn main() -> Result<()> {
     };
     let ctx = Arc::new(Ctx { s3, db, sqs: aws_sdk_sqs::Client::new(&conf), queue: a.queue, auth, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
                              table: a.table,
-                             launcher: a.atelier_bin.map(|bin| atelier::Launcher::new(bin, a.atelier_work, a.atelier_host, a.atelier_idle_min * 60)),
+                             launcher: a.atelier_bin.map(|bin| atelier::Launcher::new(bin, a.atelier_work, a.atelier_host, a.atelier_idle_min * 60,
+                                                                                   format!("http://127.0.0.1:{}", a.port))),
                              quota_bytes: a.quota_go * 1_000_000_000, trash_days: a.trash_days });
     let mut app = Router::new()
         .route("/api/envoi/start", post(start))
@@ -398,6 +399,7 @@ async fn main() -> Result<()> {
         .route("/api/atelier", get(atelier::status))
         .route("/api/atelier/ouvrir", post(atelier::open))
         .route("/api/atelier/fermer", post(atelier::close))
+        .route("/api/interne/originaux", post(atelier::originals))
         .route("/api/bibliotheque", get(library::list))
         .route("/api/bibliotheque/marque", post(library::mark))
         .route("/api/bibliotheque/alleger", post(library::lighten))

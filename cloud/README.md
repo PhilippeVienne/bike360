@@ -72,6 +72,10 @@ passe de l'atelier n'est connu que du service. Un atelier inactif et sans calcul
 enregistré puis arrêté (`--atelier-idle-min`, 30 minutes par défaut) ; ses clips, son projet et ses
 réglages sont déposés sous `donnees/<client>/atelier/` et repris à l'ouverture suivante.
 
+Les originaux ne sont amenés à l'atelier qu'au moment d'un export final : il les demande au service
+(`BIKE360_ORIGINALS_URL`), en s'identifiant par son mot de passe. L'export terminé est déposé sous
+`exports/<client>/` et proposé au téléchargement dans la Bibliothèque pendant 30 jours.
+
 Ici, l'atelier est un processus sur la machine du service et les aperçus du client y sont recopiés.
 Sur AWS, ce rôle reviendra à une tâche Fargate dont le stockage est monté.
 
