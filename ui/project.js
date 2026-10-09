@@ -37,7 +37,7 @@ function renderFiles() {
     card.innerHTML = `<img loading="lazy" alt="" src="/thumb/${s.id}.jpg">
       <label class="fc-check" title="Inclure ce fichier dans le projet (montage)"><input type="checkbox" ${inside ? "checked" : ""}> dans le projet</label>
       <div class="fc-info"><strong>${hhmm(s)}</strong> · ${fmt(s.duration)}${s.parts > 1 ? `<span class="badge" title="Enregistrement en boucle : ${s.parts} fichiers continus réunis">boucle ×${s.parts}</span>` : ""}${s.clips ? `<span class="badge clips">${s.clips} clip${s.clips > 1 ? "s" : ""}</span>` : ""}
-        <div class="muted">${s.gps_coverage > 0.05 ? `GPS ${Math.round(s.gps_coverage * 100)} %` : "sans GPS"} · ${esc(folder)}</div></div>`;
+        <div class="muted">${s.gps_coverage > 0.05 ? `GPS ${Math.round(s.gps_coverage * 100)} %${s.gps_source === "gpx" ? " (trace .gpx)" : ""}` : "sans GPS"}${s.camera ? ` · ${esc(s.camera.model)}` : ""} · ${esc(folder)}</div></div>`;
     list.appendChild(card);
   });
   if (!st.sessions.length) list.innerHTML = `<div class="empty">Aucune vidéo analysée pour l'instant.<br>

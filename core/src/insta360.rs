@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDateTime;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const MAGIC: &[u8] = b"8db42d694ccc418790edff439fe026bf";
 const ACC_LSB_PER_G: f64 = 1024.0; // acc_range = 32 g (métadonnées)
@@ -25,6 +25,11 @@ pub const MAX_CHAIN_GAP_S: f64 = 2.5;
 
 /// Enregistrements du trailer {identifiant: contenu} (0x03 et 0x0101), vide s'il est absent.
 pub fn read_records(path: &Path) -> Result<HashMap<u16, Vec<u8>>> {
+    read_records_of(path, &[0x03, 0x0101])
+}
+
+/// Enregistrements demandés du trailer {identifiant: contenu}, vide s'il est absent.
+fn read_records_of(path: &Path, wanted: &[u16]) -> Result<HashMap<u16, Vec<u8>>> {
     let mut f = File::open(path).with_context(|| format!("ouverture de {path:?}"))?;
     let size = f.seek(SeekFrom::End(0))?;
     let mut out = HashMap::new();
@@ -45,7 +50,7 @@ pub fn read_records(path: &Path) -> Result<HashMap<u16, Vec<u8>>> {
         let rid = u16::from_le_bytes(index[i..i + 2].try_into()?);
         let length = u32::from_le_bytes(index[i + 2..i + 6].try_into()?) as usize;
         let offset = u32::from_le_bytes(index[i + 6..i + 10].try_into()?) as u64;
-        if length > 0 && (rid == 0x03 || rid == 0x0101) {
+        if length > 0 && wanted.contains(&rid) {
             let mut buf = vec![0u8; length];
             f.seek(SeekFrom::Start(start + offset))?;
             f.read_exact(&mut buf)?;
@@ -112,6 +117,27 @@ pub fn protobuf_fields(b: &[u8]) -> HashMap<u64, Vec<Field>> {
     out
 }
 
+/// Caméra qui a produit un fichier (métadonnées 0x0101 : champs 1, 2 et 3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Camera {
+    pub serial: String,
+    /// ex. « Insta360 X5 »
+    pub model: String,
+    pub firmware: String,
+}
+
+/// Caméra d'origine d'un fichier, None sans trailer ou sans numéro de série.
+pub fn read_camera(path: &Path) -> Option<Camera> {
+    let rec = read_records_of(path, &[0x0101]).ok()?;
+    let meta = protobuf_fields(rec.get(&0x0101)?);
+    let text = |tag: u64| match meta.get(&tag).and_then(|v| v.first()) {
+        Some(Field::Bytes(b)) => String::from_utf8_lossy(b).trim().to_string(),
+        _ => String::new(),
+    };
+    let serial = text(1);
+    (!serial.is_empty()).then(|| Camera { serial, model: text(2), firmware: text(3) })
+}
+
 /// Mesures IMU d'un fichier : temps vidéo (s), accélération (g), gyroscope brut centré.
 pub struct Imu {
     pub t: Vec<f64>,
@@ -164,6 +190,8 @@ pub struct Session {
     pub segments: Vec<Segment>,
     /// Sessions d'origine fusionnées (enregistrement en boucle).
     pub parts: Vec<String>,
+    /// Caméra d'origine, lue dans le premier fichier.
+    pub camera: Option<Camera>,
 }
 
 impl Session {
@@ -199,7 +227,7 @@ pub fn scan(dcim: &Path) -> Vec<Session> {
         let s = match sessions.iter_mut().position(|s| s.id == sid) {
             Some(i) => &mut sessions[i],
             None => {
-                sessions.push(Session { id: sid, date: date.into(), time: time.into(), segments: vec![], parts: vec![] });
+                sessions.push(Session { id: sid, date: date.into(), time: time.into(), segments: vec![], parts: vec![], camera: None });
                 sessions.last_mut().unwrap()
             }
         };
@@ -220,6 +248,9 @@ pub fn scan(dcim: &Path) -> Vec<Session> {
         s.segments.sort_by_key(|x| x.index);
     }
     sessions.retain(|s| s.segments.iter().all(|seg| seg.lrv.is_some()));
+    for s in &mut sessions {
+        s.camera = s.segments.first().and_then(|seg| seg.lrv.as_deref()).and_then(read_camera);
+    }
     sessions
 }
 
@@ -237,7 +268,7 @@ pub fn merge_continuous(mut sessions: Vec<Session>, duration_of: impl Fn(&Sessio
         let dur = duration_of(&s);
         if let Some((block, prev_start, prev_dur)) = out.last_mut() {
             let gap = (start - *prev_start).num_milliseconds() as f64 / 1000.0 - *prev_dur;
-            if gap.abs() <= MAX_CHAIN_GAP_S {
+            if gap.abs() <= MAX_CHAIN_GAP_S && block.camera == s.camera {   // jamais deux caméras dans un bloc
                 if block.parts.is_empty() {
                     block.parts.push(block.id.clone());
                 }

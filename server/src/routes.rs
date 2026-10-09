@@ -10,7 +10,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use bike360_core::{analyze, automontage, finishing, geometry, hyperlapse, insta360, musiclib};
+use bike360_core::{analyze, automontage, finishing, geometry, gpx, hyperlapse, insta360, musiclib};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -22,6 +22,7 @@ use crate::{privacy, pyjson};
 use bike360_core::privacy as core_privacy;
 
 const MUSIC_MAX_BYTES: usize = 60 * 1024 * 1024;
+const GPX_MAX_BYTES: usize = 60 * 1024 * 1024;
 
 /// Réponse préparée par le traitement synchrone.
 pub enum Reply {
@@ -380,7 +381,8 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                        "gps_coverage": r.gps_coverage, "candidates": r.candidates.len(), "clips": clips.len(),
                        "clips_s": bike360_core::numeric::round_nd(clips_s, 1),
                        "folder": r.extra.get("folder").cloned().unwrap_or(Value::Null),
-                       "parts": r.extra.get("parts").cloned().unwrap_or(json!(1))})
+                       "parts": r.extra.get("parts").cloned().unwrap_or(json!(1)),
+                       "camera": s.session.camera, "gps_source": r.gps_source})
             }).collect();
             return Ok(ok(Value::Array(list)));
         }
@@ -463,6 +465,7 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
             }).collect();
             return Ok(ok(json!({"scan": app.scan.lock().unwrap().clone(), "folders": folders})));
         }
+        "/api/gps" => return Ok(ok(Value::Array(gps_files()))),
         "/api/settings" => return Ok(ok(app.get_settings())),
         _ => {}
     }
@@ -731,6 +734,9 @@ fn post(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Result
     if p == ["api", "music"] {
         return Ok(music_upload(full, headers, body));
     }
+    if p == ["api", "gps"] {
+        return Ok(gps_upload(app, full, headers, body));
+    }
     if p == ["api", "montage"] {
         let b = body_obj(body)?;
         let items = app.montage_items();
@@ -986,6 +992,54 @@ fn music_upload(full: &str, headers: &HeaderMap, body: &Bytes) -> Reply {
         return Reply::Error(500);
     }
     ok(json!({"ok": true, "name": name}))
+}
+
+/// Traces GPX déposées : [{name, points, from, to}] (dates UTC, absentes d'un fichier sans point horodaté).
+fn gps_files() -> Vec<Value> {
+    let iso = |t: f64| chrono::DateTime::from_timestamp(t as i64, 0).map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    gpx::files().iter().map(|f| {
+        let (points, span) = gpx::summary(f);
+        json!({"name": f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), "points": points,
+               "from": span.and_then(|s| iso(s.0)), "to": span.and_then(|s| iso(s.1))})
+    }).collect()
+}
+
+/// Reçoit une trace GPS (corps brut) : POST /api/gps?name=trace.gpx, ou la retire : POST /api/gps?remove=trace.gpx.
+/// Les sessions du jour sont ensuite analysées de nouveau avec cette source.
+fn gps_upload(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Reply {
+    let qs = raw_query(full);
+    let file_name = |key: &str| {
+        let raw = unquote(qs.get(key).and_then(Value::as_str).unwrap_or(""), false);
+        Path::new(&raw).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    };
+    let is_gpx = |name: &str| Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case("gpx")) && !name.starts_with('.');
+    if app.scan.lock().unwrap().get("state").and_then(Value::as_str) == Some("running") {
+        return err(409, "analyse déjà en cours");
+    }
+    let removed = file_name("remove");
+    let name = file_name("name");
+    if !removed.is_empty() {
+        if !is_gpx(&removed) || std::fs::remove_file(gpx::dir().join(&removed)).is_err() {
+            return err(404, "trace introuvable");
+        }
+    } else {
+        let n: usize = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
+        if !is_gpx(&name) {
+            return err(400, "format non pris en charge (fichier .gpx attendu)");
+        }
+        if !(0 < n && n <= GPX_MAX_BYTES) {
+            return err(400, "fichier vide ou trop gros (60 Mo max)");
+        }
+        if gpx::parse(&String::from_utf8_lossy(body)).len() < 2 {
+            return err(400, "aucun point horodaté dans ce fichier GPX");
+        }
+        if std::fs::create_dir_all(gpx::dir()).and_then(|_| std::fs::write(gpx::dir().join(&name), body)).is_err() {
+            return Reply::Error(500);
+        }
+    }
+    let app2 = app.clone();
+    spawn(move || app2.rescan());
+    ok(json!({"ok": true, "files": gps_files()}))
 }
 
 /// Montage automatique : remplace les clips auto des sessions par un nouveau plan.

@@ -9,6 +9,7 @@ pub mod endcard;
 pub mod finishing;
 pub mod geometry;
 pub mod georide;
+pub mod gpx;
 pub mod horizon;
 pub mod hyperlapse;
 pub mod insta360;
