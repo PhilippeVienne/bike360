@@ -1,0 +1,470 @@
+//! Atelier à la demande : un `bike360-server` par compte, lancé en mode hébergé quand le client
+//! ouvre son atelier, arrêté quand il ne s'en sert plus. Ses clips et réglages sont déposés dans le
+//! stockage à l'arrêt et repris à l'ouverture suivante.
+//!
+//! Ce lanceur démarre un processus sur la machine du service et recopie les aperçus du client sur
+//! son disque. Sur AWS, le même rôle reviendra à une tâche Fargate dont le stockage est monté.
+//!
+//! Routes (JSON) :
+//!   GET  /api/atelier          → {available, running}
+//!   POST /api/atelier/ouvrir   → {url}   adresse à usage unique qui ouvre la session du client
+//!   POST /api/atelier/fermer   → {ok}    enregistre puis arrête
+//!   POST /api/interne/originaux {sessions}   appelé par un atelier (identifié par son mot de passe) au
+//!        moment d'exporter : les originaux de ces sessions sont amenés dans son dossier de rushs
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
+use aws_sdk_s3::primitives::ByteStream;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::Json;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
+
+use crate::account::Scope;
+use crate::{Ctx, Fail};
+
+/// Attente maximale du démarrage d'un atelier.
+const START_TIMEOUT: Duration = Duration::from_secs(90);
+/// Intervalle entre deux relevés d'activité.
+const WATCH_EVERY: Duration = Duration::from_secs(30);
+
+pub struct Launcher {
+    /// Exécutable de l'atelier (bike360-server).
+    pub bin: PathBuf,
+    /// Dossier de travail : un sous-dossier par client.
+    pub work: PathBuf,
+    /// Nom ou adresse sous lequel le navigateur du client joint cette machine.
+    pub host: String,
+    /// Inactivité (s) au bout de laquelle un atelier est arrêté.
+    pub idle_s: u64,
+    /// Adresse de ce service vue des ateliers (ils y demandent leurs originaux).
+    pub service_url: String,
+    /// Adresse publique du site : l'atelier y renvoie le client vers sa Bibliothèque.
+    pub site: String,
+    running: Mutex<HashMap<String, Instance>>,
+}
+
+struct Instance {
+    child: Child,
+    port: u16,
+    /// Mot de passe de l'atelier, connu du seul service.
+    password: String,
+    /// Exports déjà déposés dans le stockage : nom → (taille, date du fichier).
+    pushed: HashMap<String, (u64, u64)>,
+    /// État des traces GPS de l'atelier au dernier dépôt dans le stockage (noms, tailles, dates).
+    gps_sig: String,
+}
+
+/// Empreinte d'un dossier de traces : nom, taille et date de chaque fichier.
+fn gps_signature(dir: &Path) -> String {
+    let mut files: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            let at = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+            Some(format!("{}:{}:{at}", e.file_name().to_string_lossy(), m.len()))
+        })
+        .collect();
+    files.sort();
+    files.join("|")
+}
+
+fn random_hex() -> Result<String> {
+    use std::io::Read;
+    let mut b = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// Appel à l'atelier d'un client, authentifié par son mot de passe.
+async fn call(host: &str, port: u16, password: &str, method: &'static str, path: &'static str, body: Option<Value>) -> Result<Value> {
+    let (url, auth) = (format!("http://{host}:{port}{path}"), format!("Bearer {password}"));
+    tokio::task::spawn_blocking(move || -> Result<Value> {
+        let req = ureq::request(method, &url).set("Authorization", &auth).timeout(Duration::from_secs(10));
+        let res = match body {
+            Some(b) => req.send_json(b)?,
+            None => req.call()?,
+        };
+        Ok(res.into_json()?)
+    }).await?
+}
+
+impl Launcher {
+    pub fn new(bin: PathBuf, work: PathBuf, host: String, idle_s: u64, service_url: String, site: String) -> Launcher {
+        Launcher { bin, work, host, idle_s, service_url, site, running: Mutex::new(HashMap::new()) }
+    }
+
+    fn dir(&self, client: &str) -> PathBuf {
+        self.work.join(client)
+    }
+}
+
+impl Ctx {
+    /// Copie sur le disque les objets de `prefix` qui n'y sont pas déjà à la bonne taille.
+    async fn pull(&self, prefix: &str, dir: &Path, keep: impl Fn(&str) -> bool) -> Result<()> {
+        let mut token = None::<String>;
+        loop {
+            let page = self.s3.list_objects_v2().bucket(&self.bucket).prefix(prefix).set_continuation_token(token.take()).send().await?;
+            for o in page.contents() {
+                let (Some(key), Some(size)) = (o.key(), o.size()) else { continue };
+                let rel = &key[prefix.len()..];
+                // un nom d'objet devient un chemin : rien qui remonte hors du dossier
+                if rel.is_empty() || rel.split('/').any(|c| c.is_empty() || c == "." || c == "..") || !keep(rel) {
+                    continue;
+                }
+                let to = dir.join(rel);
+                if std::fs::metadata(&to).is_ok_and(|m| m.len() == size as u64) {
+                    continue;
+                }
+                std::fs::create_dir_all(to.parent().unwrap_or(dir))?;
+                let out = self.s3.get_object().bucket(&self.bucket).key(key).send().await?;
+                tokio::io::copy(&mut out.body.into_async_read(), &mut tokio::fs::File::create(&to).await?).await?;
+            }
+            match page.next_continuation_token() {
+                Some(next) => token = Some(next.to_string()),
+                None => return Ok(()),
+            }
+        }
+    }
+
+    /// Dépose dans le stockage les fichiers de `dir` (récursivement) sous `prefix`, sauf le sous-dossier `skip`.
+    async fn push(&self, dir: &Path, prefix: &str, skip: &str) -> Result<usize> {
+        let (mut stack, mut count) = (vec![dir.to_path_buf()], 0);
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if p != dir.join(skip) {
+                        stack.push(p);
+                    }
+                } else if let Ok(rel) = p.strip_prefix(dir) {
+                    self.s3.put_object().bucket(&self.bucket).key(format!("{prefix}{}", rel.to_string_lossy()))
+                        .body(ByteStream::from_path(&p).await?).send().await?;
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
+}
+
+impl Scope {
+    fn launcher(&self) -> Result<&Launcher, Fail> {
+        self.launcher.as_ref().ok_or_else(|| Fail(StatusCode::NOT_FOUND, "l'atelier n'est pas proposé par ce service".into()))
+    }
+
+    /// Démarre l'atelier du client sur ses aperçus, ses analyses et son travail enregistré.
+    async fn start(&self, l: &Launcher) -> Result<Instance> {
+        let dir = l.dir(&self.client);
+        let (rushs, data, cache) = (dir.join("rushs"), dir.join("data"), dir.join("cache"));
+        for d in [&rushs, &data, &cache, &dir.join("exports"), &dir.join("root")] {
+            std::fs::create_dir_all(d)?;
+        }
+        let c = &self.client;
+        self.pull(&format!("apercus/{c}/"), &rushs, |n| !n.contains('/')).await.context("copie des aperçus")?;
+        self.pull(&format!("donnees/{c}/cache/"), &cache, |n| n.ends_with(".json") && !n.contains('/')).await?;
+        self.pull(&format!("donnees/{c}/gps/"), &data.join("gps"), |n| n.ends_with(".gpx") && !n.contains('/')).await?;
+        self.pull(&format!("donnees/{c}/atelier/"), &data, |n| !n.starts_with("gps/")).await.context("reprise du travail enregistré")?;
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+        let password = random_hex()?;
+        let log = std::fs::File::create(dir.join("atelier.log"))?;
+        let child = Command::new(&l.bin).arg(&rushs).args(["--host", &l.host, "--port", &port.to_string()])
+            .env("BIKE360_CLOUD", "1").env("BIKE360_PASSWORD", &password)
+            .env("BIKE360_ROOT", dir.join("root")).env("BIKE360_DATA", &data).env("BIKE360_CACHE", &cache)
+            .env("BIKE360_EXPORTS", dir.join("exports")).env("HOME", &dir)
+            .env("BIKE360_ORIGINALS_URL", format!("{}/api/interne/originaux", l.service_url))
+            .env("BIKE360_LIBRARY_URL", format!("{}/ui/bibliotheque.html", l.site))
+            .stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log)
+            .kill_on_drop(true).spawn().context("lancement de l'atelier")?;
+        let inst = Instance { child, port, password, pushed: HashMap::new(), gps_sig: gps_signature(&data.join("gps")) };
+        let started = std::time::Instant::now();
+        while call(&l.host, port, &inst.password, "GET", "/api/activite", None).await.is_err() {
+            if started.elapsed() > START_TIMEOUT {
+                bail!("l'atelier n'a pas démarré à temps (voir {})", dir.join("atelier.log").display());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Ok(inst)
+    }
+
+    /// Enregistre le travail du client dans le stockage (clips, projet, réglages). Les traces GPS ont
+    /// leur propre emplacement, commun à l'atelier et à l'analyse à l'arrivée : voir `sync_gps`.
+    async fn save(&self, l: &Launcher) -> Result<usize> {
+        self.push(&l.dir(&self.client).join("data"), &format!("donnees/{}/atelier/", self.client), "gps").await
+    }
+
+    /// Si les traces GPS de l'atelier ont changé : le stockage est mis à leur image (dépôts et retraits)
+    /// et l'analyse des sessions de ces jours-là est redemandée, pour que la Bibliothèque suive.
+    async fn sync_gps(&self, l: &Launcher, sig: &mut String) -> Result<()> {
+        let dir = l.dir(&self.client).join("data").join("gps");
+        let now = gps_signature(&dir);
+        if now == *sig {
+            return Ok(());
+        }
+        let prefix = format!("donnees/{}/gps/", self.client);
+        let local: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("gpx"))).collect();
+        let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        for p in &local {
+            self.s3.put_object().bucket(&self.bucket).key(format!("{prefix}{}", name(p))).body(ByteStream::from_path(p).await?).send().await?;
+        }
+        let remote = self.s3.list_objects_v2().bucket(&self.bucket).prefix(&prefix).send().await?;
+        for key in remote.contents().iter().filter_map(|o| o.key()) {
+            if !local.iter().any(|p| name(p) == key[prefix.len()..]) {
+                self.s3.delete_object().bucket(&self.bucket).key(key).send().await?;
+            }
+        }
+        // jours couverts par les traces, élargis d'un jour : l'heure de la caméra est locale, celle du GPS est UTC
+        let day = |t: f64| chrono::DateTime::from_timestamp(t as i64, 0).map(|d| d.date_naive());
+        let spans: Vec<(chrono::NaiveDate, chrono::NaiveDate)> = local.iter()
+            .filter_map(|p| bike360_core::gpx::summary(p).1)
+            .filter_map(|(a, b)| Some((day(a)?.pred_opt()?, day(b)?.succ_opt()?)))
+            .collect();
+        let mut asked: Vec<String> = vec![];
+        for item in self.rows("rush#").await.map_err(|f| anyhow::anyhow!(f.1))? {
+            let text = |k: &str| item.get(k).and_then(|v| v.as_s().ok()).cloned();
+            let (Some(session), Some(kind)) = (text("session"), text("nature")) else { continue };
+            let date = session.get(4..12).and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y%m%d").ok());
+            if kind == "apercus" && !asked.contains(&session) && date.is_some_and(|d| spans.iter().any(|(a, b)| *a <= d && d <= *b)) {
+                self.enqueue(&session).await;
+                asked.push(session);
+            }
+        }
+        *sig = now;
+        Ok(())
+    }
+
+    /// Dépose dans le stockage les vidéos exportées qui n'y sont pas encore ; `pushed` retient ce qui est fait.
+    async fn push_exports(&self, l: &Launcher, pushed: &mut HashMap<String, (u64, u64)>) -> Result<usize> {
+        let mut count = 0;
+        for e in std::fs::read_dir(l.dir(&self.client).join("exports")).into_iter().flatten().flatten() {
+            let (path, name) = (e.path(), e.file_name().to_string_lossy().to_string());
+            let Ok(meta) = e.metadata() else { continue };
+            // un export refait sous le même nom est un nouvel export : sa date le distingue
+            let made = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+            let size = meta.len();
+            if !path.is_file() || !name.ends_with(".mp4") || size == 0 || pushed.get(&name) == Some(&(size, made)) {
+                continue;
+            }
+            self.s3.put_object().bucket(&self.bucket).key(format!("exports/{}/{name}", self.client)).content_type("video/mp4")
+                .body(ByteStream::from_path(&path).await?).send().await?;
+            // un export en pleine qualité compte dans les minutes du mois ; un aperçu, non
+            if !name.contains("_preview_") {
+                let probed = path.clone();
+                let seconds = tokio::task::spawn_blocking(move || bike360_core::analyze::file_duration(&probed)).await.unwrap_or(0.0);
+                self.record_export(&format!("{name}#{made}"), seconds, size).await?;
+            }
+            pushed.insert(name, (size, made));
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Arrête l'atelier du client. Avec `keep`, son travail est d'abord enregistré dans le stockage ;
+    /// sinon tout ce qu'il avait sur le disque du service est effacé (rushs supprimés, compte effacé).
+    pub async fn atelier_stop(&self, keep: bool) -> Result<usize> {
+        let Some(l) = &self.launcher else { return Ok(0) };
+        let mut running = l.running.lock().await;
+        let mut saved = 0;
+        if let Some(mut inst) = running.remove(&self.client) {
+            if keep {
+                let done = async {
+                    let saved = self.save(l).await.context("enregistrement du travail")?;
+                    self.sync_gps(l, &mut inst.gps_sig).await.context("enregistrement des traces GPS")?;
+                    self.push_exports(l, &mut inst.pushed).await.context("dépôt des exports")?;
+                    anyhow::Ok(saved)
+                }.await;
+                match done {
+                    Ok(n) => saved = n,
+                    // un atelier dont le travail n'a pas pu être enregistré reste ouvert
+                    Err(e) => {
+                        running.insert(self.client.clone(), inst);
+                        return Err(e);
+                    }
+                }
+            }
+            let _ = inst.child.kill().await;
+        }
+        if !keep {
+            let dir = l.dir(&self.client);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).with_context(|| format!("effacement de {}", dir.display()))?;
+            }
+        }
+        Ok(saved)
+    }
+
+    /// Dépose les exports terminés de l'atelier du client, s'il tourne et ne calcule rien.
+    pub async fn sync_exports(&self) {
+        let Some(l) = &self.launcher else { return };
+        let mut running = l.running.lock().await;
+        let Some(inst) = running.get_mut(&self.client) else { return };
+        let busy = call(&l.host, inst.port, &inst.password, "GET", "/api/activite", None).await.map_or(true, |a| a["busy"] != json!(false));
+        if !busy {
+            if let Err(e) = self.push_exports(l, &mut inst.pushed).await {
+                eprintln!("exports de {} : {e:#}", self.client);
+            }
+        }
+    }
+
+    /// Un aperçu vient d'arriver : il rejoint l'atelier du client s'il tourne, qui relance son analyse.
+    pub async fn atelier_arrival(&self) {
+        let Some(l) = &self.launcher else { return };
+        let running = l.running.lock().await;
+        let Some(inst) = running.get(&self.client) else { return };
+        let done = async {
+            self.pull(&format!("apercus/{}/", self.client), &l.dir(&self.client).join("rushs"), |n| !n.contains('/')).await?;
+            call(&l.host, inst.port, &inst.password, "POST", "/api/sources", Some(json!({"rescan": true}))).await
+        }.await;
+        if let Err(e) = done {
+            eprintln!("atelier de {} non prévenu : {e:#}", self.client);
+        }
+    }
+}
+
+fn failed(what: &'static str) -> impl FnOnce(anyhow::Error) -> Fail {
+    move |e| {
+        eprintln!("{what} : {e:#}");
+        Fail(StatusCode::BAD_GATEWAY, format!("{what} impossible pour l'instant"))
+    }
+}
+
+pub async fn status(c: Scope) -> Json<Value> {
+    let running = match &c.launcher {
+        Some(l) => l.running.lock().await.contains_key(&c.client),
+        None => false,
+    };
+    Json(json!({"available": c.launcher.is_some(), "running": running}))
+}
+
+/// Ouvre l'atelier du client (en le démarrant s'il le faut) et renvoie une adresse à usage unique.
+pub async fn open(c: Scope) -> Result<Json<Value>, Fail> {
+    let l = c.launcher()?;
+    c.check_access().await?;
+    let mut running = l.running.lock().await;
+    let alive = match running.get_mut(&c.client) {
+        Some(inst) => inst.child.try_wait().is_ok_and(|s| s.is_none()),
+        None => false,
+    };
+    if !alive {
+        running.remove(&c.client);
+        let inst = c.start(l).await.map_err(failed("ouverture de l'atelier"))?;
+        running.insert(c.client.clone(), inst);
+    }
+    let inst = &running[&c.client];
+    let token = call(&l.host, inst.port, &inst.password, "POST", "/api/ouverture", Some(json!({}))).await.map_err(failed("ouverture de l'atelier"))?;
+    let token = token["jeton"].as_str().ok_or_else(|| Fail(StatusCode::BAD_GATEWAY, "atelier sans jeton d'ouverture".into()))?;
+    Ok(Json(json!({"url": format!("http://{}:{}/ouvrir?jeton={token}", l.host, inst.port)})))
+}
+
+/// Enregistre le travail du client puis arrête son atelier.
+pub async fn close(c: Scope) -> Result<Json<Value>, Fail> {
+    c.launcher()?;
+    let saved = c.atelier_stop(true).await.map_err(failed("enregistrement du travail"))?;
+    Ok(Json(json!({"ok": true, "saved": saved})))
+}
+
+#[derive(Deserialize)]
+pub struct Originals {
+    sessions: Vec<String>,
+    /// Durée de l'export à venir (s), comptée dans les minutes du mois.
+    #[serde(default)]
+    seconds: f64,
+}
+
+/// Amène dans le dossier de rushs d'un atelier les originaux des sessions qu'il va exporter.
+/// L'appelant est l'atelier lui-même : son mot de passe dit pour quel client il travaille.
+pub async fn originals(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Json(b): Json<Originals>) -> Result<Json<Value>, Fail> {
+    let l = ctx.launcher.as_ref().ok_or_else(|| Fail(StatusCode::NOT_FOUND, "l'atelier n'est pas proposé par ce service".into()))?;
+    let given = headers.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or_default();
+    let same = |a: &str, b: &str| a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0;
+    let client = l.running.lock().await.iter().find(|(_, inst)| same(&inst.password, given)).map(|(c, _)| c.clone())
+        .ok_or_else(|| Fail(StatusCode::UNAUTHORIZED, "atelier inconnu".into()))?;
+    // l'export doit tenir dans les minutes que le palier du client lui laisse ce mois-ci
+    let scope = Scope::of(ctx.clone(), client.clone());
+    scope.check_export(b.seconds).await?;
+    // fichiers VID_<date>_<heure>_… des sessions demandées, et rien d'autre
+    let wanted: Vec<String> = b.sessions.iter().filter_map(|s| s.get(..19)).filter(|s| s.starts_with("VID_")).map(|s| format!("{s}_")).collect();
+    // des originaux partis en archive profonde lui sont redemandés : l'export attendra leur retour
+    let waiting = scope.thaw(&wanted).await.map_err(|e| {
+        eprintln!("sortie d'archive pour {client} : {e:#}");
+        Fail(StatusCode::BAD_GATEWAY, "originaux indisponibles pour l'instant".into())
+    })?;
+    if waiting > 0 {
+        return Err(Fail(StatusCode::CONFLICT, format!(
+            "originaux archivés : leur sortie d'archive est demandée ({waiting} fichier(s), {} h au plus). {} Relance l'export à ce moment-là.",
+            ctx.thaw.hours(), if ctx.thaw.mail.is_some() { "Un courriel te préviendra quand ils seront prêts." } else { "Ta Bibliothèque indiquera quand ils seront prêts." })));
+    }
+    ctx.pull(&format!("originaux/{client}/"), &l.dir(&client).join("rushs"), |n| !n.contains('/') && wanted.iter().any(|w| n.starts_with(w.as_str())))
+        .await.map_err(|e| {
+            eprintln!("originaux de {client} : {e:#}");
+            if format!("{e:?}").contains("InvalidObjectState") {
+                Fail(StatusCode::CONFLICT, "originaux archivés : leur sortie d'archive n'est pas terminée".into())
+            } else {
+                Fail(StatusCode::BAD_GATEWAY, "originaux indisponibles pour l'instant".into())
+            }
+        })?;
+    Ok(Json(json!({"ok": true})))
+}
+
+/// Arrêt du service : chaque atelier ouvert est enregistré puis arrêté.
+pub async fn close_all(ctx: &Arc<Ctx>) {
+    let Some(l) = &ctx.launcher else { return };
+    for (client, mut inst) in l.running.lock().await.drain() {
+        let scope = Scope::of(ctx.clone(), client.clone());
+        if let Err(e) = scope.save(l).await.and(scope.sync_gps(l, &mut inst.gps_sig).await).and(scope.push_exports(l, &mut inst.pushed).await) {
+            eprintln!("atelier de {client} arrêté sans enregistrement complet : {e:#}");
+        }
+        let _ = inst.child.kill().await;
+    }
+}
+
+/// Surveille les ateliers : celui qui ne sert plus et ne calcule rien est enregistré puis arrêté.
+pub async fn watch(ctx: Arc<Ctx>) {
+    let Some(l) = &ctx.launcher else { return };
+    loop {
+        tokio::time::sleep(WATCH_EVERY).await;
+        let clients: Vec<String> = l.running.lock().await.keys().cloned().collect();
+        for client in clients {
+            let mut running = l.running.lock().await;
+            let Some(inst) = running.get_mut(&client) else { continue };
+            // une trace GPS déposée ou retirée dans l'atelier rejoint le stockage sans attendre sa fermeture
+            if let Err(e) = Scope::of(ctx.clone(), client.clone()).sync_gps(l, &mut inst.gps_sig).await {
+                eprintln!("traces GPS de {client} : {e:#}");
+            }
+            let gone = !inst.child.try_wait().is_ok_and(|s| s.is_none());
+            let idle = match call(&l.host, inst.port, &inst.password, "GET", "/api/activite", None).await {
+                Ok(a) => a["idle_s"].as_u64().unwrap_or(0) > l.idle_s && a["busy"] == json!(false),
+                Err(_) => false,
+            };
+            if !gone && !idle {
+                continue;
+            }
+            // un atelier dont le travail n'a pas pu être enregistré reste ouvert, sauf s'il s'est arrêté seul
+            let scope = Scope::of(ctx.clone(), client.clone());
+            let saved = match scope.push_exports(l, &mut inst.pushed).await {
+                Ok(_) => scope.save(l).await,
+                Err(e) => Err(e),
+            };
+            match saved {
+                Ok(n) => println!("atelier de {client} arrêté ({n} fichiers enregistrés)"),
+                Err(e) if gone => eprintln!("atelier de {client} arrêté sans enregistrement : {e:#}"),
+                Err(e) => {
+                    eprintln!("atelier de {client} : enregistrement en échec, il reste ouvert : {e:#}");
+                    continue;
+                }
+            }
+            if let Some(mut inst) = running.remove(&client) {
+                let _ = inst.child.kill().await;
+            }
+        }
+    }
+}

@@ -157,7 +157,7 @@ pub fn preview(app: &App, path: &str) -> Result<Value> {
     let known: Vec<String> = app.sessions.read().unwrap().keys().cloned().collect();
     let mut sessions: Vec<Value> = found.iter()
         .map(|(id, (date, time, files, bytes))| json!({"id": id, "date": date, "time": time, "files": files.len(), "bytes": bytes,
-                                                         "known": known.contains(id)}))
+                                                         "known": known.iter().any(|k| insta360::bare_id(k) == id)}))
         .collect();
     sessions.reverse();   // plus récentes d'abord
     let total = sessions.len();

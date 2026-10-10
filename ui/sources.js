@@ -1,6 +1,7 @@
 // Dossiers de vidéos (étape ① Fichiers) : liste des dossiers analysés, cartes SD détectées,
 // navigateur de dossiers du PC, nouvelle analyse à la demande et suivi de l'analyse en cours
 // (le serveur relance aussi seul l'analyse quand de nouveaux fichiers apparaissent).
+// Les traces GPS déposées (.gpx) sont listées au même endroit : elles remplacent GeoRide ces jours-là.
 // Le panneau #src-panel est dessiné ici ; le navigateur est le dialogue #fs (à trois panneaux).
 // Partage : refreshSources.
 
@@ -13,6 +14,7 @@ const DETECT_EVERY_MS = 30000; // cartes branchées ou retirées
 
 let data = { folders: [], scan: { state: "idle" } };
 let detected = [];
+let gps = [];                  // traces GPX déposées : [{name, points, from, to}]
 let lastDetect = 0;
 let timer = null;
 let seenFinish = null;         // fin d'analyse déjà prise en compte
@@ -40,12 +42,15 @@ function scanHtml(sc) {
 function render() {
   const sc = data.scan, running = sc.state === "running";
   const cards = detected.filter((d) => !d.added);
+  const cloud = !!data.cloud;   // service hébergé : les rushs arrivent par l'envoi, pas par un dossier du serveur
+  const back = $("#library-link");
+  if (back && data.library) { back.href = data.library; back.hidden = false; }
   panel.innerHTML = `
     <div class="src-head"><strong>📁 Dossiers de vidéos</strong>
       <span class="muted">${data.folders.length} dossier${data.folders.length > 1 ? "s" : ""}</span>
       <span class="spacer"></span>
-      <button data-a="browse" ${running ? "disabled" : ""} title="Choisir un dossier du PC (carte SD, copie sur disque…)">＋ Ajouter un dossier…</button>
-      <button data-a="rescan" ${running ? "disabled" : ""} title="Relancer l'analyse des dossiers : nouvelles vidéos, carte rebranchée">↻ Rescanner</button>
+      ${cloud ? "" : `<button data-a="browse" ${running ? "disabled" : ""} title="Choisir un dossier du PC (carte SD, copie sur disque…)">＋ Ajouter un dossier…</button>`}
+      <button data-a="rescan" ${running ? "disabled" : ""} title="Relancer l'analyse : nouvelles vidéos${cloud ? "" : ", carte rebranchée"}">↻ Rescanner</button>
     </div>
     ${cards.map((d) => `<div class="src-card">💾 <b>${esc(d.label)}</b> <span class="muted">carte détectée · ${d.sessions} session${d.sessions > 1 ? "s" : ""}</span>
       <span class="spacer"></span><button class="primary" data-add="${esc(d.path)}" ${running ? "disabled" : ""}>Utiliser cette carte</button></div>`).join("")}
@@ -53,9 +58,19 @@ function render() {
       <span class="${f.present ? "muted" : "absent"}" title="${f.present ? "présent" : "absent (carte retirée ?)"}">${f.present ? "●" : "○"}</span>
       <span class="path" title="${esc(f.path)}"><bdi dir="ltr">${esc(f.path)}</bdi></span>
       <span>${f.sessions} session${f.sessions > 1 ? "s" : ""}${f.removable ? ` <button data-rm="${esc(f.path)}" ${running ? "disabled" : ""} title="Ne plus analyser ce dossier">✕</button>` : ""}</span></li>`).join("")}</ul>
+    <div class="src-head"><strong>🛰 Traces GPS</strong>
+      <span class="muted">${gps.length ? `${gps.length} fichier${gps.length > 1 ? "s" : ""}` : cloud ? "aucune" : "aucune : positions GeoRide si un compte est configuré"}</span>
+      <span class="spacer"></span>
+      <label class="upload" title="Déposer une trace .gpx (téléphone, GPS, traceur) : elle sert de source de positions pour les sessions de ces jours-là">＋ Trace .gpx<input type="file" class="gps-upload" accept=".gpx" hidden ${running ? "disabled" : ""}></label>
+    </div>
+    <ul class="src-list">${gps.map((g) => `<li>
+      <span class="muted">●</span>
+      <span class="path" title="${esc(g.name)}"><bdi dir="ltr">${esc(g.name)}</bdi></span>
+      <span>${g.from ? `${new Date(g.from).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })} · ` : ""}${g.points} points
+        <button data-gps-rm="${esc(g.name)}" ${running ? "disabled" : ""} title="Retirer cette trace">✕</button></span></li>`).join("")}</ul>
     ${scanHtml(sc)}
     ${notice ? `<div class="scan err">${esc(notice)}</div>` : ""}
-    <span class="hint">Les sous-dossiers sont parcourus. Les nouvelles vidéos sont repérées automatiquement ; les vidéos déjà analysées ne sont pas recalculées.</span>`;
+    <span class="hint">${cloud ? "Les vidéos déjà analysées ne sont pas recalculées." : "Les sous-dossiers sont parcourus. Les nouvelles vidéos sont repérées automatiquement ; les vidéos déjà analysées ne sont pas recalculées."}</span>`;
 }
 
 // ------------------------------------------------------------------ suivi
@@ -67,7 +82,8 @@ export async function refreshSources() {
     data = await api("GET", "/api/sources");
     if (performance.now() - lastDetect > DETECT_EVERY_MS || !lastDetect) {
       lastDetect = performance.now() || 1;
-      detected = await api("GET", "/api/sources/detect").catch(() => detected);
+      if (!data.cloud) detected = await api("GET", "/api/sources/detect").catch(() => detected);
+      gps = await api("GET", "/api/gps").catch(() => gps);
     }
   } catch (e) { /* serveur injoignable : on réessaie plus tard */ }
   const sc = data.scan;
@@ -97,6 +113,21 @@ panel.addEventListener("click", (e) => {
   if (b.dataset.a === "rescan") return post({ rescan: true });
   if (b.dataset.rm) return post({ remove: b.dataset.rm });
   if (b.dataset.add) return post({ add: b.dataset.add });
+  if (b.dataset.gpsRm) return postGps(`remove=${encodeURIComponent(b.dataset.gpsRm)}`);
+});
+
+/** Dépose (corps = fichier) ou retire une trace GPX, puis suit la nouvelle analyse. */
+async function postGps(query, file) {
+  notice = "";
+  const r = await fetch(`/api/gps?${query}`, { method: "POST", body: file }).then((x) => x.json()).catch(() => ({ error: "serveur injoignable" }));
+  if (r.error) { notice = "⚠ " + r.error; render(); return; }
+  gps = r.files;
+  await refreshSources();
+}
+
+panel.addEventListener("change", (e) => {
+  const f = e.target.matches(".gps-upload") && e.target.files[0];
+  if (f) postGps(`name=${encodeURIComponent(f.name)}`, f);
 });
 
 // ------------------------------------------------------------------ navigateur de dossiers

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bike360 — reçu</title>
+<link rel="stylesheet" href="style.css">
+<style>
+main.receipt { max-width: 640px; margin: 24px auto; padding: 28px; background: #fff; color: #111; border-radius: 8px; font-size: 14px; }
+main.receipt h1 { font-size: 20px; margin: 0 0 4px; }
+main.receipt .muted { color: #555; }
+main.receipt table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+main.receipt th, main.receipt td { text-align: left; padding: 8px 0; border-bottom: 1px solid #ddd; }
+main.receipt td:last-child, main.receipt th:last-child { text-align: right; white-space: nowrap; }
+main.receipt .parties { display: flex; gap: 24px; justify-content: space-between; margin-top: 20px; }
+main.receipt .parties div { white-space: pre-line; }
+.actions { max-width: 640px; margin: 16px auto; display: flex; gap: 8px; padding: 0 16px; }
+@media print { body { background: #fff; } .actions { display: none; } main.receipt { margin: 0; border-radius: 0; } }
+</style>
+</head>
+<body>
+<div class="actions"><a class="button" href="palier.html">← Mon palier</a><div class="spacer"></div><button class="primary" onclick="print()">Imprimer ou enregistrer en PDF</button></div>
+<main class="receipt" id="receipt"><p class="muted">Chargement…</p></main>
+<script type="module" src="recu.js"></script>
+</body>
+</html>

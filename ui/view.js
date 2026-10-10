@@ -3,7 +3,7 @@
 // Partage : activeClip, followsKeyframes, currentView, setView, userView, upsertKey,
 // currentViewParams, loadHorizon.
 
-import { st, video, now, DEFAULT_VIEW } from "./state.js";
+import { st, video, now, defaultView } from "./state.js";
 import { $, api } from "./util.js";
 import { clipKeys, clipMode, clipTime, ensureKeyframes, levelMatrix, viewMatrix } from "./geometry.js";
 import { saveClips } from "./clips.js";
@@ -74,7 +74,7 @@ export function upsertKey(c, t) {
 /** Cadrage à enregistrer dans un clip (la vue brute n'a pas de sens : vue avant par défaut). */
 export function currentViewParams() {
   const v = st.view;
-  const view = v.raw ? { ...DEFAULT_VIEW }
+  const view = v.raw ? defaultView()
     : { yaw: +v.yaw.toFixed(1), pitch: +v.pitch.toFixed(1), fov: +v.fov.toFixed(1), roll: +v.roll.toFixed(1) };
   return { ...view, horizon: v.horizon };
 }

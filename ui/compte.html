@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bike360 — mon compte</title>
+<link rel="stylesheet" href="style.css">
+<style>
+body { min-height: 100vh; display: grid; place-items: center; }
+form { width: min(360px, 90vw); display: flex; flex-direction: column; gap: 12px; padding: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+form input { padding: 10px 12px; background: var(--bg, #111317); color: inherit; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+form .link { background: none; border: none; color: var(--muted); cursor: pointer; text-decoration: underline; padding: 0; }
+</style>
+</head>
+<body>
+<form id="form">
+  <div class="brand">◉ Bike360</div>
+  <h2 id="title"></h2>
+  <label>Adresse de courriel <input id="email" type="email" autocomplete="email" required autofocus></label>
+  <label id="password-row">Mot de passe <input id="password" type="password" minlength="10"></label>
+  <label id="code-row" hidden>Code reçu par courriel <input id="code" inputmode="numeric" autocomplete="one-time-code"></label>
+  <div id="message" class="muted"></div>
+  <button id="submit" class="primary" type="submit"></button>
+  <button id="switch" class="link" type="button"></button>
+  <button id="forgot" class="link" type="button">Mot de passe oublié ?</button>
+</form>
+<script type="module" src="compte.js"></script>
+</body>
+</html>
