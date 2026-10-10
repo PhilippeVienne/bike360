@@ -8,9 +8,3 @@ services:
     container_name: bike360-floci
     ports:
       - "127.0.0.1:4566:4566"
-  # Émulateur du prestataire de paiement : répond aux appels de l'API avec des objets d'exemple.
-  stripe:
-    image: stripe/stripe-mock:latest
-    container_name: bike360-stripe
-    ports:
-      - "127.0.0.1:12111:12111"

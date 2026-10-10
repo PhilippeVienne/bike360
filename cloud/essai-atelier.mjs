@@ -2,7 +2,7 @@
 // Usage : node cloud/essai-atelier.mjs URL_DU_SERVICE FICHIER_DES_JETONS APERÇU.lrv [ORIGINAL.insv]
 // Le compte a doit avoir un rush analysé ; avec l'original, l'export final est essayé aussi.
 import { execFileSync } from "node:child_process";
-import { createHmac } from "node:crypto";
+import { pay } from "./essai-mollie.mjs";
 import { openAsBlob, readFileSync, rmSync } from "node:fs";
 import { sendFile } from "../ui/envoi-core.js";
 
@@ -69,12 +69,9 @@ if (insv) {
   }
   check(job.state === "error" && /quota d'export/.test(job.message), `second export refusé : ${job.message}`);
   // du crédit acheté d'avance couvre ce qui dépasse les minutes du mois
-  const secret = process.env.BIKE360_STRIPE_WEBHOOK_SECRET;
-  const paid = JSON.stringify({ type: "checkout.session.completed", data: { object: {
-    id: `cs_atelier_${Date.now()}`, client_reference_id: a.sub, metadata: { credit_min: "60" }, payment_status: "paid" } } });
-  const t = Math.floor(Date.now() / 1000);
-  await fetch(`${base}/api/paiement/stripe`, { method: "POST", body: paid,
-    headers: { "Stripe-Signature": `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${paid}`).digest("hex")}` } });
+  const order = await (await fetch(`${base}/api/paiement/credit`, { method: "POST", headers: { ...bearer(a.token), "Content-Type": "application/json" },
+                                                                  body: JSON.stringify({ minutes: 60 }) })).json();
+  await pay(order.url);
   await atelier(A, "POST", `/api/export/${sid}`, { quality: "final" });
   for (let i = 0; i < 240; i++) {
     await new Promise((r) => setTimeout(r, 1000));

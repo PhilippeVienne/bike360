@@ -8,7 +8,8 @@ const next = () => {
   return /^[a-z-]+\.html$/.test(n) ? n : "bibliotheque.html";   // jamais d'adresse extérieure
 };
 
-let mode = "connexion";   // connexion | inscription | confirmation | oubli | reinitialisation
+// connexion | inscription | confirmation | oubli | reinitialisation ; le site vitrine mène droit à l'inscription
+let mode = new URLSearchParams(location.search).has("inscription") ? "inscription" : "connexion";
 let waiting = null;       // attente de la confirmation de l'adresse : minuterie
 const WAIT_EVERY_MS = 3000, WAIT_TRIES = 60;
 

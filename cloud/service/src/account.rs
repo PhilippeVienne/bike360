@@ -324,9 +324,10 @@ pub async fn delete(c: Scope, headers: HeaderMap, Json(b): Json<Deletion>) -> Re
         })?;
     // l'abonnement d'abord : un compte effacé ne doit plus être prélevé
     let acc = c.account().await?;
-    if let Some(sub) = &acc.subscription {
-        let p = c.payment.as_ref().ok_or_else(|| Fail(StatusCode::CONFLICT, "abonnement en cours, et le paiement n'est pas configuré sur ce service".into()))?;
-        p.end_now(sub).await?;
+    match &c.payment {
+        Some(p) => p.end_now(&acc).await?,
+        None if acc.subscription.is_some() => return Err(Fail(StatusCode::CONFLICT, "abonnement en cours, et le paiement n'est pas configuré sur ce service".into())),
+        None => {}
     }
     let files = c.erase(acc.customer.as_deref()).await.map_err(|e| {
         eprintln!("effacement de {} : {e:#}", c.client);
