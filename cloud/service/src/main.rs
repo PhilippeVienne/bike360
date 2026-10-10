@@ -22,7 +22,7 @@ mod payment;
 mod plans;
 mod upkeep;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -106,13 +106,39 @@ struct Args {
     /// Achat minimal de crédit d'export, en minutes
     #[arg(long, default_value_t = 60)]
     credit_min: u32,
-    /// Prix d'une minute de crédit d'export, en euros (3 € de l'heure)
-    #[arg(long, default_value_t = 0.05)]
+    /// Prix d'un crédit, en euros : un crédit vaut une minute d'export (4,20 € de l'heure)
+    #[arg(long, default_value_t = 0.07)]
     credit_eur: f64,
     /// Prix de la récupération de rushs archivés, en euros par tranche de 100 Go
-    #[arg(long, default_value_t = 2.0)]
+    #[arg(long, default_value_t = 3.0)]
     recovery_eur_100go: f64,
-    /// Minutes entre deux passages sur les échéances des comptes
+    /// Crédits que coûtent 100 Go au-dessus du quota pendant 30 jours
+    #[arg(long, default_value_t = 25.0)]
+    overage_credits_100go: f64,
+    /// Jours de dépassement que le crédit doit couvrir pour qu'un envoi au-delà du quota soit accepté
+    #[arg(long, default_value_t = 7.0)]
+    overage_min_days: f64,
+    /// Jours pour régulariser un dépassement une fois le crédit épuisé, avant l'archivage de l'excédent
+    #[arg(long, env = "BIKE360_OVERAGE_GRACE_DAYS", default_value_t = 30.0)]
+    overage_grace_days: f64,
+    /// Jours laissés à un renouvellement d'abonnement en retard avant d'y mettre fin (le prestataire le représente entre-temps)
+    #[arg(long, env = "BIKE360_GRACE_DAYS", default_value_t = 14.0)]
+    grace_days: f64,
+    /// Ouvre la route POST /api/interne/echeances, qui fait un passage sur les échéances : pour une fonction
+    /// appelée par une règle planifiée et jamais exposée au public
+    #[arg(long, env = "BIKE360_SWEEP_ROUTE")]
+    sweep_route: bool,
+    /// Chemin de Parameter Store (« /bike360/production/ ») sous lequel sont rangés les secrets du service :
+    /// chaque paramètre y tient lieu de la variable d'environnement BIKE360_<son nom>
+    #[arg(long, env = "BIKE360_SECRETS")]
+    secrets: Option<String>,
+    /// Identité du vendeur portée sur les reçus (nom, adresse, SIREN)
+    #[arg(long, env = "BIKE360_VENDEUR", default_value = "")]
+    seller: String,
+    /// Dossier du site vitrine à servir à la racine (sur AWS, c'est CloudFront qui le sert)
+    #[arg(long)]
+    vitrine: Option<String>,
+    /// Minutes entre deux passages sur les échéances des comptes (0 : jamais, une règle planifiée s'en charge)
     #[arg(long, env = "BIKE360_SWEEP_MIN", default_value_t = 60.0)]
     sweep_min: f64,
     /// Sortie d'archive des originaux demandés à l'export : « bulk » (48 h au plus, la moins chère) ou « standard » (12 h)
@@ -152,6 +178,8 @@ pub struct Ctx {
     thaw: upkeep::Thaw,
     /// Adresse publique du site, citée dans les courriels.
     site: String,
+    /// Identité du vendeur, portée sur les reçus.
+    seller: String,
 }
 
 /// Ce que la fin d'un rush dit de lui, sans le télécharger.
@@ -406,6 +434,23 @@ async fn rushs(c: Scope) -> Result<Json<Value>, Fail> {
     Ok(Json(Value::Array(out)))
 }
 
+/// Secrets du service, lus déchiffrés sous `path` : « <path>MOLLIE_KEY » devient BIKE360_MOLLIE_KEY.
+async fn secrets(conf: &aws_config::SdkConfig, path: &str) -> Result<HashMap<String, String>> {
+    let (ssm, mut out, mut token) = (aws_sdk_ssm::Client::new(conf), HashMap::new(), None::<String>);
+    loop {
+        let page = ssm.get_parameters_by_path().path(path).with_decryption(true).set_next_token(token.take()).send().await?;
+        for p in page.parameters() {
+            if let (Some(name), Some(value)) = (p.name().and_then(|n| n.rsplit('/').next()), p.value()) {
+                out.insert(format!("BIKE360_{name}"), value.to_string());
+            }
+        }
+        match page.next_token() {
+            Some(next) => token = Some(next.to_string()),
+            None => return Ok(out),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let a = Args::parse();
@@ -422,6 +467,10 @@ async fn main() -> Result<()> {
             None
         }
     };
+    let kept = match &a.secrets {
+        Some(path) => secrets(&conf, path).await.with_context(|| format!("lecture des secrets sous {path}"))?,
+        None => HashMap::new(),
+    };
     let site = a.site.clone().unwrap_or_else(|| format!("http://{}:{}", a.host, a.port)).trim_end_matches('/').to_string();
     let ctx = Arc::new(Ctx { s3, db, sqs: aws_sdk_sqs::Client::new(&conf), queue: a.queue, auth, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
                              table: a.table,
@@ -431,13 +480,16 @@ async fn main() -> Result<()> {
                                  Some(file) => plans::load(file)?,
                                  None => plans::defaults(),
                              },
-                             payment: payment::Payment::from_env(site.clone())?,
+                             payment: payment::Payment::from_env(site.clone(), &kept)?,
                              thaw: upkeep::Thaw { standard: a.restore_tier == "standard", days: a.restore_days.max(1),
-                                                  mail: a.mail_from.map(|from| (aws_sdk_sesv2::Client::new(&conf), from)) },
+                                                  mail: a.mail_from.filter(|from| !from.is_empty()).map(|from| (aws_sdk_sesv2::Client::new(&conf), from)) },
                              site,
+                             seller: a.seller,
                              trash_days: a.trash_days,
                              policy: plans::Policy { trial_days: a.trial_days, access_days: a.access_days, archive_days: a.archive_days,
-                                                     credit_min: a.credit_min, credit_eur: a.credit_eur, recovery_eur_100go: a.recovery_eur_100go } });
+                                                     credit_min: a.credit_min, credit_eur: a.credit_eur, recovery_eur_100go: a.recovery_eur_100go,
+                                                     grace_days: a.grace_days, overage_credits_100go: a.overage_credits_100go,
+                                                     overage_min_days: a.overage_min_days, overage_grace_days: a.overage_grace_days } });
     let mut app = Router::new()
         .route("/api/envoi/start", post(start))
         .route("/api/envoi/urls", post(urls))
@@ -456,7 +508,10 @@ async fn main() -> Result<()> {
         .route("/api/paiement/commande", post(payment::order))
         .route("/api/paiement/credit", post(payment::credit))
         .route("/api/paiement/resiliation", post(payment::cancel))
-        .route("/api/paiement/stripe", post(payment::webhook))
+        .route("/api/paiement/moyen", get(payment::method).post(payment::change_method))
+        .route("/api/paiement/recus", get(payment::receipts))
+        .route("/api/paiement/mollie", post(payment::mollie_webhook))
+        .route("/api/paiement/stripe", post(payment::stripe_webhook))
         .route("/api/atelier", get(atelier::status))
         .route("/api/atelier/ouvrir", post(atelier::open))
         .route("/api/atelier/fermer", post(atelier::close))
@@ -465,12 +520,21 @@ async fn main() -> Result<()> {
         .route("/api/bibliotheque/marque", post(library::mark))
         .route("/api/bibliotheque/alleger", post(library::lighten))
         .route("/api/bibliotheque/purge", post(library::purge))
+        .route("/api/bibliotheque/recuperer", post(upkeep::recover))
         .with_state(ctx.clone());
+    if a.sweep_route {
+        app = app.route("/api/interne/echeances", post(upkeep::once).with_state(ctx.clone()));
+    }
     if let Some(ui) = &a.ui {
         app = app.nest_service("/ui", tower_http::services::ServeDir::new(ui));
     }
+    if let Some(vitrine) = &a.vitrine {
+        app = app.fallback_service(tower_http::services::ServeDir::new(vitrine));
+    }
     tokio::spawn(atelier::watch(ctx.clone()));
-    tokio::spawn(upkeep::watch(ctx.clone(), Duration::from_secs_f64((a.sweep_min * 60.0).max(1.0))));
+    if a.sweep_min > 0.0 {
+        tokio::spawn(upkeep::watch(ctx.clone(), Duration::from_secs_f64((a.sweep_min * 60.0).max(1.0))));
+    }
     let listener = tokio::net::TcpListener::bind((a.host.as_str(), a.port)).await.context("ouverture du port")?;
     println!("Service → http://{}:{}/ui/bibliotheque.html (compartiment {}, {})", a.host, a.port, ctx.bucket,
              if ctx.auth.is_some() { "comptes activés".to_string() } else { format!("sans comptes, client {}", ctx.client) });

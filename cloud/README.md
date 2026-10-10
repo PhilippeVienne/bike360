@@ -1,7 +1,11 @@
-# Bike360 Cloud : socle de stockage
+# Bike360 Cloud
 
-Infrastructure du service hébergé, décrite avec Terraform, et un essai local qui la déroule sur
-[floci](https://floci.io), un émulateur d'AWS : pas de compte, pas de coût.
+Le service hébergé : son infrastructure décrite avec Terraform, le service lui-même
+(`cloud/service`), et un essai local qui déroule le tout sur [floci](https://floci.io), un émulateur
+d'AWS, et sur un faux serveur Mollie : pas de compte, pas de coût, aucun paiement.
+
+Pour le mettre en ligne : [docs/deploiement-aws.md](../docs/deploiement-aws.md)
+(`sh cloud/deployer.sh essai`). Le site vitrine est dans `site/`.
 
 ## Essai local
 
@@ -26,8 +30,8 @@ sh cloud/demo.sh
 Le script lance les émulateurs, l'infrastructure, le service avec les comptes, l'exécutant de tâches
 et l'atelier à la demande, puis affiche l'adresse à ouvrir dans le navigateur et le parcours à
 essayer. Les comptes créés sont confirmés d'office, puisqu'aucun courriel n'est envoyé ;
-`sh cloud/demo.sh payer EMAIL PALIER` simule la confirmation d'un paiement. Ctrl-C arrête tout et
-rien n'est conservé.
+la page de paiement est celle du faux serveur Mollie, où l'on paie, échoue ou annule. Ctrl-C arrête
+tout et rien n'est conservé.
 
 ## Comptes
 
@@ -47,11 +51,42 @@ dépasser la place est refusé, de même qu'un export final que ni les minutes d
 acheté d'avance ne couvrent : l'atelier annonce chaque export final au service avant de le lancer. La grille par défaut se remplace par un
 fichier (`--plans`).
 
-Le paiement passe par Stripe (`cloud/service/src/payment.rs`, page `ui/palier.html`) : le service
-ouvre une page de paiement, et seule la notification signée de Stripe change le palier du compte.
-Les clés se donnent par variables d'environnement (`BIKE360_STRIPE_KEY`,
-`BIKE360_STRIPE_WEBHOOK_SECRET`, `BIKE360_STRIPE_PRICES`). L'essai local utilise l'émulateur
-`stripe-mock` et des notifications signées par le script.
+### Paiement
+
+Le prestataire de paiement est derrière une interface (`Provider`, `cloud/service/src/payment.rs`).
+Celui du service est **Mollie** (`payment/mollie.rs`) ; Stripe (`payment/stripe.rs`) reste
+disponible par `BIKE360_PAYMENT=stripe`, sans les écrans de moyen de paiement, et n'est plus essayé
+de bout en bout.
+
+Avec Mollie (`BIKE360_MOLLIE_KEY`, clé `test_…` ou `live_…`) :
+
+- **Souscription** : un premier paiement sur la page de Mollie crée le mandat. À sa confirmation,
+  le service crée chez Mollie un abonnement de douze mois qui commence un an plus tard, et la fiche
+  du compte garde l'échéance payée (`echeance`).
+- **Notifications** : Mollie n'envoie que l'identifiant du paiement. Le service relit ce paiement
+  auprès de Mollie et n'agit que si c'est un paiement qu'il a lui-même ouvert, pour ce compte et ce
+  montant (`pk = paiement#<tr_…>`, `sk = commande`). Chaque paiement n'est appliqué qu'une fois
+  (`sk = recu`), même si la notification revient. La réponse ne dit jamais ce qui a été fait.
+- **Renouvellement** : Mollie prélève et notifie ; l'échéance avance à la date que Mollie annonce.
+  Un mois au moins avant, un courriel rappelle la reconduction et la façon de résilier.
+- **Échec** : Mollie représente le prélèvement quelques jours. Le compte garde son palier pendant
+  `--grace-days` (14) ; sans paiement, le passage des échéances met fin à l'abonnement.
+- **Résiliation** : Mollie n'a pas de résiliation « à l'échéance ». L'abonnement est arrêté chez
+  Mollie, et le compte garde son palier jusqu'à l'échéance payée ; y revenir recrée un abonnement
+  qui commence à cette date.
+- **Changement de palier** : un nouveau premier paiement, au prix entier, pour un an ; l'ancien
+  abonnement est arrêté.
+- **Crédit d'export** : paiement unique.
+- **Contestation ou remboursement complet** : le crédit est retiré, ou l'abonnement terminé.
+- **Moyen de paiement** : la page « Mon palier » montre la carte du mandat ; en changer passe par
+  un premier paiement de 0 € par carte.
+- **Reçus** : numérotés sans trou par année, avec la mention « TVA non applicable, article 293 B
+  du CGI » et l'identité du vendeur (`BIKE360_VENDEUR`) ; page `ui/recu.html`, à imprimer.
+
+`cloud/faux-mollie.mjs` tient lieu de Mollie dans les essais : mêmes appels, même forme de
+notification, et des routes de pilotage (`/_faux/…`) pour payer, faire échouer, prélever une
+échéance ou contester. `cloud/essai-paiement.mjs` déroule tout le parcours contre lui, et
+`cargo test` vérifie la forme exacte des appels.
 
 ## Vie d'un compte
 
@@ -70,18 +105,26 @@ situation s'en déduit (`plans::Standing`) et un passage régulier applique ce q
 | récupération | abonnement repris sur des rushs archivés | envoyer ; l'atelier attend | redemande les aperçus à l'archive, puis les remet dans leur classe |
 
 - **Mot de passe oublié** : un code part par courriel (Cognito) ; la réponse est la même que le compte existe ou non.
-- **Résiliation** : l'abonnement court jusqu'à son échéance, puis Stripe annonce sa fin ; tant
-  qu'elle n'est pas arrivée, la résiliation s'annule.
+- **Résiliation** : l'abonnement court jusqu'à son échéance, puis le compte revient au palier d'essai ;
+  tant qu'elle n'est pas arrivée, la résiliation s'annule.
 - **Récupération payante** : reprendre un palier sur des rushs archivés ajoute à la commande des
-  frais par tranche de 100 Go (`--recovery-eur-100go`, 2 € par défaut, pour un coût d'environ 1,57 € :
-  le mois d'accès, la garde en archive et la sortie d'archive au tarif de Paris). Les originaux restent en
+  frais par tranche de 100 Go (`--recovery-eur-100go`, 3 € par défaut, pour un coût d'environ 1,57 € :
+  le mois d'accès, la garde en archive et la sortie d'archive au tarif de Stockholm). Les originaux restent en
   archive, comme tout original de plus de 90 jours.
 - **Crédit d'export** : au-delà des minutes du mois, un export se paie d'avance, à la minute
-  (`--credit-eur`, 0,05 € soit 3 € de l'heure ; `--credit-min`, 60 minutes au moins par achat, pour que la commission du
+  (`--credit-eur`, 0,07 € soit 4,20 € de l'heure ; `--credit-min`, 60 minutes au moins par achat, pour que la commission du
   prestataire de paiement ne mange pas la marge). Un
   export plus long que ce qu'il reste au compte ne démarre pas. Le crédit ne périme pas.
-- **Suppression du compte** : confirmée par le mot de passe ; l'abonnement est arrêté chez Stripe,
-  puis fichiers (toutes leurs versions), envois en cours, index et compte Cognito sont effacés.
+- **Dépassement du quota de stockage** : un abonné dépasse son quota si son crédit couvre le
+  dépassement pendant `--overage-min-days` jours (7). Le temps passé au-dessus est pris sur le
+  crédit, au prorata du volume et de la durée (`--overage-credits-100go`, 25 crédits par 100 Go et
+  par 30 jours). Crédit épuisé : l'envoi est refusé, un courriel part, et le client a
+  `--overage-grace-days` jours (30) pour régulariser ; ensuite ses rushs les plus anciens sont
+  étiquetés pour l'archive (`gele` dans l'index) jusqu'à ce que le reste tienne dans le quota. Ils
+  ne comptent plus dans le quota, se récupèrent en crédits (`POST /api/bibliotheque/recuperer`, au
+  tarif de la récupération) et sont supprimés au bout de `--archive-days`.
+- **Suppression du compte** : confirmée par le mot de passe ; le client est supprimé chez Mollie, ce qui
+  arrête son abonnement et ses mandats, puis fichiers (toutes leurs versions), envois en cours, index et compte Cognito sont effacés.
 
 `cloud/essai-echeances.mjs` déroule tout cela sur l'émulateur en reculant les dates dans l'index.
 
@@ -166,11 +209,10 @@ Retrieval pour les originaux.
 
 ## Sur un compte AWS
 
-```sh
-cd cloud/terraform && terraform apply -var bucket=<nom-unique> -var site=https://<domaine>
-```
-
-Non testé à ce jour sur AWS.
+`cloud/deploiement` reprend ce socle (module `cloud/terraform/socle`) et y ajoute le site
+(S3, CloudFront), le service (Lambda, API Gateway), l'analyse à l'arrivée (Fargate) et les secrets :
+voir [docs/deploiement-aws.md](../docs/deploiement-aws.md). `sh cloud/verifier-deploiement.sh` le
+vérifie sans compte. Jamais déployé à ce jour.
 
 ## Essai sur un compte AWS
 
@@ -183,7 +225,8 @@ d'objets sur le compartiment, donc une règle qui supprime les anciennes version
 
 Le montage Amazon S3 Files, la facturation et les délais des classes de stockage, CloudFront, le
 GPU, les droits IAM, l'envoi des courriels de confirmation et la politique de mot de passe ne sont
-pas émulés ; le vrai parcours de paiement chez Stripe (carte, facture, résiliation) non plus : ils restent à essayer sur un compte AWS.
+pas émulés ; le vrai parcours de paiement chez Mollie (carte, mandat, abonnement, relances) non plus : ils restent à essayer sur un compte AWS,
+avec une clé d'essai de Mollie.
 L'émulateur n'applique pas les règles du compartiment, laisse lire un objet archivé et ne le rend
 jamais : le passage en archive profonde, l'attente d'une sortie d'archive et la recopie des aperçus
 revenus n'ont donc jamais tourné pour de bon (l'essai remet l'original à la main dans une classe

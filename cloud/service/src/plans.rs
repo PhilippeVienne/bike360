@@ -55,8 +55,7 @@ impl Plan {
 
 /// Grille par défaut (celle du cahier des charges) ; `--plans` la remplace.
 pub fn defaults() -> Vec<Plan> {
-    [(FREE, "Essai", 128.0, 10.0, 0.0), ("200go", "200 Go", 200.0, 15.0, 19.0), ("600go", "600 Go", 600.0, 30.0, 39.0),
-     ("1to", "1 To", 1000.0, 60.0, 65.0), ("2to", "2 To", 2000.0, 120.0, 105.0)]
+    [(FREE, "Essai", 128.0, 10.0, 0.0), ("200go", "200 Go", 200.0, 15.0, 25.0), ("600go", "600 Go", 600.0, 30.0, 49.0)]
         .into_iter()
         .map(|(key, label, quota_go, export_min, eur_year)| Plan { key: key.into(), label: label.into(), quota_go, export_min, eur_year })
         .collect()
@@ -84,9 +83,27 @@ pub struct Policy {
     pub credit_eur: f64,
     /// Prix de la récupération de rushs archivés, en euros par tranche de 100 Go.
     pub recovery_eur_100go: f64,
+    /// Jours laissés à un renouvellement en retard avant de mettre fin à l'abonnement.
+    pub grace_days: f64,
+    /// Crédits (minutes d'export) que coûtent 100 Go au-dessus du quota pendant 30 jours.
+    pub overage_credits_100go: f64,
+    /// Jours de dépassement que le crédit doit couvrir pour qu'un envoi au-delà du quota soit accepté.
+    pub overage_min_days: f64,
+    /// Jours pour régulariser un dépassement une fois le crédit épuisé ; ensuite l'excédent le plus ancien part en archive.
+    pub overage_grace_days: f64,
 }
 
 impl Policy {
+    /// Crédit (en secondes d'export) que coûtent `bytes` octets au-dessus du quota pendant `days` jours.
+    pub fn overage_s(&self, bytes: u64, days: f64) -> f64 {
+        bytes as f64 / 100e9 * self.overage_credits_100go * 60.0 * days / 30.0
+    }
+
+    /// Crédit (en secondes d'export) que coûte la récupération de `bytes` octets partis en archive pour dépassement.
+    pub fn recovery_s(&self, bytes: u64) -> f64 {
+        if self.credit_eur <= 0.0 { 0.0 } else { (self.recovery_eur(bytes) / self.credit_eur).ceil() * 60.0 }
+    }
+
     /// Prix de la récupération de `bytes` octets archivés, par tranches de 100 Go entamées.
     pub fn recovery_eur(&self, bytes: u64) -> f64 {
         (bytes as f64 / 100e9).ceil().max(1.0) * self.recovery_eur_100go
@@ -102,7 +119,7 @@ pub fn iso(t: DateTime<Utc>) -> String {
     t.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-fn days_between(from: &str, now: DateTime<Utc>) -> f64 {
+pub(crate) fn days_between(from: &str, now: DateTime<Utc>) -> f64 {
     DateTime::parse_from_rfc3339(from).map_or(0.0, |t| (now - t.with_timezone(&Utc)).num_seconds() as f64 / 86400.0)
 }
 
@@ -130,6 +147,18 @@ pub struct Account {
     pub credit_s: f64,
     pub customer: Option<String>,
     pub subscription: Option<String>,
+    /// Mandat de paiement sur lequel l'abonnement est prélevé.
+    pub mandate: Option<String>,
+    /// Échéance payée : l'abonnement est réglé jusqu'à cette date (prestataire qui n'annonce pas sa fin).
+    pub paid_until: Option<String>,
+    /// Renouvellement refusé par la banque, tant qu'il n'est pas régularisé.
+    pub failed: Option<String>,
+    /// Échéance pour laquelle le rappel de reconduction a été envoyé.
+    pub reminded: Option<String>,
+    /// Dépassement du quota de stockage : dernier décompte de crédit.
+    pub over_seen: Option<String>,
+    /// Dépassement du quota de stockage : crédit épuisé depuis cette date.
+    pub over_out: Option<String>,
 }
 
 /// Ce qu'un compte peut faire aujourd'hui.
@@ -228,6 +257,8 @@ impl Scope {
             archived: text(i, "archive"), purged: text(i, "purge"), restoring: text(i, "recuperation"),
             credit_s: i.get("credit_s").and_then(|v| v.as_n().ok()).and_then(|n| n.parse().ok()).unwrap_or(0.0),
             customer: text(i, "paiement_client"), subscription: text(i, "paiement_abonnement"),
+            mandate: text(i, "paiement_mandat"), paid_until: text(i, "echeance"), failed: text(i, "paiement_echec"), reminded: text(i, "rappel"),
+            over_seen: text(i, "depassement_vu"), over_out: text(i, "depassement_fin"),
         })
     }
 
@@ -272,12 +303,22 @@ impl Scope {
         Ok(self.plan_of(&self.account().await?))
     }
 
-    /// Place occupée par les rushs du client (les exports n'y comptent pas).
-    pub async fn used_bytes(&self) -> Result<u64, Fail> {
+    /// Place occupée par les rushs du client (les exports n'y comptent pas, ni les rushs partis en
+    /// archive pour dépassement), puis place de ces rushs archivés.
+    pub async fn storage(&self) -> Result<(u64, u64), Fail> {
         if self.table.is_none() {
-            return Ok(0);
+            return Ok((0, 0));
         }
-        Ok(self.rows("rush#").await?.iter().filter_map(|i| i.get("octets")?.as_n().ok()?.parse::<f64>().ok()).sum::<f64>() as u64)
+        let (mut live, mut frozen) = (0.0, 0.0);
+        for i in self.rows("rush#").await? {
+            let bytes = i.get("octets").and_then(|v| v.as_n().ok()).and_then(|n| n.parse::<f64>().ok()).unwrap_or(0.0);
+            if i.contains_key("gele") { frozen += bytes } else { live += bytes }
+        }
+        Ok((live as u64, frozen as u64))
+    }
+
+    pub async fn used_bytes(&self) -> Result<u64, Fail> {
+        Ok(self.storage().await?.0)
     }
 
     /// Secondes d'export final déjà consommées ce mois-ci.
@@ -300,9 +341,21 @@ impl Scope {
         }
         let (plan, used) = (self.plan_of(&acc), self.used_bytes().await?);
         if used + incoming > plan.quota_bytes() {
-            return Err(Fail(StatusCode::PAYMENT_REQUIRED, format!(
-                "place insuffisante : {:.1} Go utilisés sur {:.0} Go (palier {}), et ce fichier en pèse {:.1}",
-                used as f64 / 1e9, plan.quota_go, plan.label, incoming as f64 / 1e9)));
+            let full = format!("place insuffisante : {:.1} Go utilisés sur {:.0} Go (palier {}), et ce fichier en pèse {:.1}",
+                               used as f64 / 1e9, plan.quota_go, plan.label, incoming as f64 / 1e9);
+            // un abonné dépasse son quota pour un temps si son crédit couvre le dépassement quelques jours
+            let need = self.policy.overage_s(used + incoming - plan.quota_bytes(), self.policy.overage_min_days);
+            if standing != Standing::Paid {
+                return Err(Fail(StatusCode::PAYMENT_REQUIRED, full));
+            }
+            if acc.over_out.is_some() {
+                return Err(Fail(StatusCode::PAYMENT_REQUIRED, format!("{full} ; ton crédit est épuisé : libère de la place ou rachète du crédit")));
+            }
+            if acc.credit_s < need {
+                return Err(Fail(StatusCode::PAYMENT_REQUIRED, format!(
+                    "{full} ; pour dépasser le quota il faut au moins {:.0} crédit(s), tu en as {:.0} ({:.0} crédits par 100 Go et par 30 jours)",
+                    (need / 60.0).ceil(), (acc.credit_s / 60.0).floor(), self.policy.overage_credits_100go)));
+            }
         }
         if standing == (Standing::Trial { days_left: None }) && self.table.is_some() {
             self.patch(&[("essai_debut", Some(AttributeValue::S(iso(Utc::now()))))]).await.map_err(aws("début de l'essai"))?;
@@ -363,11 +416,13 @@ impl Scope {
     }
 
     /// Abonnement payé : le compte prend ce palier. Des rushs archivés entament leur récupération.
-    pub async fn subscribed(&self, key: &str, customer: Option<&str>, subscription: Option<&str>) -> Result<()> {
+    /// `until` est l'échéance payée, quand c'est au service de la suivre.
+    pub async fn subscribed(&self, key: &str, customer: Option<&str>, subscription: Option<&str>, until: Option<&str>) -> Result<()> {
         let acc = self.account().await.map_err(|f| anyhow::anyhow!(f.1))?;
         let s = |v: &str| Some(AttributeValue::S(v.into()));
         let now = iso(Utc::now());
-        let mut changes = vec![("palier", s(key)), ("depuis", s(&now)), ("fin_abonnement", None), ("resiliation", None)];
+        let mut changes = vec![("palier", s(key)), ("depuis", s(&now)), ("fin_abonnement", None), ("resiliation", None),
+                               ("echeance", until.and_then(s)), ("paiement_echec", None)];
         if acc.archived.is_some() && acc.purged.is_none() {
             changes.push(("recuperation", s(&now)));
         }
@@ -383,13 +438,14 @@ impl Scope {
     /// Fin de l'abonnement : retour au palier d'essai, et début du délai d'accès aux rushs.
     pub async fn unsubscribed(&self) -> Result<()> {
         let s = |v: &str| Some(AttributeValue::S(v.into()));
-        self.patch(&[("palier", s(FREE)), ("fin_abonnement", s(&iso(Utc::now()))), ("resiliation", None), ("paiement_abonnement", None)]).await
+        self.patch(&[("palier", s(FREE)), ("fin_abonnement", s(&iso(Utc::now()))), ("resiliation", None), ("paiement_abonnement", None),
+                     ("echeance", None), ("paiement_echec", None)]).await
     }
 }
 
 pub async fn status(c: Scope) -> Result<Json<Value>, Fail> {
     let acc = c.account().await?;
-    let (plan, standing, used) = (c.plan_of(&acc), c.standing_of(&acc), c.used_bytes().await?);
+    let (plan, standing, (used, frozen)) = (c.plan_of(&acc), c.standing_of(&acc), c.storage().await?);
     let recovery = matches!(standing, Standing::Archived { .. }).then(|| c.policy.recovery_eur(used));
     Ok(Json(json!({
         "plan": {"key": plan.key, "label": plan.label, "quota_bytes": plan.quota_bytes(), "export_s": plan.export_s()},
@@ -397,7 +453,11 @@ pub async fn status(c: Scope) -> Result<Json<Value>, Fail> {
         "credit_s": acc.credit_s, "credit": {"min": c.policy.credit_min, "eur": c.policy.credit_eur},
         "standing": standing.json(), "subscribed": acc.subscription.is_some(), "cancel_at": acc.cancel_at,
         "recovery_eur": recovery, "access_days": c.policy.access_days,
-        "plans": c.plans, "payment": c.payment.is_some(),
+        "overage": {"credits_100go": c.policy.overage_credits_100go, "grace_days": c.policy.overage_grace_days,
+                    "bytes": used.saturating_sub(plan.quota_bytes()), "out_since": acc.over_out,
+                    "frozen_bytes": frozen, "recovery_credits": c.policy.recovery_s(frozen) / 60.0},
+        "paid_until": acc.paid_until, "payment_failed": acc.failed, "grace_days": c.policy.grace_days,
+        "plans": c.plans, "payment": c.payment.is_some(), "provider": c.payment.as_ref().map(|p| p.name()),
     })))
 }
 
@@ -406,7 +466,8 @@ mod tests {
     use super::*;
 
     fn policy() -> Policy {
-        Policy { trial_days: 7.0, access_days: 30.0, archive_days: 180.0, credit_min: 60, credit_eur: 0.05, recovery_eur_100go: 2.0 }
+        Policy { trial_days: 7.0, access_days: 30.0, archive_days: 180.0, credit_min: 60, credit_eur: 0.07, recovery_eur_100go: 3.0, grace_days: 14.0,
+                 overage_credits_100go: 25.0, overage_min_days: 7.0, overage_grace_days: 30.0 }
     }
 
     fn ago(days: i64) -> Option<String> {
@@ -438,8 +499,18 @@ mod tests {
     #[test]
     fn recovery_is_priced_by_started_100_go() {
         let p = policy();
-        assert_eq!(p.recovery_eur(1), 2.0);
-        assert_eq!(p.recovery_eur(100_000_000_000), 2.0);
-        assert_eq!(p.recovery_eur(600_000_000_001), 14.0);
+        assert_eq!(p.recovery_eur(1), 3.0);
+        assert_eq!(p.recovery_eur(100_000_000_000), 3.0);
+        assert_eq!(p.recovery_eur(600_000_000_001), 21.0);
+        assert_eq!(p.recovery_s(100_000_000_000), 43.0 * 60.0, "3 € à 0,07 € le crédit : 43 crédits");
+    }
+
+    #[test]
+    fn overage_costs_25_credits_per_100_go_per_30_days() {
+        let p = policy();
+        assert_eq!(p.overage_s(100_000_000_000, 30.0), 25.0 * 60.0);
+        assert_eq!(p.overage_s(300_000_000_000, 30.0), 75.0 * 60.0);
+        assert!((p.overage_s(100_000_000_000, 1.0) - 50.0).abs() < 1e-9);
+        assert_eq!(p.overage_s(0, 30.0), 0.0);
     }
 }

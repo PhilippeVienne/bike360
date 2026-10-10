@@ -1,9 +1,8 @@
-# Socle de stockage de Bike360 Cloud : rushs et exports dans S3, index dans DynamoDB, file des calculs GPU.
-# Les objets sont rangés par nature puis par client (apercus/<client>/…, originaux/<client>/…) :
-# les règles d'archivage S3 se déclarent par préfixe, donc la nature vient en premier.
+# Socle de Bike360 Cloud pour l'essai local : le module socle/ (stockage, index, file, comptes) appliqué
+# à l'émulateur floci.
 #
 #   Essai local (émulateur floci) : terraform apply -var local=true
-#   Compte AWS                    : terraform apply -var bucket=<nom unique>
+#   Compte AWS                    : voir ../deploiement et docs/deploiement-aws.md (sh cloud/deployer.sh)
 
 terraform {
   required_version = ">= 1.6"
@@ -29,7 +28,7 @@ variable "endpoint" {
 
 variable "region" {
   type    = string
-  default = "eu-west-3" # Paris : c'est la région du chiffrage
+  default = "eu-north-1" # Stockholm : la région du projet AWS et du chiffrage
 }
 
 variable "bucket" {
@@ -76,177 +75,73 @@ provider "aws" {
   }
 }
 
-# ---------------------------------------------------------------- stockage
-
-resource "aws_s3_bucket" "rushs" {
-  bucket = var.bucket
+module "socle" {
+  source       = "./socle"
+  bucket       = var.bucket
+  site         = var.site
+  archive_days = var.archive_days
+  export_days  = var.export_days
 }
 
-resource "aws_s3_bucket_public_access_block" "rushs" {
-  bucket                  = aws_s3_bucket.rushs.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
+# Les ressources étaient déclarées ici avant d'être rangées dans le module : un état existant suit.
+moved {
+  from = aws_s3_bucket.rushs
+  to   = module.socle.aws_s3_bucket.rushs
 }
-
-# Le navigateur envoie les rushs directement, par morceaux : il lui faut l'en-tête ETag de chaque morceau.
-resource "aws_s3_bucket_cors_configuration" "rushs" {
-  bucket = aws_s3_bucket.rushs.id
-  cors_rule {
-    allowed_origins = [var.site]
-    allowed_methods = ["PUT", "GET", "HEAD"]
-    allowed_headers = ["*"]
-    expose_headers  = ["ETag"]
-    max_age_seconds = 3600
-  }
+moved {
+  from = aws_s3_bucket_public_access_block.rushs
+  to   = module.socle.aws_s3_bucket_public_access_block.rushs
 }
-
-resource "aws_s3_bucket_lifecycle_configuration" "rushs" {
-  bucket = aws_s3_bucket.rushs.id
-
-  # Les originaux arrivent en Glacier Instant (classe choisie à l'envoi), puis partent en archive profonde.
-  rule {
-    id     = "originaux-vers-archive-profonde"
-    status = "Enabled"
-    filter {
-      prefix = "originaux/"
-    }
-    transition {
-      days          = var.archive_days
-      storage_class = "DEEP_ARCHIVE"
-    }
-  }
-
-  rule {
-    id     = "exports-supprimes"
-    status = "Enabled"
-    filter {
-      prefix = "exports/"
-    }
-    expiration {
-      days = var.export_days
-    }
-  }
-
-  # Rushs d'un abonnement terminé : le service les étiquette à la fin du délai d'accès, cette règle
-  # les fait passer en archive profonde (180 jours facturés au minimum, soit la durée de leur garde).
-  rule {
-    id     = "rushs-archives"
-    status = "Enabled"
-    filter {
-      tag {
-        key   = "etat"
-        value = "archive"
-      }
-    }
-    transition {
-      days          = 0
-      storage_class = "DEEP_ARCHIVE"
-    }
-  }
-
-  # Un envoi abandonné reste facturé tant que ses morceaux existent.
-  rule {
-    id     = "envois-interrompus"
-    status = "Enabled"
-    filter {
-      prefix = ""
-    }
-    abort_incomplete_multipart_upload {
-      days_after_initiation = 7
-    }
-  }
+moved {
+  from = aws_s3_bucket_cors_configuration.rushs
+  to   = module.socle.aws_s3_bucket_cors_configuration.rushs
 }
-
-# ---------------------------------------------------------------- index et file
-
-# Table unique : pk = client, sk = nature et identifiant (balade, session, envoi en cours…).
-resource "aws_dynamodb_table" "index" {
-  name         = "bike360"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "pk"
-  range_key    = "sk"
-
-  attribute {
-    name = "pk"
-    type = "S"
-  }
-  attribute {
-    name = "sk"
-    type = "S"
-  }
+moved {
+  from = aws_s3_bucket_lifecycle_configuration.rushs
+  to   = module.socle.aws_s3_bucket_lifecycle_configuration.rushs
 }
-
-resource "aws_sqs_queue" "gpu_rebut" {
-  name                      = "bike360-gpu-rebut"
-  message_retention_seconds = 1209600 # 14 jours pour comprendre un échec
+moved {
+  from = aws_dynamodb_table.index
+  to   = module.socle.aws_dynamodb_table.index
 }
-
-# Un message = un job.json du moteur GPU (horizon, floutage, export).
-resource "aws_sqs_queue" "gpu" {
-  name                       = "bike360-gpu"
-  visibility_timeout_seconds = 3600 # un export long ne doit pas être repris par une seconde machine
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.gpu_rebut.arn
-    maxReceiveCount     = 3
-  })
+moved {
+  from = aws_sqs_queue.gpu_rebut
+  to   = module.socle.aws_sqs_queue.gpu_rebut
 }
-
-# ---------------------------------------------------------------- comptes
-
-# Un compte = une adresse de courriel confirmée. L'identifiant du compte sert de préfixe à ses rushs.
-resource "aws_cognito_user_pool" "comptes" {
-  name                     = "bike360"
-  username_attributes      = ["email"]
-  auto_verified_attributes = ["email"]
-
-  password_policy {
-    minimum_length    = 10
-    require_lowercase = true
-    require_numbers   = true
-    require_symbols   = false
-    require_uppercase = false
-  }
-
-  account_recovery_setting {
-    recovery_mechanism {
-      name     = "verified_email"
-      priority = 1
-    }
-  }
+moved {
+  from = aws_sqs_queue.gpu
+  to   = module.socle.aws_sqs_queue.gpu
 }
-
-# Application sans secret : c'est le service, pas le navigateur, qui parle à Cognito.
-resource "aws_cognito_user_pool_client" "web" {
-  name                          = "bike360-web"
-  user_pool_id                  = aws_cognito_user_pool.comptes.id
-  generate_secret               = false
-  explicit_auth_flows           = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
-  prevent_user_existence_errors = "ENABLED"
+moved {
+  from = aws_cognito_user_pool.comptes
+  to   = module.socle.aws_cognito_user_pool.comptes
+}
+moved {
+  from = aws_cognito_user_pool_client.web
+  to   = module.socle.aws_cognito_user_pool_client.web
 }
 
 output "pool" {
-  value = aws_cognito_user_pool.comptes.id
+  value = module.socle.pool
 }
 
 output "app_client" {
-  value = aws_cognito_user_pool_client.web.id
+  value = module.socle.app_client
 }
 
 # Émetteur des jetons : le service y lit les clés publiques qui les signent.
 output "issuer" {
-  value = var.local ? "${replace(var.endpoint, "127.0.0.1", "localhost")}/${aws_cognito_user_pool.comptes.id}" : "https://${aws_cognito_user_pool.comptes.endpoint}"
+  value = var.local ? "${replace(var.endpoint, "127.0.0.1", "localhost")}/${module.socle.pool}" : "https://${module.socle.pool_endpoint}"
 }
 
 output "bucket" {
-  value = aws_s3_bucket.rushs.id
+  value = module.socle.bucket
 }
 
 output "table" {
-  value = aws_dynamodb_table.index.name
+  value = module.socle.table
 }
 
 output "file_gpu" {
-  value = aws_sqs_queue.gpu.url
+  value = module.socle.file_gpu
 }

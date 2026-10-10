@@ -12,7 +12,7 @@ client=demo
 port=8399
 part_mb=8
 
-export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=eu-west-3
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=eu-north-1
 export AWS_ENDPOINT_URL=http://127.0.0.1:4566
 export AWS_PAGER=""
 

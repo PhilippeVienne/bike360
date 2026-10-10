@@ -30,15 +30,24 @@ main.lib progress { width: 100%; }
   <ul id="plans" class="lib-list"></ul>
   <p class="muted">Abonnement annuel, payé en ligne. TVA non applicable, article 293 B du CGI.</p>
   <div id="subscription"></div>
-  <h3>Crédit d'export</h3>
-  <p class="muted">Au-delà des minutes du mois, un export se paie d'avance, à la minute. Le crédit ne périme pas ;
-    un export plus long que ce qu'il te reste ne démarre pas.</p>
+  <div id="billing" hidden>
+    <h3>Moyen de paiement</h3>
+    <div class="lib-row"><span class="grow" id="method"></span><button id="method-change">Changer de carte</button></div>
+    <p class="muted">Le changement passe par la page de notre prestataire de paiement, Mollie : 0 € est débité, la carte est seulement enregistrée
+      pour les prochains renouvellements.</p>
+  </div>
+  <h3>Crédits : monter des rushs ponctuels</h3>
+  <p class="muted">Un retour de voyage, une grosse sortie : les crédits te laissent dépasser ton palier le temps de trier et de monter.
+    Un crédit paie une minute d'export au-delà de celles du mois ; 25 crédits paient 100 Go au-dessus de ton quota pendant 30 jours.
+    Ils s'achètent d'avance et ne périment pas ; un export ou un envoi que ton solde ne couvre pas ne démarre pas.</p>
   <form id="credit" class="lib-row">
     <span class="grow" id="credit-balance"></span>
-    <label>Minutes <input id="credit-minutes" type="number" step="1" required></label>
+    <label>Crédits <input id="credit-minutes" type="number" step="1" required></label>
     <span id="credit-price"></span>
     <button class="primary" type="submit">Acheter</button>
   </form>
+  <h3>Historique des paiements</h3>
+  <ul id="receipts" class="lib-list"></ul>
   <h3>Supprimer mon compte</h3>
   <p class="muted">Tes rushs, tes exports, ton travail et ton compte sont effacés pour de bon, et ton abonnement s'arrête sans remboursement.</p>
   <form id="delete" class="lib-row">

@@ -23,7 +23,7 @@ use aws_sdk_sesv2::types::{Body, Content, Destination, EmailContent, Message};
 use chrono::Utc;
 
 use crate::account::Scope;
-use crate::plans::{iso, Standing};
+use crate::plans::{days_between, iso, Standing};
 use crate::Ctx;
 
 /// Étiquette des objets à passer en archive profonde.
@@ -266,7 +266,7 @@ impl Scope {
     }
 
     /// Prévient le client par courriel, si la messagerie est configurée et son adresse connue.
-    async fn mail(&self, subject: &str, text: &str) -> Result<bool> {
+    pub(crate) async fn mail(&self, subject: &str, text: &str) -> Result<bool> {
         let (Some((ses, from)), Some(auth)) = (&self.thaw.mail, &self.auth) else { return Ok(false) };
         let to = auth.email_of(&self.client).await?;
         let part = |v: &str| Content::builder().data(v).charset("UTF-8").build();
@@ -312,11 +312,95 @@ impl Scope {
         Ok(())
     }
 
+    /// Dépassement du quota de stockage d'un abonné : le temps passé au-dessus est pris sur son crédit.
+    /// Crédit épuisé, il a `overage_grace_days` jours pour régulariser ; ensuite ses rushs les plus anciens
+    /// partent en archive jusqu'à ce que le reste tienne dans le quota. Un rush ainsi archivé (`gele`) ne
+    /// compte plus dans le quota, se récupère en crédits, et est supprimé au terme de sa garde.
+    async fn meter_overage(&self, acc: &crate::plans::Account) -> Result<()> {
+        let Some(table) = &self.table else { return Ok(()) };
+        let quota = self.plan_of(acc).quota_bytes();
+        let now = Utc::now();
+        let text = |i: &std::collections::HashMap<String, AttributeValue>, k: &str| i.get(k).and_then(|v| v.as_s().ok()).cloned();
+        let bytes = |i: &std::collections::HashMap<String, AttributeValue>| i.get("octets").and_then(|v| v.as_n().ok()).and_then(|n| n.parse::<f64>().ok()).unwrap_or(0.0) as u64;
+        let mut live = vec![];
+        for item in self.rows("rush#").await.map_err(|f| anyhow::anyhow!(f.1))? {
+            let (Some(sk), Some(key)) = (text(&item, "sk"), text(&item, "cle")) else { continue };
+            match text(&item, "gele") {
+                // garde en archive échue : le rush est supprimé pour de bon
+                Some(since) if days_between(&since, now) >= self.policy.archive_days => {
+                    self.wipe(&key).await?;
+                    self.db.delete_item().table_name(table).key("pk", AttributeValue::S(format!("client#{}", self.client)))
+                        .key("sk", AttributeValue::S(sk)).send().await?;
+                }
+                Some(_) => {}
+                None => live.push((text(&item, "recu").unwrap_or_default(), sk, key, bytes(&item))),
+            }
+        }
+        let over = live.iter().map(|r| r.3).sum::<u64>().saturating_sub(quota);
+        if over == 0 {
+            if acc.over_seen.is_some() || acc.over_out.is_some() {
+                self.patch(&[("depassement_vu", None), ("depassement_fin", None)]).await?;
+            }
+            return Ok(());
+        }
+        let stamp = Some(AttributeValue::S(iso(now)));
+        let credit = match &acc.over_seen {
+            Some(seen) => (acc.credit_s - self.policy.overage_s(over, days_between(seen, now).max(0.0))).max(0.0),
+            None => acc.credit_s,
+        };
+        let mut changes = vec![("depassement_vu", stamp.clone()), ("credit_s", Some(AttributeValue::N(format!("{credit:.1}"))))];
+        if credit > 0.0 {
+            changes.push(("depassement_fin", None));
+            return self.patch(&changes).await;
+        }
+        match &acc.over_out {
+            None => {
+                changes.push(("depassement_fin", stamp));
+                self.patch(&changes).await?;
+                let sent = self.mail("Bike360 : ton crédit est épuisé et ton quota dépassé", &format!(
+                    "Bonjour,\n\nTon stockage dépasse ton quota de {:.0} Go et ton crédit est épuisé. Tu as {:.0} jours pour libérer de la place, \
+                     racheter du crédit ou changer de palier ; ensuite tes rushs les plus anciens partiront en archive.\n\n{}/ui/palier.html\n",
+                    over as f64 / 1e9, self.policy.overage_grace_days, self.site)).await;
+                if let Err(e) = sent {
+                    eprintln!("dépassement de {} : courriel non envoyé : {e:#}", self.client);
+                }
+                println!("dépassement de {} : crédit épuisé", self.client);
+            }
+            Some(out) if days_between(out, now) >= self.policy.overage_grace_days => {
+                live.sort();   // les plus anciens d'abord (date de réception)
+                let tag = Tag::builder().key(ARCHIVE_TAG.0).value(ARCHIVE_TAG.1).build()?;
+                let (mut freed, mut count) = (0, 0);
+                for (_, sk, key, size) in &live {
+                    if freed >= over {
+                        break;
+                    }
+                    self.s3.put_object_tagging().bucket(&self.bucket).key(key).tagging(Tagging::builder().tag_set(tag.clone()).build()?).send().await?;
+                    self.db.update_item().table_name(table).key("pk", AttributeValue::S(format!("client#{}", self.client)))
+                        .key("sk", AttributeValue::S(sk.clone())).update_expression("SET gele = :d")
+                        .expression_attribute_values(":d", AttributeValue::S(iso(now))).send().await?;
+                    freed += size;
+                    count += 1;
+                }
+                self.patch(&[("depassement_vu", None), ("depassement_fin", None)]).await?;
+                println!("dépassement de {} non régularisé : {count} rush(s) envoyé(s) en archive", self.client);
+            }
+            Some(_) => self.patch(&changes).await?,
+        }
+        Ok(())
+    }
+
     /// Applique au compte ce que sa situation demande aujourd'hui.
     async fn upkeep(&self) -> Result<()> {
         self.follow_thaws().await?;
-        let acc = self.account().await.map_err(|f| anyhow::anyhow!(f.1))?;
+        let mut acc = self.account().await.map_err(|f| anyhow::anyhow!(f.1))?;
+        // un abonnement dont le prestataire n'annonce pas la fin s'arrête ici, à son échéance
+        if crate::payment::lapse(self, &acc).await? {
+            acc = self.account().await.map_err(|f| anyhow::anyhow!(f.1))?;
+        }
         let now = || Some(AttributeValue::S(iso(Utc::now())));
+        if self.standing_of(&acc) == Standing::Paid {
+            self.meter_overage(&acc).await?;
+        }
         match self.standing_of(&acc) {
             Standing::TrialOver if acc.purged.is_none() => {
                 let n = self.drop_rushs().await?;
@@ -345,6 +429,46 @@ impl Scope {
     }
 }
 
+/// Récupère les rushs partis en archive pour dépassement, contre des crédits : il faut que tout tienne
+/// de nouveau dans le quota, ou que le crédit restant couvre le dépassement quelques jours.
+pub async fn recover(c: Scope) -> Result<axum::Json<serde_json::Value>, crate::Fail> {
+    use axum::http::StatusCode;
+    let refuse = |code, text: String| crate::Fail(code, text);
+    let failed = |e: anyhow::Error| {
+        eprintln!("récupération : {e:#}");
+        crate::Fail(StatusCode::BAD_GATEWAY, "récupération impossible pour l'instant".into())
+    };
+    let table = c.table.clone().ok_or_else(|| refuse(StatusCode::SERVICE_UNAVAILABLE, "index non configuré".into()))?;
+    let acc = c.account().await?;
+    if c.standing_of(&acc) != Standing::Paid {
+        return Err(refuse(StatusCode::PAYMENT_REQUIRED, "la récupération demande un abonnement en cours".into()));
+    }
+    let (live, frozen) = c.storage().await?;
+    if frozen == 0 {
+        return Err(refuse(StatusCode::CONFLICT, "aucun rush en archive à récupérer".into()));
+    }
+    let cost = c.policy.recovery_s(frozen);
+    let over = (live + frozen).saturating_sub(c.plan_of(&acc).quota_bytes());
+    let need = cost + c.policy.overage_s(over, c.policy.overage_min_days);
+    if acc.credit_s < need {
+        return Err(refuse(StatusCode::PAYMENT_REQUIRED, format!(
+            "il faut {:.0} crédit(s) et tu en as {:.0} : {:.0} pour la récupération{}",
+            (need / 60.0).ceil(), (acc.credit_s / 60.0).floor(), cost / 60.0,
+            if over > 0 { format!(", le reste pour {:.0} Go au-dessus du quota", over as f64 / 1e9) } else { String::new() })));
+    }
+    for item in c.rows("rush#").await? {
+        let (Some(pk), Some(sk)) = (item.get("pk"), item.get("sk")) else { continue };
+        if item.contains_key("gele") {
+            c.db.update_item().table_name(&table).key("pk", pk.clone()).key("sk", sk.clone()).update_expression("REMOVE gele")
+                .send().await.map_err(|e| failed(e.into()))?;
+        }
+    }
+    // la sortie d'archive elle-même est faite par le passage des échéances, comme après une reprise d'abonnement
+    c.patch(&[("credit_s", Some(AttributeValue::N(format!("{:.1}", acc.credit_s - cost)))), ("recuperation", Some(AttributeValue::S(iso(Utc::now()))))])
+        .await.map_err(failed)?;
+    Ok(axum::Json(serde_json::json!({"ok": true, "bytes": frozen, "credits": cost / 60.0})))
+}
+
 /// Un passage sur tous les comptes.
 async fn sweep(ctx: &Arc<Ctx>) -> Result<()> {
     let Some(table) = &ctx.table else { return Ok(()) };
@@ -365,6 +489,15 @@ async fn sweep(ctx: &Arc<Ctx>) -> Result<()> {
             None => return Ok(()),
         }
     }
+}
+
+/// Un passage à la demande (`--sweep-route`) : sur AWS, une règle planifiée l'appelle à la place de la boucle.
+pub async fn once(axum::extract::State(ctx): axum::extract::State<Arc<Ctx>>) -> Result<axum::Json<serde_json::Value>, crate::Fail> {
+    sweep(&ctx).await.map_err(|e| {
+        eprintln!("échéances : {e:#}");
+        crate::Fail(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "passage interrompu".into())
+    })?;
+    Ok(axum::Json(serde_json::json!({"ok": true})))
 }
 
 /// Passe sur les comptes à intervalle régulier, tant que le service tourne.

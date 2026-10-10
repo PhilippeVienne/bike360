@@ -18,7 +18,7 @@ terraform {
 
 variable "region" {
   type    = string
-  default = "eu-west-3" # Paris : la région du chiffrage
+  default = "eu-north-1" # Stockholm : la région du projet AWS et du chiffrage
 }
 
 variable "instance_type" {
