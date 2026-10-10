@@ -365,7 +365,7 @@ impl Mollie {
         match kind.as_str() {
             "credit" => {
                 let Some(minutes) = detail.parse::<u32>().ok().filter(|m| *m > 0 && *m <= MAX_CREDIT_MIN) else { return Ok("ignorée : crédit hors bornes") };
-                let receipt = Receipt { id, client: &client, kind: "credit", label: format!("Crédit d'export, {minutes} minutes"), cents: paid, method,
+                let receipt = Receipt { id, client: &client, kind: "credit", label: format!("{minutes} crédits"), cents: paid, method,
                                         credit_s: minutes as f64 * 60.0 };
                 Ok(if record(ctx, &receipt).await? { "crédit ajouté" } else { "ignorée : crédit déjà ajouté" })
             }

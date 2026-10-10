@@ -155,7 +155,7 @@ async fn apply(ctx: &Arc<Ctx>, event: &Value) -> Result<&'static str> {
                 if minutes == 0 || minutes > MAX_CREDIT_MIN {
                     return Ok("ignorée : crédit hors bornes");
                 }
-                let receipt = Receipt { id, client, kind: "credit", label: format!("Crédit d'export, {minutes} minutes"),
+                let receipt = Receipt { id, client, kind: "credit", label: format!("{minutes} crédits"),
                                         cents: obj["amount_total"].as_u64().unwrap_or(0), method: None, credit_s: minutes as f64 * 60.0 };
                 return Ok(if record(ctx, &receipt).await? { "crédit ajouté" } else { "ignorée : crédit déjà ajouté" });
             }
