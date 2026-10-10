@@ -115,6 +115,15 @@ struct Args {
     /// Minutes entre deux passages sur les échéances des comptes
     #[arg(long, env = "BIKE360_SWEEP_MIN", default_value_t = 60.0)]
     sweep_min: f64,
+    /// Sortie d'archive des originaux demandés à l'export : « bulk » (48 h au plus, la moins chère) ou « standard » (12 h)
+    #[arg(long, env = "BIKE360_RESTORE_TIER", default_value = "bulk", value_parser = ["bulk", "standard"])]
+    restore_tier: String,
+    /// Jours pendant lesquels des originaux sortis d'archive restent disponibles pour l'export
+    #[arg(long, default_value_t = 3)]
+    restore_days: i32,
+    /// Expéditeur des courriels du service (sans lui, le client n'est prévenu que dans sa Bibliothèque)
+    #[arg(long, env = "BIKE360_MAIL_FROM")]
+    mail_from: Option<String>,
     /// Dossier de l'interface web à servir (pages envoi.html et bibliotheque.html)
     #[arg(long)]
     ui: Option<String>,
@@ -140,6 +149,9 @@ pub struct Ctx {
     payment: Option<payment::Payment>,
     trash_days: f64,
     policy: plans::Policy,
+    thaw: upkeep::Thaw,
+    /// Adresse publique du site, citée dans les courriels.
+    site: String,
 }
 
 /// Ce que la fin d'un rush dit de lui, sans le télécharger.
@@ -419,7 +431,10 @@ async fn main() -> Result<()> {
                                  Some(file) => plans::load(file)?,
                                  None => plans::defaults(),
                              },
-                             payment: payment::Payment::from_env(site)?,
+                             payment: payment::Payment::from_env(site.clone())?,
+                             thaw: upkeep::Thaw { standard: a.restore_tier == "standard", days: a.restore_days.max(1),
+                                                  mail: a.mail_from.map(|from| (aws_sdk_sesv2::Client::new(&conf), from)) },
+                             site,
                              trash_days: a.trash_days,
                              policy: plans::Policy { trial_days: a.trial_days, access_days: a.access_days, archive_days: a.archive_days,
                                                      credit_min: a.credit_min, credit_eur: a.credit_eur, recovery_eur_100go: a.recovery_eur_100go } });

@@ -389,14 +389,25 @@ pub async fn originals(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Json(b):
     let client = l.running.lock().await.iter().find(|(_, inst)| same(&inst.password, given)).map(|(c, _)| c.clone())
         .ok_or_else(|| Fail(StatusCode::UNAUTHORIZED, "atelier inconnu".into()))?;
     // l'export doit tenir dans les minutes que le palier du client lui laisse ce mois-ci
-    Scope::of(ctx.clone(), client.clone()).check_export(b.seconds).await?;
+    let scope = Scope::of(ctx.clone(), client.clone());
+    scope.check_export(b.seconds).await?;
     // fichiers VID_<date>_<heure>_… des sessions demandées, et rien d'autre
     let wanted: Vec<String> = b.sessions.iter().filter_map(|s| s.get(..19)).filter(|s| s.starts_with("VID_")).map(|s| format!("{s}_")).collect();
+    // des originaux partis en archive profonde lui sont redemandés : l'export attendra leur retour
+    let waiting = scope.thaw(&wanted).await.map_err(|e| {
+        eprintln!("sortie d'archive pour {client} : {e:#}");
+        Fail(StatusCode::BAD_GATEWAY, "originaux indisponibles pour l'instant".into())
+    })?;
+    if waiting > 0 {
+        return Err(Fail(StatusCode::CONFLICT, format!(
+            "originaux archivés : leur sortie d'archive est demandée ({waiting} fichier(s), {} h au plus). {} Relance l'export à ce moment-là.",
+            ctx.thaw.hours(), if ctx.thaw.mail.is_some() { "Un courriel te préviendra quand ils seront prêts." } else { "Ta Bibliothèque indiquera quand ils seront prêts." })));
+    }
     ctx.pull(&format!("originaux/{client}/"), &l.dir(&client).join("rushs"), |n| !n.contains('/') && wanted.iter().any(|w| n.starts_with(w.as_str())))
         .await.map_err(|e| {
             eprintln!("originaux de {client} : {e:#}");
             if format!("{e:?}").contains("InvalidObjectState") {
-                Fail(StatusCode::CONFLICT, "originaux archivés : leur restauration demande jusqu'à 48 h".into())
+                Fail(StatusCode::CONFLICT, "originaux archivés : leur sortie d'archive n'est pas terminée".into())
             } else {
                 Fail(StatusCode::BAD_GATEWAY, "originaux indisponibles pour l'instant".into())
             }

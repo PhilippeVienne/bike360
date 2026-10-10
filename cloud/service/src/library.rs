@@ -260,9 +260,14 @@ pub async fn list(c: Scope) -> Result<Json<Value>, Fail> {
     let bytes: u64 = sessions.values().map(Session::bytes).sum();
     let acc = c.account().await?;
     let plan = c.plan_of(&acc);
+    // sorties d'archive demandées par un export : en attente, ou prêtes jusqu'à une date
+    let thaws: Vec<Value> = c.rows("sortie#").await?.iter().filter_map(|i| {
+        Some(json!({"session": text(i, "sk")?.trim_start_matches("sortie#"), "ready": text(i, "etat").as_deref() == Some("prete"),
+                    "asked": text(i, "demande"), "until": text(i, "jusque")}))
+    }).collect();
     Ok(Json(json!({"bytes": bytes, "quota_bytes": plan.quota_bytes(), "plan": plan.label,
                    "export_s": plan.export_s(), "export_used_s": c.export_used_s().await?,
-                   "credit_s": acc.credit_s, "standing": c.standing_of(&acc).json(),
+                   "credit_s": acc.credit_s, "standing": c.standing_of(&acc).json(), "thaws": thaws,
                    "trash_days": c.trash_days, "rides": rides,
                    "suggestions": suggestions, "exports": exports(&c).await?})))
 }
@@ -338,7 +343,7 @@ pub async fn purge(c: Scope) -> Result<Json<Value>, Fail> {
                 c.s3.delete_object().bucket(&c.bucket).key(key).send().await.map_err(aws("suppression"))?;
             }
         }
-        for sk in [format!("marque#{id}"), format!("session#{id}")] {
+        for sk in [format!("marque#{id}"), format!("session#{id}"), format!("sortie#{}", id.get(..19).unwrap_or(&id))] {
             c.db.delete_item().table_name(table).key("pk", c.pk()).key("sk", AttributeValue::S(sk))
                 .send().await.map_err(aws("mise à jour de l'index"))?;
         }

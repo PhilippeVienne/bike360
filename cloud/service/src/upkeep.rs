@@ -8,7 +8,9 @@
 //!   abonnement repris sur une archive → ses aperçus sont redemandés à l'archive puis remis dans
 //!                                      leur classe ; les originaux y restent, comme tout original ancien
 //!
-//! C'est aussi ici que se fait l'effacement complet d'un compte, à la demande de son titulaire.
+//! C'est aussi ici que se fait l'effacement complet d'un compte, à la demande de son titulaire, et
+//! la sortie d'archive des originaux qu'un export demande : ils y partent à 90 jours, l'export les
+//! redemande, et le passage prévient le client quand ils sont revenus (`sk = sortie#<session>`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +19,7 @@ use anyhow::{Context, Result};
 use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart, Delete, GlacierJobParameters, ObjectIdentifier, RestoreRequest, StorageClass,
                         Tag, Tagging, TaggingDirective, Tier};
+use aws_sdk_sesv2::types::{Body, Content, Destination, EmailContent, Message};
 use chrono::Utc;
 
 use crate::account::Scope;
@@ -30,6 +33,23 @@ const RESTORE_DAYS: i32 = 7;
 /// Au-delà, S3 ne recopie un objet que par morceaux.
 const COPY_MAX: u64 = 5 * 1024 * 1024 * 1024;
 const COPY_PART: u64 = 1024 * 1024 * 1024;
+/// Réglages de la sortie d'archive des originaux demandés à l'export.
+pub struct Thaw {
+    /// Sortie « standard » (12 h pour l'archive profonde) au lieu de la sortie en masse (48 h), moins chère.
+    pub standard: bool,
+    /// Jours pendant lesquels les originaux revenus restent lisibles.
+    pub days: i32,
+    /// Messagerie et expéditeur des courriels qui préviennent le client.
+    pub mail: Option<(aws_sdk_sesv2::Client, String)>,
+}
+
+impl Thaw {
+    /// Délai annoncé au client, en heures.
+    pub fn hours(&self) -> u32 {
+        if self.standard { 12 } else { 48 }
+    }
+}
+
 /// Préfixes du compartiment où un client a des objets.
 const KINDS: [&str; 4] = ["apercus", "originaux", "exports", "donnees"];
 
@@ -77,6 +97,29 @@ impl Ctx {
             }
         }
         Ok(count)
+    }
+
+    /// Vrai si l'objet, rangé dans une classe d'archive, n'est pas (encore) lisible ; `ask` demande alors
+    /// sa sortie d'archive si elle ne l'est pas déjà.
+    async fn frozen(&self, key: &str, class: &Option<StorageClass>, ask: bool) -> Result<bool> {
+        if !matches!(class, Some(StorageClass::DeepArchive | StorageClass::Glacier)) {
+            return Ok(false);
+        }
+        let head = self.s3.head_object().bucket(&self.bucket).key(key).send().await?;
+        match head.restore() {
+            Some(state) if state.contains("ongoing-request=\"false\"") => return Ok(false),
+            Some(_) => {}
+            None if ask => {
+                let tier = if self.thaw.standard { Tier::Standard } else { Tier::Bulk };
+                let request = RestoreRequest::builder().days(self.thaw.days).glacier_job_parameters(GlacierJobParameters::builder().tier(tier).build()?).build();
+                if let Err(e) = self.s3.restore_object().bucket(&self.bucket).key(key).restore_request(request).send().await {
+                    // une sortie déjà en cours n'est pas une erreur
+                    anyhow::ensure!(format!("{e:?}").contains("RestoreAlreadyInProgress"), "sortie d'archive de {key} : {e:?}");
+                }
+            }
+            None => {}
+        }
+        Ok(true)
     }
 
     async fn is_archived(&self, key: &str) -> Result<bool> {
@@ -128,7 +171,7 @@ impl Scope {
         for kind in KINDS {
             count += self.wipe(&format!("{kind}/{}/", self.client)).await?;
         }
-        self.forget(&["rush#", "session#", "marque#"]).await?;
+        self.forget(&["rush#", "session#", "marque#", "sortie#"]).await?;
         Ok(count)
     }
 
@@ -189,8 +232,89 @@ impl Scope {
         Ok(waiting)
     }
 
+    /// Originaux d'une session (`VID_<date>_<heure>`) encore retenus par l'archive.
+    async fn frozen_originals(&self, session: &str, ask: bool) -> Result<usize> {
+        let prefix = format!("originaux/{}/{session}_", self.client);
+        let mut waiting = 0;
+        for (key, _, class) in self.objects(&prefix).await? {
+            if self.frozen(&key, &class, ask).await? {
+                waiting += 1;
+            }
+        }
+        Ok(waiting)
+    }
+
+    /// Demande à l'archive les originaux de ces sessions (préfixes `VID_<date>_<heure>_`) qui y sont ;
+    /// renvoie le nombre de fichiers attendus. Chaque session en attente est notée dans l'index.
+    pub async fn thaw(&self, sessions: &[String]) -> Result<usize> {
+        let mut waiting = 0;
+        for session in sessions.iter().map(|s| s.trim_end_matches('_')) {
+            let n = self.frozen_originals(session, true).await?;
+            waiting += n;
+            let Some(table) = self.table.as_ref().filter(|_| n > 0) else { continue };
+            // la première demande date l'attente ; les suivantes ne la remettent pas à zéro
+            let put = self.db.put_item().table_name(table)
+                .item("pk", AttributeValue::S(format!("client#{}", self.client))).item("sk", AttributeValue::S(format!("sortie#{session}")))
+                .item("etat", AttributeValue::S("demandee".into())).item("demande", AttributeValue::S(iso(Utc::now())))
+                .condition_expression("attribute_not_exists(sk) OR etat <> :d").expression_attribute_values(":d", AttributeValue::S("demandee".into()))
+                .send().await;
+            if let Err(e) = put {
+                anyhow::ensure!(e.as_service_error().is_some_and(|s| s.is_conditional_check_failed_exception()), "suivi de la sortie d'archive : {e:?}");
+            }
+        }
+        Ok(waiting)
+    }
+
+    /// Prévient le client par courriel, si la messagerie est configurée et son adresse connue.
+    async fn mail(&self, subject: &str, text: &str) -> Result<bool> {
+        let (Some((ses, from)), Some(auth)) = (&self.thaw.mail, &self.auth) else { return Ok(false) };
+        let to = auth.email_of(&self.client).await?;
+        let part = |v: &str| Content::builder().data(v).charset("UTF-8").build();
+        let message = Message::builder().subject(part(subject)?).body(Body::builder().text(part(text)?).build()).build();
+        ses.send_email().from_email_address(from).destination(Destination::builder().to_addresses(to).build())
+            .content(EmailContent::builder().simple(message).build()).send().await?;
+        Ok(true)
+    }
+
+    /// Suit les sorties d'archive demandées : prévient le client quand ses originaux sont revenus,
+    /// puis oublie la demande quand ils sont repartis.
+    async fn follow_thaws(&self) -> Result<()> {
+        let Some(table) = &self.table else { return Ok(()) };
+        for item in self.rows("sortie#").await.map_err(|f| anyhow::anyhow!(f.1))? {
+            let text = |k: &str| item.get(k).and_then(|v| v.as_s().ok()).cloned();
+            let Some(sk) = text("sk") else { continue };
+            let session = sk.trim_start_matches("sortie#");
+            let row = self.db.update_item().table_name(table).key("pk", AttributeValue::S(format!("client#{}", self.client))).key("sk", AttributeValue::S(sk.clone()));
+            if text("etat").as_deref() == Some("prete") {
+                let gone = text("jusque").and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok()).is_none_or(|t| t < Utc::now());
+                if gone {
+                    self.db.delete_item().table_name(table).key("pk", AttributeValue::S(format!("client#{}", self.client))).key("sk", AttributeValue::S(sk.clone())).send().await?;
+                }
+                continue;
+            }
+            if self.frozen_originals(session, true).await? > 0 {
+                continue;
+            }
+            let until = Utc::now() + chrono::Duration::days(self.thaw.days as i64);
+            row.update_expression("SET etat = :e, prete = :p, jusque = :j")
+                .expression_attribute_values(":e", AttributeValue::S("prete".into()))
+                .expression_attribute_values(":p", AttributeValue::S(iso(Utc::now())))
+                .expression_attribute_values(":j", AttributeValue::S(iso(until))).send().await?;
+            let when = format!("{}/{}/{} à {}h{}", &session[10..12], &session[8..10], &session[4..8], &session[13..15], &session[15..17]);
+            let sent = self.mail("Bike360 : tes originaux sont prêts pour l'export", &format!(
+                "Bonjour,\n\nLes originaux de ta session du {when} sont sortis de l'archive. Ils restent disponibles {} jours : \
+                 ouvre l'atelier et relance ton export.\n\n{}/ui/bibliotheque.html\n", self.thaw.days, self.site)).await;
+            match sent {
+                Ok(sent) => println!("originaux de {session} revenus de l'archive pour {} ({})", self.client, if sent { "courriel envoyé" } else { "sans courriel" }),
+                Err(e) => eprintln!("originaux de {session} revenus, courriel non envoyé à {} : {e:#}", self.client),
+            }
+        }
+        Ok(())
+    }
+
     /// Applique au compte ce que sa situation demande aujourd'hui.
     async fn upkeep(&self) -> Result<()> {
+        self.follow_thaws().await?;
         let acc = self.account().await.map_err(|f| anyhow::anyhow!(f.1))?;
         let now = || Some(AttributeValue::S(iso(Utc::now())));
         match self.standing_of(&acc) {

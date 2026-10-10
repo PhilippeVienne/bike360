@@ -85,6 +85,15 @@ situation s'en déduit (`plans::Standing`) et un passage régulier applique ce q
 
 `cloud/essai-echeances.mjs` déroule tout cela sur l'émulateur en reculant les dates dans l'index.
 
+### Originaux sortis d'archive pour un export
+
+Un original part en archive profonde à 90 jours. Quand un export en a besoin, le service demande
+sa sortie d'archive (`--restore-tier bulk`, 48 h au plus, ou `standard`, 12 h), refuse l'export en
+l'expliquant, et note l'attente dans l'index (`sk = sortie#<session>`). Le passage des échéances
+voit l'original revenu : la Bibliothèque l'annonce, et un courriel part si un expéditeur est
+configuré (`--mail-from`, par Amazon SES). L'original reste lisible `--restore-days` jours (3),
+le temps de relancer l'export. Le coût de ces sorties d'archive n'est pas encore dans le chiffrage.
+
 ## Module Envoi
 
 `cloud/service` est le service qui ouvre un envoi, signe l'adresse de chaque morceau et assemble le
@@ -175,6 +184,7 @@ d'objets sur le compartiment, donc une règle qui supprime les anciennes version
 Le montage Amazon S3 Files, la facturation et les délais des classes de stockage, CloudFront, le
 GPU, les droits IAM, l'envoi des courriels de confirmation et la politique de mot de passe ne sont
 pas émulés ; le vrai parcours de paiement chez Stripe (carte, facture, résiliation) non plus : ils restent à essayer sur un compte AWS.
-L'émulateur n'applique pas les règles du compartiment et laisse lire un objet archivé : le passage
-en archive profonde, la demande de sortie d'archive et la recopie des aperçus revenus n'ont donc
-jamais tourné pour de bon.
+L'émulateur n'applique pas les règles du compartiment, laisse lire un objet archivé et ne le rend
+jamais : le passage en archive profonde, l'attente d'une sortie d'archive et la recopie des aperçus
+revenus n'ont donc jamais tourné pour de bon (l'essai remet l'original à la main dans une classe
+lisible). L'envoi de courriels par Amazon SES demande, sur un vrai compte, un domaine vérifié.

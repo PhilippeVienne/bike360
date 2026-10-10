@@ -97,6 +97,13 @@ impl Auth {
         (claims.token_use == "access" && claims.client_id == self.app_client).then_some(claims.sub)
     }
 
+    /// Adresse de courriel d'un compte, lue auprès du groupe d'utilisateurs (son nom termine l'adresse de l'émetteur).
+    pub async fn email_of(&self, client: &str) -> Result<String> {
+        let pool = self.issuer.rsplit('/').next().context("émetteur sans groupe d'utilisateurs")?;
+        let user = self.idp.admin_get_user().user_pool_id(pool).username(client).send().await?;
+        user.user_attributes().iter().find(|a| a.name() == "email").and_then(|a| a.value().map(String::from)).context("compte sans adresse")
+    }
+
     fn cookie(&self, name: &str, value: &str, path: &str, max_age: i64) -> String {
         format!("{name}={value}; Path={path}; Max-Age={max_age}; HttpOnly; SameSite=Strict{}", if self.secure() { "; Secure" } else { "" })
     }

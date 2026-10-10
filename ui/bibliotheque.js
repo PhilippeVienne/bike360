@@ -38,13 +38,19 @@ function sessionRow(s) {
       <button data-lighten ${o.files ? "" : "disabled"} title="Supprimer les originaux et garder l'aperçu : libère ${size(o.bytes)}">Alléger</button></span></li>`;
 }
 
+/** « 20/09 à 09h22 » d'après un identifiant de session VID_<date>_<heure>. */
+const when = (id) => `${id.slice(10, 12)}/${id.slice(8, 10)} à ${id.slice(13, 15)}h${id.slice(15, 17)}`;
+
 function render() {
   const used = lib.bytes / lib.quota_bytes;
   $("#gauge").innerHTML = `<div class="row"><strong>${size(lib.bytes)}</strong> <span class="muted">sur ${size(lib.quota_bytes)} · palier ${esc(lib.plan)}
       · exports ce mois-ci : ${Math.round(lib.export_used_s / 60 * 10) / 10} min sur ${Math.round(lib.export_s / 60)}${lib.credit_s ? ` · crédit : ${Math.round(lib.credit_s / 60)} min` : ""}</span>
       <span style="flex:1"></span><a href="palier.html">Palier et crédit d'export</a></div>
     <progress value="${Math.min(1, used)}" max="1"></progress>
-    ${lib.standing?.notice ? `<p>${esc(lib.standing.notice)} <a href="palier.html">Voir les paliers</a></p>` : ""}`;
+    ${lib.standing?.notice ? `<p>${esc(lib.standing.notice)} <a href="palier.html">Voir les paliers</a></p>` : ""}
+    ${(lib.thaws || []).map((t) => `<p>${t.ready
+      ? `Les originaux de la session du ${when(t.session)} sont sortis de l'archive : l'export est possible jusqu'au ${new Date(t.until).toLocaleDateString("fr-FR")}.`
+      : `Sortie d'archive demandée pour les originaux de la session du ${when(t.session)} : ils ne sont pas encore prêts pour l'export.`}</p>`).join("")}`;
   $("#suggestions").innerHTML = lib.suggestions.length
     ? `<h3>Suggestions de nettoyage</h3><ul class="lib-list">${lib.suggestions.map((g) => `<li class="lib-row" data-sid="${esc(g.session)}">
         <span class="grow"><strong>${g.session.slice(10, 12)}/${g.session.slice(8, 10)} à ${g.session.slice(13, 15)}h${g.session.slice(15, 17)}</strong> · ${esc(g.text)} <span class="muted">${size(g.bytes)}</span></span>

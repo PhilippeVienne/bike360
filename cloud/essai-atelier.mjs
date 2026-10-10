@@ -1,8 +1,9 @@
 // Essai automatique de l'atelier à la demande.
 // Usage : node cloud/essai-atelier.mjs URL_DU_SERVICE FICHIER_DES_JETONS APERÇU.lrv [ORIGINAL.insv]
 // Le compte a doit avoir un rush analysé ; avec l'original, l'export final est essayé aussi.
+import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { openAsBlob, readFileSync } from "node:fs";
+import { openAsBlob, readFileSync, rmSync } from "node:fs";
 import { sendFile } from "../ui/envoi-core.js";
 
 import { basename } from "node:path";
@@ -85,6 +86,40 @@ if (insv) {
   const after = await (await fetch(`${base}/api/compte/palier`, { headers: bearer(a.token) })).json();
   check(after.credit_s < 3600 && after.credit_s > 3580 && after.export_used_s > plan.export_used_s,
         `le dépassement est pris sur le crédit : il reste ${after.credit_s} s sur 3600`);
+
+  // un original parti en archive profonde et absent de la machine de l'atelier : l'export le redemande à
+  // l'archive, le client est prévenu à son retour, et l'export passe alors
+  const bucket = process.env.BIKE360_BUCKET, key = `originaux/${a.sub}/${basename(insv)}`;
+  const store = (cls) => execFileSync("aws", ["s3api", "copy-object", "--bucket", bucket, "--key", key, "--copy-source", `${bucket}/${key}`, "--storage-class", cls]);
+  const exportAgain = async () => {
+    await atelier(A, "POST", `/api/export/${sid}`, { quality: "final" });
+    for (let i = 0; i < 240; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      job = (await atelier(A, "GET", `/api/export/${sid}`)).body || {};
+      if (job.state !== "running") break;
+    }
+  };
+  const library = async () => (await fetch(`${base}/api/bibliotheque`, { headers: bearer(a.token) })).json();
+  store("DEEP_ARCHIVE");
+  rmSync(`${process.env.BIKE360_ATELIERS}/${a.sub}/rushs/${basename(insv)}`);
+  await atelier(A, "POST", "/api/sources", { rescan: true });
+  await new Promise((r) => setTimeout(r, 3000));
+  await exportAgain();
+  check(job.state === "error" && /sortie d'archive est demandée/.test(job.message), `original archivé : ${job.message}`);
+  let thaw = (await library()).thaws[0];
+  check(thaw && !thaw.ready && sid.startsWith(thaw.session), "la Bibliothèque annonce la sortie d'archive en attente");
+  store("GLACIER_IR");   // l'émulateur ne rend jamais un objet archivé : on le remet dans une classe lisible
+  for (let i = 0; i < 40 && !thaw.ready; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    thaw = (await library()).thaws[0];
+  }
+  check(thaw.ready && thaw.until, "original revenu : la Bibliothèque annonce que l'export est possible");
+  const me = (await (await fetch(`${base}/api/compte`, { headers: bearer(a.token) })).json()).email;
+  const mails = await (await fetch(`${process.env.AWS_ENDPOINT_URL}/_aws/ses`)).json();
+  const mail = (mails.messages || mails).find((m) => m.Destination.ToAddresses.includes(me) && /originaux/.test(m.Subject));
+  check(!!mail && /bibliotheque\.html/.test(mail.Body.text_part), `courriel envoyé au client : « ${mail?.Subject} »`);
+  await exportAgain();
+  check(job.state === "done", "l'export relancé passe avec l'original revenu de l'archive");
 }
 
 const B = await open(b);

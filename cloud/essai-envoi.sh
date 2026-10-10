@@ -42,7 +42,7 @@ export BIKE360_STRIPE_PRICES=200go=price_200,600go=price_600,1to=price_1to,2to=p
 BIKE360_SWEEP_MIN=0.03 BIKE360_TRASH_DAYS=0 BIKE360_PART_MB=8 "$repo/cloud/service/target/release/bike360-envoi" --bucket "$bucket" --table "$table" --queue "$queue" \
     --issuer "$issuer" --app-client "$app_client" \
     --atelier-bin "$repo/target/release/bike360-server" --atelier-work "$work/ateliers" --plans "$work/paliers.json" \
-    --ui "$repo/ui" --port "$port" > "$work/envoi.log" 2>&1 &
+    --mail-from bike360@exemple.fr --ui "$repo/ui" --port "$port" > "$work/envoi.log" 2>&1 &
 server=$!
 trap 'kill "$server" 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do curl -sf -o /dev/null "http://127.0.0.1:$port/api/compte" && break; sleep 1; done
@@ -89,7 +89,7 @@ insv=$(echo "$lrv" | sed -E 's|LRV_([0-9]{8}_[0-9]{6})_[0-9]{2}_([0-9]{3})\.lrv$
 shot=$(ffprobe -v error -show_entries format_tags=creation_time -of csv=p=0 "$lrv" | cut -c12-19)
 named=$(basename "$lrv" | sed -E 's/^LRV_[0-9]{8}_([0-9]{2})([0-9]{2})([0-9]{2})_.*/\1:\2:\3/')
 export BIKE360_DECALAGE_S=$(( $(date -u -d "1970-01-01 $shot" +%s) + 7200 - $(date -u -d "1970-01-01 $named" +%s) ))
-node "$repo/cloud/essai-atelier.mjs" "http://127.0.0.1:$port" "$work/jetons.json" "$lrv" ${insv:+"$insv"}
+BIKE360_BUCKET="$bucket" BIKE360_ATELIERS="$work/ateliers" node "$repo/cloud/essai-atelier.mjs" "http://127.0.0.1:$port" "$work/jetons.json" "$lrv" ${insv:+"$insv"}
 saved=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "donnees/$client/atelier/selections/" --query 'length(Contents || `[]`)' --output text)
 [ "$saved" -ge 1 ] && echo "   ✓ le clip du compte est dans le stockage" || { echo "   ✗ travail de l'atelier absent du stockage" >&2; exit 1; }
 aws s3api head-object --bucket "$bucket" --key "donnees/$client/gps/essai.gpx" >/dev/null 2>&1 \
