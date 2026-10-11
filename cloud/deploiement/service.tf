@@ -35,11 +35,12 @@ locals {
     BIKE360_APP_CLIENT = module.socle.app_client
     BIKE360_SITE       = local.site
     BIKE360_SECRETS    = local.secrets
-    BIKE360_PAYMENT    = "mollie"
-    BIKE360_MAIL_FROM  = var.mail_from
-    BIKE360_VENDEUR    = var.seller
-    BIKE360_SWEEP_MIN  = "0" # pas de boucle dans une fonction : la règle planifiée ci-dessous fait le passage
-    AWS_LWA_PORT       = "8370"
+    # en production le paiement est exigé ; à l'essai, le service prend Mollie si sa clé est rangée, sinon aucun
+    BIKE360_PAYMENT   = var.env == "production" ? "mollie" : ""
+    BIKE360_MAIL_FROM = var.mail_from
+    BIKE360_VENDEUR   = var.seller
+    BIKE360_SWEEP_MIN = "0" # pas de boucle dans une fonction : la règle planifiée ci-dessous fait le passage
+    AWS_LWA_PORT      = "8370"
     # l'adaptateur attend que le service réponde avant de lui confier des requêtes
     AWS_LWA_READINESS_CHECK_PATH = "/api/compte"
   }
@@ -90,9 +91,10 @@ data "aws_iam_policy_document" "service" {
     resources = [module.socle.pool_arn]
   }
   statement {
-    sid       = "Secrets"
-    actions   = ["ssm:GetParametersByPath"]
-    resources = ["arn:aws:ssm:${var.region}:${var.compte}:parameter${trimsuffix(local.secrets, "/")}"]
+    sid     = "Secrets"
+    actions = ["ssm:GetParametersByPath"]
+    # la lecture par chemin porte sur le chemin tel qu'il est demandé, barre finale comprise
+    resources = ["arn:aws:ssm:${var.region}:${var.compte}:parameter${trimsuffix(local.secrets, "/")}", "arn:aws:ssm:${var.region}:${var.compte}:parameter${local.secrets}"]
   }
   statement {
     sid       = "Courriels"

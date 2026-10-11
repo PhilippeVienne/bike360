@@ -42,6 +42,8 @@ terraform -chdir="$tf" init -input=false -reconfigure -backend-config="bucket=$s
 tag=$(git -C "$repo" rev-parse --short HEAD)
 git -C "$repo" diff --quiet HEAD -- core server cloud/service Cargo.lock || tag="$tag-$(date +%Y%m%d%H%M%S)"
 vars="-var-file=$tf/env/$env.tfvars -var compte=$account"
+# adresse des alertes donnée au lancement plutôt qu'écrite dans le dépôt : BIKE360_ALERT_EMAIL=… sh cloud/deployer.sh essai
+[ -n "${BIKE360_ALERT_EMAIL:-}" ] && vars="$vars -var alert_email=$BIKE360_ALERT_EMAIL"
 
 if [ "$action" = detruire ]; then
     [ "$env" = production ] && { echo "la production ne se supprime pas par ce script" >&2; exit 1; }
@@ -58,9 +60,14 @@ if [ "$action" = plan ]; then
 fi
 
 echo "== Secrets"
-aws ssm get-parameter --name "/bike360/$env/MOLLIE_KEY" >/dev/null 2>&1 \
-    || { echo "la clé Mollie n'est pas rangée : lancer d'abord  sh cloud/secrets.sh $env" >&2; exit 1; }
-echo "   ✓ clé Mollie rangée sous /bike360/$env/"
+if aws ssm get-parameter --name "/bike360/$env/MOLLIE_KEY" >/dev/null 2>&1; then
+    echo "   ✓ clé Mollie rangée sous /bike360/$env/"
+elif [ "$env" = essai ]; then
+    # l'essai peut se déployer avant d'avoir un compte chez le prestataire : le service annonce alors le paiement comme non configuré
+    echo "   ? pas de clé Mollie : l'environnement d'essai se déploie sans paiement (sh cloud/secrets.sh $env pour l'ajouter)"
+else
+    echo "la clé Mollie n'est pas rangée : lancer d'abord  sh cloud/secrets.sh $env" >&2; exit 1
+fi
 
 echo "== Image du service ($tag)"
 # shellcheck disable=SC2086
@@ -77,7 +84,9 @@ fi
 
 echo "== Infrastructure"
 # shellcheck disable=SC2086
-terraform -chdir="$tf" apply -input=false $vars -var "image_tag=$tag"
+# BIKE360_OUI=1 applique sans demander confirmation (essai seulement : la production se relit toujours)
+approve=""; [ "$env" = essai ] && [ "${BIKE360_OUI:-}" = 1 ] && approve="-auto-approve"
+terraform -chdir="$tf" apply -input=false $approve $vars -var "image_tag=$tag"
 
 echo "== Site vitrine et interface"
 bucket=$(terraform -chdir="$tf" output -raw site_bucket)
