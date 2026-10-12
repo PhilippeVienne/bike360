@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Bike360 Cloud — Importer ses vidéos depuis le cloud Insta360</title>
+<meta name="description" content="Comment reprendre dans Bike360 Cloud les vidéos déjà stockées dans Insta360+ : téléchargement des originaux avec Insta360 Studio, puis envoi par le navigateur.">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/"><span>◉</span> Bike360</a>
+  <nav><a href="/#fonctions">Fonctions</a><a href="/#tarifs">Tarifs</a><a href="/#questions">Questions</a></nav>
+  <a class="button small primary" href="/ui/compte.html?inscription=1">Essayer</a>
+</div></header>
+<main class="legal">
+<!-- BROUILLON : le parcours ci-dessous est écrit d'après la documentation d'Insta360, sans avoir été rejoué de bout en bout.
+     À vérifier avec un vrai compte Insta360+ avant la mise en ligne : noms des fichiers téléchargés, présence des aperçus. -->
+<div class="draft"><strong>BROUILLON, à rejouer avant publication.</strong> Ce guide suit la documentation d'Insta360 ; les passages
+  <span class="todo">surlignés</span> restent à vérifier avec un vrai compte Insta360+.</div>
+<h1>Importer ses vidéos depuis le cloud Insta360</h1>
+<p class="muted">Vos vidéos déjà rangées dans Insta360+ peuvent rejoindre votre espace Bike360. Insta360 n'offre pas de transfert direct vers un autre
+  service : elles passent par un ordinateur, le temps du transfert.</p>
+
+<h2>Ce qu'il vous faut</h2>
+<ul>
+<li>Un ordinateur sous Windows ou macOS avec <strong>Insta360 Studio</strong>, le logiciel gratuit du fabricant. L'application mobile télécharge aussi,
+  mais sur le téléphone, ce qui convient mal à de gros volumes.</li>
+<li>De la place sur un disque, interne ou externe : autant que ce que vous transférez en une fois. Rien n'oblige à tout prendre d'un coup.</li>
+<li>Un compte Bike360 dont le palier couvre le volume à reprendre. Au-dessus du quota, des crédits prennent le relais
+  (25 crédits pour 100 Go pendant 30 jours) : voir les <a href="/#tarifs">tarifs</a>.</li>
+</ul>
+
+<h2>1. Télécharger les originaux avec Insta360 Studio</h2>
+<ol>
+<li>Ouvrez Insta360 Studio et connectez-vous à votre compte Insta360.</li>
+<li>Affichez vos médias du cloud, sélectionnez les vidéos à reprendre, puis clic droit et « Download ».</li>
+<li>Choisissez le dossier de destination ; un disque externe convient.</li>
+</ol>
+<p>Studio télécharge les fichiers d'origine, sans vos retouches. Gardez leurs noms tels quels : Bike360 reconnaît les fichiers
+  <code>VID_….insv</code> à leur nom. <span class="todo">À vérifier : les noms restent ceux de la caméra après un passage par le cloud.</span></p>
+
+<h2>2. Envoyer le dossier dans Bike360</h2>
+<ol>
+<li>Dans Bike360, ouvrez la page <a href="/ui/envoi.html">Envoyer</a> et choisissez le dossier où Studio a téléchargé les vidéos.</li>
+<li>La page liste les balades trouvées. Lancez l'envoi.</li>
+<li>Vous pouvez interrompre et reprendre : rechoisir le même dossier ne renvoie que ce qui manque. Un fichier déjà en place n'est pas envoyé deux fois.</li>
+</ol>
+<p><span class="todo">À vérifier : le cloud Insta360 rend-il aussi les aperçus (LRV_….lrv) ? Bike360 monte sur ces aperçus ; s'ils manquent, il faudra
+  les recalculer à l'arrivée, ce qui n'est pas encore en place.</span></p>
+
+<h2>3. Vérifier, puis libérer la place</h2>
+<ul>
+<li>Contrôlez dans la <a href="/ui/bibliotheque.html">bibliothèque</a> que chaque balade est arrivée avant d'effacer quoi que ce soit.</li>
+<li>Supprimez ensuite le dossier de votre ordinateur, puis, si vous quittez Insta360+, les vidéos de leur cloud.</li>
+</ul>
+
+<h2>Limites à connaître</h2>
+<ul>
+<li><strong>Caméras</strong> : Bike360 prend en charge l'Insta360 X5. Les vidéos d'autres modèles ne sont pas reconnues pour l'instant.</li>
+<li><strong>Durée</strong> : tout passe deux fois par votre connexion, une fois en téléchargement, une fois en envoi. Pour plusieurs centaines de Go,
+  comptez plusieurs jours sur une connexion ordinaire, et procédez par lots.</li>
+<li><strong>Liens de partage</strong> : ils ne conviennent pas. Ils ne donnent pas le fichier d'origine.</li>
+</ul>
+
+<h2>Votre droit à la portabilité</h2>
+<p>Le règlement général sur la protection des données (article 20) vous donne le droit de récupérer les données que vous avez confiées à un service
+  et, lorsque c'est techniquement possible, de les faire transmettre directement à un autre. Vous pouvez en faire la demande à Insta360, qui dispose
+  d'un mois pour répondre. Rien ne garantit qu'un transfert direct vous soit proposé : le téléchargement décrit ici reste la voie qui fonctionne.</p>
+</main>
+<footer><div class="wrap">
+  <span><span style="color:var(--accent)">◉</span> Bike360 Cloud</span>
+  <a href="mentions-legales.html">Mentions légales</a>
+  <a href="cgv.html">Conditions générales de vente</a>
+  <a href="confidentialite.html">Confidentialité</a>
+  <div class="spacer"></div>
+  <span>TVA non applicable, article 293 B du CGI</span>
+</div></footer>
+</body>
+</html>
