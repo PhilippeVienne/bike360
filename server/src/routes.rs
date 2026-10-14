@@ -10,7 +10,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use bike360_core::{analyze, automontage, finishing, geometry, gpx, hyperlapse, insta360, musiclib, paths, position, rides};
+use bike360_core::{analyze, automontage, finishing, geometry, georide, gpx, hyperlapse, insta360, musiclib, paths, pitstop, position, rides};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -357,6 +357,9 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
     // interface : fichier sur disque (<racine>/ui) en priorité, sinon copie embarquée
     let ui_rel = if path == "/" {
         Some("index.html".to_string())
+    } else if ["/manifest.json", "/sw.js", "/offline.html"].contains(&path) {
+        // scope du service worker = racine : il doit être livré hors de /ui/
+        Some(path.trim_start_matches('/').to_string())
     } else if p[0] == "ui" && p.len() >= 2 {
         Some(p[1..].iter().map(|x| unquote(x, false)).collect::<Vec<_>>().join("/"))
     } else {
@@ -476,6 +479,26 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                 }
                 Err(e) => err(502, format!("catalogue indisponible : {e}")),
             });
+        }
+        "/api/pitstops" => {
+            let qs = parse_qs(full);
+            let num = |k: &str| qs.get(k).and_then(Value::as_str).and_then(|s| s.parse::<f64>().ok());
+            let (Some(lat), Some(lon)) = (num("lat"), num("lon")) else { return Ok(err(400, "lat et lon requis")) };
+            let settings = pitstop::Settings {
+                fill_size_l: num("fill").unwrap_or(10.0).max(0.0),
+                consumption_l100: num("consumption").unwrap_or(5.0).max(0.1),
+                exclude_distance: qs.get("exclude_distance").and_then(Value::as_str) == Some("1"),
+            };
+            let fuel = pitstop::Fuel::parse(qs.get("fuel").and_then(Value::as_str).unwrap_or("gazole"));
+            let radius = num("radius").unwrap_or(20.0);
+            let results = pitstop::stations_around(lat, lon, radius, fuel, &settings);
+            return Ok(match serde_json::to_value(&results) {
+                Ok(v) => ok(json!({"results": v})),
+                Err(_) => err(500, "erreur interne"),
+            });
+        }
+        "/api/georide/trips" => {
+            return Ok(ok(read_json(&georide_trips_path()).unwrap_or(json!({"last_sync": null, "trips": []}))));
         }
         "/api/sources/detect" if paths::cloud() => return Ok(ok(json!([]))),
         "/api/sources/detect" => return Ok(ok(Value::Array(sources::detect(app)))),
@@ -614,6 +637,98 @@ fn privacy_overview(app: &App) -> Vec<Value> {
         json!({"sid": sid, "clip": clip.get("id"), "start": clip.get("start"), "end": clip.get("end"),
                "analyzed": analyzed, "stale": stale, "tracks": tr})
     }).collect()
+}
+
+fn georide_trips_path() -> PathBuf {
+    paths::data().join("georide-trips.json")
+}
+
+/// Synchronise les trajets GeoRide depuis la dernière synchro (30 jours si jamais lancée) dans
+/// data/georide-trips.json : utile pour une balade sans caméra, ou pour recouper une session
+/// vidéo avec le trajet déjà vu par le tracker (distance, durée, tracé).
+fn georide_sync() -> Reply {
+    let cache = read_json(&georide_trips_path()).unwrap_or(json!({"last_sync": null, "trips": []}));
+    let mut trips: Vec<Value> = cache["trips"].as_array().cloned().unwrap_or_default();
+    let now = chrono::Utc::now();
+    let last_sync = cache["last_sync"].as_str().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    let mut start = last_sync
+        .map(|d| d.with_timezone(&chrono::Utc) - chrono::Duration::hours(24))
+        .unwrap_or_else(|| now - chrono::Duration::days(30));
+    // Trajets déjà en cache sans tracé (appel /positions raté la dernière fois, débit limité) :
+    // élargit la fenêtre jusqu'au plus ancien d'entre eux pour les retenter aujourd'hui.
+    let oldest_doubtful = trips.iter()
+        .filter(|t| t["path"].as_array().is_some_and(|p| p.is_empty()))
+        .filter_map(|t| t["started_at"].as_str())
+        .filter_map(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .min();
+    if let Some(oldest) = oldest_doubtful {
+        start = start.min(oldest - chrono::Duration::hours(2));
+    }
+    let (start_s, end_s) = (start.to_rfc3339(), now.to_rfc3339());
+    let fetched = match georide::fetch_trips(&start_s, &end_s) {
+        Ok(v) => v,
+        Err(e) => return err(502, format!("GeoRide : {e:#}")),
+    };
+    let Some(list) = fetched.as_array() else { return err(502, "réponse GeoRide inattendue") };
+    let mut synced = 0usize;
+    for trip in list {
+        let id = trip.get("id").map(|v| v.to_string()).unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        let existing_idx = trips.iter().position(|t| t["id"].as_str() == Some(id.as_str()));
+        if let Some(i) = existing_idx {
+            // Déjà en cache : rien à refaire, sauf si le tracé n'avait pas pu être récupéré
+            // la dernière fois (limite de débit GeoRide) — on retente alors pour ce trajet.
+            if !trips[i]["path"].as_array().is_some_and(|p| p.is_empty()) {
+                continue;
+            }
+        }
+        let t_start = trip.get("startTime").or_else(|| trip.get("startedAt")).and_then(Value::as_str).unwrap_or_default().to_string();
+        let t_end = trip.get("endTime").or_else(|| trip.get("endedAt")).and_then(Value::as_str).unwrap_or_default().to_string();
+        // Pause courte entre chaque trajet : l'API GeoRide limite le débit (429) si on
+        // enchaîne les appels /positions sans respirer, perdant le tracé de ce trajet.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut path: Vec<Value> = match georide::fetch_positions(&t_start, &t_end) {
+            Ok(Value::Array(pts)) => pts.iter().filter_map(|p| {
+                let lat = p.get("latitude").and_then(Value::as_f64)?;
+                let lon = p.get("longitude").and_then(Value::as_f64)?;
+                Some(json!([lat, lon]))
+            }).collect(),
+            _ => vec![],
+        };
+        if path.is_empty() {
+            // Nouvel essai après une pause plus longue (débit limité ou appel en erreur).
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Ok(Value::Array(pts)) = georide::fetch_positions(&t_start, &t_end) {
+                path = pts.iter().filter_map(|p| {
+                    let lat = p.get("latitude").and_then(Value::as_f64)?;
+                    let lon = p.get("longitude").and_then(Value::as_f64)?;
+                    Some(json!([lat, lon]))
+                }).collect();
+            }
+        }
+        let entry = json!({
+            "id": id,
+            "started_at": t_start,
+            "ended_at": t_end,
+            "distance_km": trip.get("distance").and_then(Value::as_f64).map(|d| d / 1000.0),
+            "duration_min": trip.get("duration").and_then(Value::as_f64).map(|d| d / 60000.0),
+            "path": path,
+        });
+        match existing_idx {
+            Some(i) => trips[i] = entry,
+            None => trips.push(entry),
+        }
+        synced += 1;
+    }
+    trips.sort_by(|a, b| b["started_at"].as_str().unwrap_or("").cmp(a["started_at"].as_str().unwrap_or("")));
+    let out = json!({"last_sync": end_s, "trips": trips});
+    if let Err(e) = write_json_indent(&georide_trips_path(), &out) {
+        return err(500, format!("écriture impossible : {e:#}"));
+    }
+    ok(json!({"ok": true, "synced": synced, "total": trips.len()}))
 }
 
 fn put(app: &Arc<App>, full: &str, body: &Bytes) -> Result<Reply, ()> {
@@ -772,6 +887,9 @@ fn post(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Result
     let p: Vec<&str> = parts.iter().map(String::as_str).collect();
     if p == ["api", "sources"] {
         return sources(app, &body_obj(body)?);
+    }
+    if p == ["api", "georide", "sync"] {
+        return Ok(georide_sync());
     }
     if p == ["api", "music", "library"] {
         let b = body_obj(body)?;

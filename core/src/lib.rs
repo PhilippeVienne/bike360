@@ -20,6 +20,7 @@ pub mod musiclib;
 pub mod numeric;
 pub mod originals;
 pub mod paths;
+pub mod pitstop;
 pub mod position;
 pub mod privacy;
 pub mod ramp;

@@ -74,17 +74,43 @@ fn call(path: &str, params: &[(&str, &str)]) -> Result<Value> {
     }
 }
 
-fn tracker_id() -> Result<String> {
-    let trackers = call("/user/trackers", &[])?;
+/// Trackers du compte (id, nom, modèle) — `georide-cli trackers`, ou pour choisir un
+/// `tracker` à passer explicitement quand le compte en a plusieurs.
+pub fn list_trackers() -> Result<Value> {
+    call("/user/trackers", &[])
+}
+
+fn tracker_id(tracker: Option<&str>) -> Result<String> {
+    if let Some(id) = tracker {
+        return Ok(id.to_string());
+    }
+    let trackers = list_trackers()?;
     let list = trackers.as_array().context("liste de trackers attendue")?;
     if list.len() != 1 {
-        bail!("plusieurs trackers GeoRide : préciser lequel");
+        bail!("plusieurs trackers GeoRide : préciser lequel (voir list_trackers)");
     }
     Ok(list[0]["trackerId"].to_string().trim_matches('"').to_string())
 }
 
 /// Positions GeoRide entre deux dates ISO (fixtime UTC ; attention, `speed` est en nœuds).
 pub fn fetch_positions(start: &str, end: &str) -> Result<Value> {
-    let id = tracker_id()?;
+    fetch_positions_for(start, end, None)
+}
+
+/// Comme `fetch_positions`, avec un tracker explicite (sinon celui par défaut si un seul).
+pub fn fetch_positions_for(start: &str, end: &str, tracker: Option<&str>) -> Result<Value> {
+    let id = tracker_id(tracker)?;
     call(&format!("/tracker/{id}/trips/positions"), &[("from", start), ("to", end)])
+}
+
+/// Trajets découpés par GeoRide entre deux dates ISO (début, fin, distance, durée ; pas le
+/// tracé détaillé — voir `fetch_positions` avec les bornes du trajet pour ça).
+pub fn fetch_trips(start: &str, end: &str) -> Result<Value> {
+    fetch_trips_for(start, end, None)
+}
+
+/// Comme `fetch_trips`, avec un tracker explicite (sinon celui par défaut si un seul).
+pub fn fetch_trips_for(start: &str, end: &str, tracker: Option<&str>) -> Result<Value> {
+    let id = tracker_id(tracker)?;
+    call(&format!("/tracker/{id}/trips"), &[("from", start), ("to", end)])
 }

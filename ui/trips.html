@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bike360 — trajets GeoRide</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<style>
+header.top { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+header.top .spacer { flex: 1; }
+main.trips { max-width: 900px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+#trips-map { height: 280px; border-radius: 12px; border: 1px solid var(--line); }
+.trip-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.trip-row { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); cursor: pointer; }
+.trip-row:hover, .trip-row.sel { border-color: var(--accent); }
+.trip-row .when { min-width: 150px; }
+.trip-row .grow { flex: 1; }
+.trip-row .muted { font-size: 12px; }
+</style>
+</head>
+<body>
+<header class="top"><div class="brand">◉ Bike360</div><div class="spacer"></div>
+  <span id="last-sync" class="muted"></span>
+  <button id="sync" class="primary">Synchroniser</button></header>
+<main class="trips">
+  <div id="trips-map"></div>
+  <div id="message" class="muted"></div>
+  <ul id="trip-list" class="trip-list"></ul>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script type="module" src="trips.js"></script>
+</body>
+</html>
