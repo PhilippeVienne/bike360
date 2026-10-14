@@ -38,19 +38,24 @@ export BIKE360_MOLLIE_KEY=test_essai BIKE360_MOLLIE_API=http://127.0.0.1:$mollie
 export BIKE360_VENDEUR="Vendeur d'essai, 1 rue de l'Essai, 75000 Paris, SIREN 000 000 000"
 node "$repo/cloud/faux-mollie.mjs" "$mollie_port" > "$work/faux-mollie.log" 2>&1 &
 mollie=$!
+# l'émulateur n'a pas le domaine OAuth de Cognito : un faux le remplace pour la connexion par Google
+oauth_port=12113
+node "$repo/cloud/faux-oauth.mjs" "$oauth_port" > "$work/faux-oauth.log" 2>&1 &
+oauth=$!
 # garde en corbeille nulle : l'essai vide la corbeille tout de suite
 # passage sur les échéances des comptes toutes les deux secondes
 BIKE360_SWEEP_MIN=0.03 BIKE360_TRASH_DAYS=0 BIKE360_PART_MB=8 "$repo/cloud/service/target/release/bike360-envoi" --bucket "$bucket" --table "$table" --queue "$queue" \
-    --issuer "$issuer" --app-client "$app_client" \
+    --issuer "$issuer" --app-client "$app_client" --oauth "http://127.0.0.1:$oauth_port" \
     --atelier-bin "$repo/target/release/bike360-server" --atelier-work "$work/ateliers" --plans "$work/paliers.json" \
     --mail-from bike360@exemple.fr --ui "$repo/ui" --port "$port" > "$work/envoi.log" 2>&1 &
 server=$!
-trap 'kill "$server" "$mollie" 2>/dev/null || true' EXIT
+trap 'kill "$server" "$mollie" "$oauth" 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do curl -sf -o /dev/null "http://127.0.0.1:$port/api/compte" && break; sleep 1; done
 echo "   ✓ service d'envoi sur le port $port, compartiment $bucket"
 
 echo "== Comptes"
 node "$repo/cloud/essai-comptes.mjs" "http://127.0.0.1:$port" "$pool" "$work/jetons.json"
+node "$repo/cloud/essai-google.mjs" "http://127.0.0.1:$port" "$pool" "http://127.0.0.1:$oauth_port"
 token() { node -e "console.log(JSON.parse(require('fs').readFileSync('$work/jetons.json'))['$1']['$2'])"; }
 export BIKE360_TOKEN=$(token a token) BIKE360_TOKEN_B=$(token b token)
 client=$(token a sub)

@@ -64,6 +64,9 @@ struct Args {
     /// Application cliente Cognito
     #[arg(long, env = "BIKE360_APP_CLIENT")]
     app_client: Option<String>,
+    /// Interface OAuth du groupe d'utilisateurs (« https://….auth.eu-north-1.amazoncognito.com ») : active la connexion par Google
+    #[arg(long, env = "BIKE360_OAUTH")]
+    oauth: Option<String>,
     /// Taille d'un morceau en Mo (5 au minimum, imposé par S3)
     #[arg(long, env = "BIKE360_PART_MB", default_value_t = 16)]
     part_mb: u64,
@@ -460,8 +463,9 @@ async fn main() -> Result<()> {
     let local = std::env::var("AWS_ENDPOINT_URL").is_ok_and(|v| !v.is_empty());
     let s3 = aws_sdk_s3::Client::from_conf(aws_sdk_s3::config::Builder::from(&conf).force_path_style(local).build());
     let db = aws_sdk_dynamodb::Client::new(&conf);
+    let site = a.site.clone().unwrap_or_else(|| format!("http://{}:{}", a.host, a.port)).trim_end_matches('/').to_string();
     let auth = match (a.issuer, a.app_client) {
-        (Some(issuer), Some(app)) => Some(Auth::new(&conf, issuer, app).await.context("activation des comptes")?),
+        (Some(issuer), Some(app)) => Some(Auth::new(&conf, issuer, app, a.oauth, site.clone()).await.context("activation des comptes")?),
         _ => {
             anyhow::ensure!(a.host == "127.0.0.1" || a.host == "localhost", "sans comptes (--issuer), le service n'écoute que sur cette machine");
             None
@@ -471,7 +475,6 @@ async fn main() -> Result<()> {
         Some(path) => secrets(&conf, path).await.with_context(|| format!("lecture des secrets sous {path}"))?,
         None => HashMap::new(),
     };
-    let site = a.site.clone().unwrap_or_else(|| format!("http://{}:{}", a.host, a.port)).trim_end_matches('/').to_string();
     let ctx = Arc::new(Ctx { s3, db, sqs: aws_sdk_sqs::Client::new(&conf), queue: a.queue, auth, bucket: a.bucket, client: a.client, part_size: a.part_mb * 1024 * 1024,
                              table: a.table,
                              launcher: a.atelier_bin.map(|bin| atelier::Launcher::new(bin, a.atelier_work, a.atelier_host, a.atelier_idle_min * 60,
@@ -504,6 +507,8 @@ async fn main() -> Result<()> {
         .route("/api/compte/oubli", post(account::forgot))
         .route("/api/compte/reinitialisation", post(account::reset))
         .route("/api/compte/suppression", post(account::delete))
+        .route("/api/compte/google", get(account::google))
+        .route("/api/compte/google/retour", get(account::google_back))
         .route("/api/compte/palier", get(plans::status))
         .route("/api/paiement/commande", post(payment::order))
         .route("/api/paiement/credit", post(payment::credit))

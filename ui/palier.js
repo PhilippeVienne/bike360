@@ -146,11 +146,20 @@ $("#credit").addEventListener("submit", async (e) => {
 
 $("#delete").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const j = await post("/api/compte/suppression", { password: $("#delete-password").value });
+  const proof = $("#delete-password").value;
+  const j = await post("/api/compte/suppression", passwordless ? { email: proof } : { password: proof });
   if (j.ok) { location.href = "compte.html"; return; }
   $("#message").textContent = `⚠ ${j.error || "suppression impossible"}`;
   $("#message").scrollIntoView({ block: "center" });
 });
+// un compte ouvert par Google n'a pas de mot de passe : il confirme la suppression en recopiant son adresse
+let passwordless = false;
+fetch("/api/compte").then((r) => r.json()).then((s) => {
+  passwordless = s.password === false;
+  if (!passwordless) return;
+  $("#delete-label").textContent = "Ton adresse de courriel, pour confirmer";
+  Object.assign($("#delete-password"), { type: "email", autocomplete: "off" });
+}).catch(() => {});
 showAccount($("#account"));
 render();
 // au retour de la page de paiement, la confirmation du prestataire peut suivre de quelques secondes

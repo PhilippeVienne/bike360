@@ -80,6 +80,12 @@ variable "mail_from" {
   default     = ""
 }
 
+variable "google_login" {
+  description = "Propose « Continuer avec Google ». À n'activer qu'après avoir rangé les identifiants Google : sh cloud/secrets.sh <env> google."
+  type        = bool
+  default     = false
+}
+
 variable "seller" {
   description = "Identité du vendeur portée sur les reçus : nom, adresse, SIREN, séparés par des virgules."
   type        = string
@@ -157,6 +163,9 @@ module "socle" {
   bucket  = "${local.name}-rushs-${var.compte}"
   site    = local.site
   protect = var.protect
+
+  google       = var.google_login
+  oauth_domain = "${local.name}-${var.compte}"
 }
 
 # ---------------------------------------------------------------- garde-fou de dépense

@@ -33,8 +33,10 @@ locals {
     BIKE360_QUEUE      = module.socle.file_gpu
     BIKE360_ISSUER     = "https://${module.socle.pool_endpoint}"
     BIKE360_APP_CLIENT = module.socle.app_client
-    BIKE360_SITE       = local.site
-    BIKE360_SECRETS    = local.secrets
+    # vide : pas de connexion par Google
+    BIKE360_OAUTH   = var.google_login ? "https://${module.socle.oauth_domain}.auth.${var.region}.amazoncognito.com" : ""
+    BIKE360_SITE    = local.site
+    BIKE360_SECRETS = local.secrets
     # en production le paiement est exigé ; à l'essai, le service prend Mollie si sa clé est rangée, sinon aucun
     BIKE360_PAYMENT   = var.env == "production" ? "mollie" : ""
     BIKE360_MAIL_FROM = var.mail_from
@@ -86,8 +88,9 @@ data "aws_iam_policy_document" "service" {
     resources = [module.socle.file_gpu_arn]
   }
   statement {
-    sid       = "Comptes"
-    actions   = ["cognito-idp:AdminGetUser"]
+    sid = "Comptes"
+    # avec Google, le service cherche les comptes d'une adresse et retire le doublon qu'une connexion vient de créer
+    actions   = concat(["cognito-idp:AdminGetUser"], var.google_login ? ["cognito-idp:ListUsers", "cognito-idp:AdminDeleteUser"] : [])
     resources = [module.socle.pool_arn]
   }
   statement {

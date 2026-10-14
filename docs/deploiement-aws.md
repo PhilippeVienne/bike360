@@ -24,6 +24,22 @@ Tout est dans la région de Stockholm (`eu-north-1`), sauf le certificat du site
 qu'en Virginie du Nord. Rien ne tourne en permanence : sans visiteur, le coût se réduit au
 stockage.
 
+### Connexion par Google (facultative)
+
+Éteinte par défaut. Le service propose « Continuer avec Google » quand `google_login = true` dans
+`cloud/deploiement/env/<environnement>.tfvars`. Dans l'ordre :
+
+1. Déployer une première fois sans elle : le groupe d'utilisateurs doit exister.
+2. Dans Google Cloud Console, créer un client OAuth « application web » et y autoriser l'adresse de
+   retour `https://bike360-<environnement>-<compte>.auth.eu-north-1.amazoncognito.com/oauth2/idpresponse`.
+3. `sh cloud/secrets.sh <environnement> google` : demande l'identifiant et le secret de ce client et
+   les range dans le groupe d'utilisateurs, hors du dépôt et hors de l'état Terraform.
+4. Passer `google_login = true`, puis redéployer.
+
+Un compte ouvert par Google et un compte ouvert par mot de passe à la même adresse seraient deux
+comptes distincts : le service refuse le second, dans les deux sens, plutôt que de les fusionner.
+Jamais essayé sur un vrai compte AWS : l'essai local remplace Cognito par `cloud/faux-oauth.mjs`.
+
 ### Ce qui n'est pas encore déployé
 
 **L'atelier de montage et l'export final.** Aujourd'hui, le service lance l'atelier comme un

@@ -1,5 +1,6 @@
 // Page du compte : connexion, inscription, confirmation de l'adresse par le code reçu par courriel,
-// et mot de passe oublié (un code reçu par courriel permet d'en choisir un nouveau).
+// mot de passe oublié (un code reçu par courriel permet d'en choisir un nouveau), et connexion par
+// Google quand le service la propose (le trajet passe par le service, qui pose les témoins au retour).
 // Les jetons ne passent jamais par ce code : le service les pose dans des témoins que la page ne lit pas.
 
 const $ = (s) => document.querySelector(s);
@@ -11,6 +12,10 @@ const next = () => {
 // connexion | inscription | confirmation | oubli | reinitialisation ; le site vitrine mène droit à l'inscription
 let mode = new URLSearchParams(location.search).has("inscription") ? "inscription" : "connexion";
 let waiting = null;       // attente de la confirmation de l'adresse : minuterie
+let google = false;       // le service propose la connexion par Google
+// retour de Google sans connexion : le service dit pourquoi
+const BACK = { google: "⚠ La connexion par Google n'a pas abouti. Réessaie, ou connecte-toi par mot de passe.",
+               doublon: "⚠ Un compte existe déjà avec cette adresse : connecte-toi avec son mot de passe." };
 const WAIT_EVERY_MS = 3000, WAIT_TRIES = 60;
 
 /** Compte créé mais pas encore confirmé : on se connecte dès que l'adresse l'est, où qu'elle l'ait été
@@ -42,6 +47,7 @@ function render(message = "") {
                                oubli: "Recevoir un code", reinitialisation: "Changer mon mot de passe" }[mode];
   $("#switch").textContent = mode === "connexion" ? "Pas encore de compte ? En créer un" : "J'ai déjà un compte";
   $("#forgot").hidden = mode !== "connexion";
+  $("#google").hidden = !google || (mode !== "connexion" && mode !== "inscription");
   $("#message").textContent = message;
 }
 
@@ -90,5 +96,9 @@ $("#switch").addEventListener("click", () => { clearTimeout(waiting); mode = mod
 $("#forgot").addEventListener("click", () => { clearTimeout(waiting); mode = "oubli"; render(); });
 
 // déjà connecté, ou comptes désactivés sur ce service : rien à faire ici
-fetch("/api/compte").then((r) => r.json()).then((s) => { if (s.signed_in) location.href = next(); }).catch(() => {});
-render();
+fetch("/api/compte").then((r) => r.json()).then((s) => {
+  if (s.signed_in) { location.href = next(); return; }
+  google = !!s.google;
+  render($("#message").textContent);
+}).catch(() => {});
+render(BACK[new URLSearchParams(location.search).get("erreur")] || "");

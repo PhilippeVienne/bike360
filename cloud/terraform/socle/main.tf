@@ -40,6 +40,18 @@ variable "export_days" {
   default     = 30
 }
 
+variable "google" {
+  description = "Connexion par Google : ouvre l'interface OAuth du groupe d'utilisateurs et l'autorise pour l'application. Le fournisseur « Google » doit déjà exister dans le groupe (sh cloud/secrets.sh <env> google)."
+  type        = bool
+  default     = false
+}
+
+variable "oauth_domain" {
+  description = "Préfixe du domaine OAuth du groupe d'utilisateurs (unique dans la région), requis avec google."
+  type        = string
+  default     = ""
+}
+
 variable "protect" {
   description = "Empêche la suppression de la table et du groupe d'utilisateurs, et garde de quoi restaurer la table 35 jours."
   type        = bool
@@ -203,6 +215,25 @@ resource "aws_cognito_user_pool_client" "web" {
   generate_secret               = false
   explicit_auth_flows           = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
   prevent_user_existence_errors = "ENABLED"
+
+  # connexion par Google : le service échange lui-même le code (avec PKCE) et pose les témoins.
+  # La portée « aws.cognito.signin.user.admin » laisse le compte lire son adresse et se supprimer.
+  supported_identity_providers         = var.google ? ["COGNITO", "Google"] : null
+  allowed_oauth_flows_user_pool_client = var.google ? true : null
+  allowed_oauth_flows                  = var.google ? ["code"] : null
+  allowed_oauth_scopes                 = var.google ? ["openid", "email", "aws.cognito.signin.user.admin"] : null
+  callback_urls                        = var.google ? ["${var.site}/api/compte/google/retour"] : null
+}
+
+# Interface OAuth du groupe : c'est par elle que passe l'aller-retour vers Google.
+resource "aws_cognito_user_pool_domain" "oauth" {
+  count        = var.google ? 1 : 0
+  domain       = var.oauth_domain
+  user_pool_id = aws_cognito_user_pool.comptes.id
+}
+
+output "oauth_domain" {
+  value = var.google ? aws_cognito_user_pool_domain.oauth[0].domain : ""
 }
 
 output "pool" {
