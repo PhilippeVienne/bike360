@@ -1,0 +1,9 @@
+# Seules les sources Rust entrent dans le contexte : ni les rushs, ni les exports, ni les compilations locales.
+*
+!Cargo.toml
+!Cargo.lock
+!core
+!server
+!render
+!cloud/service
+**/target

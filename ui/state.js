@@ -6,7 +6,9 @@ export const LENS_FOV = 195;              // champ d'un objectif (°), doit corr
 export const RATES = [1, 2, 4, 8, 16];    // vitesses de lecture (touches 1 à 5)
 export const SKIM_THRESHOLD = 0.45;       // score sous lequel le survol accélère
 export const QUICK_CLIP = [5, 10];        // « + Clip » : 5 s avant, 10 s après la tête de lecture
-export const DEFAULT_VIEW = { yaw: 0, pitch: -10, fov: 100, roll: 0 };   // vue avant, aussi pour la vue brute
+export const DEFAULT_VIEW = { yaw: 0, pitch: -10, fov: 100, roll: 0 };   // vue avant d'une caméra tournée vers l'avant
+/** Vue avant de la session affichée (selon la position de la caméra), aussi pour la vue brute. */
+export const defaultView = () => ({ ...DEFAULT_VIEW, yaw: (st.s && st.s.front_yaw) || 0 });
 
 export const st = {
   // session affichée

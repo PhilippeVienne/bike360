@@ -8,12 +8,17 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="/ui/style.css">
 <link rel="stylesheet" href="/ui/desktop.css">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/ui/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/ui/icons/icon-192.png">
+<meta name="theme-color" content="#1a1d23">
 </head>
 <!-- Interface ordinateur. Mêmes éléments (id) que mobile.html, disposés autrement :
      chaque bloc de <main> porte data-steps = étapes où il est visible (steps.js). -->
 <body data-step="cut">
 <header class="top">
   <div class="brand" title="Tri et montage des balades Insta360">◉ Bike360</div>
+  <a id="library-link" class="button" hidden title="Revenir à la liste de mes rushs">← Mes rushs</a>
   <nav class="steps" aria-label="Étapes">
     <button data-go="files"><span class="num">1</span><span class="lbl">Fichiers<small data-step-status="files"></small></span></button>
     <span class="sep">›</span>
@@ -333,6 +338,12 @@
       <a href="/ui/mobile.html" data-ui-switch="mobile" class="button">📱 Passer à la version téléphone</a></div>
     <div class="row"><span class="muted">Session protégée par mot de passe</span><div class="spacer"></div>
       <a href="/logout" class="button">⎋ Se déconnecter</a></div>
+  </section>
+  <section data-section="route">
+    <h3>Route</h3>
+    <div class="row"><span class="muted">Trouver une station-service, retrouver mes trajets GeoRide</span><div class="spacer"></div>
+      <a href="/ui/pitstop.html" class="button">⛽ Pit-stop</a>
+      <a href="/ui/trips.html" class="button">🗺 Trajets GeoRide</a></div>
   </section>
 </dialog>
 

@@ -3,7 +3,7 @@
 // résumé hyperlapse et suivi de la progression (avec annulation).
 // Partage : exportSettings, updateFrameGuide, pollExport.
 
-import { st, DEFAULT_VIEW } from "./state.js";
+import { st, defaultView } from "./state.js";
 import { $, api, exportLink, storageGet, storageSet } from "./util.js";
 import { saveClipsNow } from "./clips.js";
 import { onStep, setJob } from "./steps.js";
@@ -78,7 +78,7 @@ async function hyperlapseInfo() {
 onStep((s) => { if (s === "export") { hyperlapseInfo(); updateFrameGuide(); } });
 $("#hl-duration").addEventListener("change", hyperlapseInfo);
 $("#hl-start").addEventListener("click", async () => {
-  const v = st.view.raw ? DEFAULT_VIEW : st.view;   // cadrage de l'aperçu
+  const v = st.view.raw ? defaultView() : st.view;   // cadrage de l'aperçu
   try {
     await api("POST", `/api/hyperlapse/${st.s.id}`, {
       duration: +$("#hl-duration").value, yaw: v.yaw, pitch: v.pitch, roll: v.roll ?? 0, fov: v.fov,

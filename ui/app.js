@@ -52,6 +52,7 @@ import "./music-library.js";
 import "./sources.js";
 import "./privacy.js";
 import "./commands.js";
+import "./pwa.js";
 
 // ------------------------------------------------------------------ boucle d'affichage
 

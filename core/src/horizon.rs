@@ -219,7 +219,7 @@ pub fn gps_prior_inputs(result: &Analysis, n_total: usize) -> (Vec<f64>, Vec<f64
     let fallback = (vec![30.0; n_total], vec![0.0; n_total]);
     let t: Vec<f64> = (0..n_total).map(|k| k as f64 / HZ as f64).collect();
     let day = Utc.timestamp_opt(result.utc_t0 as i64, 0).unwrap().date_naive();
-    let Ok(Some(gps)) = analyze::load_positions(day) else { return fallback };
+    let Ok(Some((gps, _))) = analyze::load_positions(day) else { return fallback };
     let times: Vec<f64> = t.iter().map(|x| result.utc_t0 + result.offset_s + x).collect();
     let (g, valid) = analyze::sample_gps(&gps, &times);
     let tv: Vec<f64> = (0..n_total).filter(|&k| valid[k]).map(|k| t[k]).collect();

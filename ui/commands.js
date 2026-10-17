@@ -2,7 +2,7 @@
 // menus déroulants, dialogues et feuilles ([data-open="id"] ouvre <dialog id>), aide et
 // raccourcis clavier (ordinateur ; tout reste faisable au doigt sans eux).
 
-import { st, video, now, RATES, DEFAULT_VIEW } from "./state.js";
+import { st, video, now, RATES, defaultView } from "./state.js";
 import { $, $$ } from "./util.js";
 import { activeClip, setView, upsertKey, userView } from "./view.js";
 import { applyRate, jumpCandidate, seek, setPlayOverride, setRate, togglePlay } from "./playback.js";
@@ -25,7 +25,7 @@ RATES.forEach((r) => {
 setPlayOverride(() => document.body.dataset.step === "montage" && (togglePreview(), true));
 $("#play").addEventListener("click", togglePlay);
 $("#skim").addEventListener("change", (e) => { st.skim = e.target.checked; applyRate(); });
-$("#view-front").addEventListener("click", () => userView({ ...DEFAULT_VIEW, raw: false }));
+$("#view-front").addEventListener("click", () => userView({ ...defaultView(), raw: false }));
 $("#view-rider").addEventListener("click", () => userView({ yaw: 180, pitch: 8, fov: 100, roll: 0, raw: false }));
 $("#horizon-mode").addEventListener("change", (e) => setView({ horizon: e.target.value }));
 $("#view-raw").addEventListener("click", () => setView({ raw: !st.view.raw }));

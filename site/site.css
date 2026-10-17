@@ -1,0 +1,85 @@
+/* Site vitrine de Bike360 Cloud : mêmes couleurs et mêmes éléments que l'interface (ui/style.css). */
+:root {
+  --bg: #111317;
+  --panel: #1a1d23;
+  --panel2: #22262e;
+  --line: #2a2f38;
+  --text: #e6e8eb;
+  --muted: #8a919c;
+  --accent: #f5a524;
+  --clip: #3ecf8e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.15; margin: 0 0 16px; }
+h2 { font-size: 26px; margin: 0 0 8px; }
+h3 { font-size: 17px; margin: 0 0 6px; }
+p { margin: 0 0 12px; }
+.muted { color: var(--muted); }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+
+header.top { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); }
+header.top .wrap { display: flex; align-items: center; gap: 18px; padding-top: 12px; padding-bottom: 12px; }
+.brand { font-weight: 700; font-size: 18px; color: var(--text); text-decoration: none; }
+.brand span { color: var(--accent); }
+header.top nav { display: flex; gap: 16px; flex: 1; flex-wrap: wrap; }
+header.top nav a { color: var(--muted); text-decoration: none; font-size: 14px; }
+header.top nav a:hover { color: var(--text); }
+.button { display: inline-flex; align-items: center; justify-content: center; padding: 10px 18px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); text-decoration: none; font-weight: 600; }
+.button:hover { border-color: var(--muted); }
+.button.primary { background: var(--accent); border-color: var(--accent); color: #111; }
+.button.small { padding: 6px 12px; font-size: 14px; }
+
+section { padding: 64px 0; border-bottom: 1px solid var(--line); }
+section > .wrap > .lead { max-width: 720px; color: var(--muted); margin-bottom: 28px; }
+.hero { padding: 72px 0 56px; }
+.hero .wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; align-items: center; }
+.hero p.lead { font-size: 19px; color: var(--muted); }
+.hero .actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 0 10px; }
+.hero img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+.card p:last-child { margin-bottom: 0; }
+.card .step { color: var(--accent); font-weight: 700; }
+
+.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
+.plan { display: flex; flex-direction: column; gap: 8px; }
+.plan .price { font-size: 34px; font-weight: 700; }
+.plan .price small { font-size: 14px; font-weight: 400; color: var(--muted); }
+.plan ul { margin: 0 0 8px; padding-left: 18px; color: var(--muted); flex: 1; }
+.plan.featured { border-color: var(--accent); }
+.badge { align-self: flex-start; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); }
+
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+th { background: var(--panel2); font-size: 14px; }
+.table-scroll { overflow-x: auto; }
+
+details { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; margin-bottom: 10px; }
+summary { cursor: pointer; font-weight: 600; }
+details p { margin: 10px 0 0; color: var(--muted); }
+
+.draft { border: 2px dashed var(--accent); border-radius: 10px; padding: 14px 18px; margin: 0 0 24px; background: var(--panel); }
+.draft strong { color: var(--accent); }
+.todo { background: color-mix(in srgb, var(--accent) 22%, transparent); border-radius: 4px; padding: 0 4px; }
+main.legal { max-width: 780px; margin: 0 auto; padding: 40px 20px 64px; }
+main.legal h1 { font-size: 30px; }
+main.legal h2 { font-size: 20px; margin-top: 32px; }
+main.legal li { margin-bottom: 6px; }
+
+footer { padding: 32px 0 48px; color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+footer a { color: var(--muted); }
+footer .spacer { flex: 1; }
+
+@media (max-width: 760px) {
+  .hero .wrap { grid-template-columns: 1fr; }
+  header.top nav { display: none; }
+  section { padding: 44px 0; }
+}

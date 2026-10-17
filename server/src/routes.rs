@@ -10,7 +10,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use bike360_core::{analyze, automontage, finishing, geometry, hyperlapse, insta360, musiclib};
+use bike360_core::{analyze, automontage, finishing, geometry, georide, gpx, hyperlapse, insta360, musiclib, paths, pitstop, position, rides};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -22,6 +22,7 @@ use crate::{privacy, pyjson};
 use bike360_core::privacy as core_privacy;
 
 const MUSIC_MAX_BYTES: usize = 60 * 1024 * 1024;
+const GPX_MAX_BYTES: usize = 60 * 1024 * 1024;
 
 /// Réponse préparée par le traitement synchrone.
 pub enum Reply {
@@ -119,7 +120,22 @@ async fn gate(uri: &Uri, method: &Method, headers: &HeaderMap, body: &Bytes, ip:
         }
         "/login" => Some(if auth::authorized(headers) { redirect(&query_next(), None) } else { page(200, auth::login_page("", &query_next()), None) }),
         "/logout" => Some(redirect("/login", Some(auth::set_cookie("", https)))),
-        _ if auth::authorized(headers) => None,
+        // ouverture depuis le service hébergé : un jeton à usage unique contre une session
+        "/ouvrir" => Some(match auth::open_with(&auth::form_field(uri.query().unwrap_or(""), "jeton")) {
+            _ if auth::blocked(ip) => page(429, auth::login_page("Trop d'essais : réessaie dans quelques minutes.", "/"), None),
+            Some(tok) => redirect("/", Some(auth::set_cookie(&tok, https))),
+            None => {
+                auth::record_fail(ip);
+                page(403, auth::login_page("Lien d'ouverture expiré ou déjà utilisé.", "/"), None)
+            }
+        }),
+        _ if auth::authorized(headers) => {
+            // les relevés du service qui surveille l'atelier ne comptent pas comme de l'activité
+            if !["/api/activite", "/api/ouverture"].contains(&uri.path()) {
+                auth::touch();
+            }
+            None
+        }
         p if p.starts_with("/api/") => Some(json_401()),
         _ if ["/media/", "/music/", "/exports/", "/thumb/", "/minimap"].iter().any(|x| uri.path().starts_with(x)) => Some(error_page(401)),
         _ => {
@@ -302,10 +318,20 @@ fn job_json(app: &App, key: &str) -> Value {
 }
 
 fn result_json(s: &Sess) -> Map<String, Value> {
-    match serde_json::to_value(&s.result) {
+    let mut m = match serde_json::to_value(&s.result) {
         Ok(Value::Object(m)) => m,
         _ => Map::new(),
-    }
+    };
+    let pos = session_position(s);
+    m.insert("front_yaw".into(), position::front_yaw(&pos).into());
+    m.insert("position".into(), pos.into());
+    m
+}
+
+/// Position de la caméra pour cette session (choix de la session, sinon de sa caméra, sinon guidon).
+fn session_position(s: &Sess) -> String {
+    let store = read_json(&position::path()).unwrap_or(Value::Null);
+    position::resolve(&store, &s.result.id, s.session.camera.as_ref().map(|c| c.serial.as_str())).to_string()
 }
 
 // ---------------------------------------------------------------- aiguillage
@@ -331,6 +357,9 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
     // interface : fichier sur disque (<racine>/ui) en priorité, sinon copie embarquée
     let ui_rel = if path == "/" {
         Some("index.html".to_string())
+    } else if ["/manifest.json", "/sw.js", "/offline.html"].contains(&path) {
+        // scope du service worker = racine : il doit être livré hors de /ui/
+        Some(path.trim_start_matches('/').to_string())
     } else if p[0] == "ui" && p.len() >= 2 {
         Some(p[1..].iter().map(|x| unquote(x, false)).collect::<Vec<_>>().join("/"))
     } else {
@@ -372,15 +401,26 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
     match path {
         "/api/sessions" => {
             let sessions = app.sessions.read().unwrap();
-            let list: Vec<Value> = sessions.iter().map(|(sid, s)| {
+            let store = read_json(&position::path()).unwrap_or(Value::Null);
+            let serial = |s: &Sess| s.session.camera.as_ref().map(|c| c.serial.clone());
+            let serials: Vec<Option<String>> = sessions.values().map(|s| serial(s)).collect();
+            let spans: Vec<rides::Span> = sessions.values().zip(&serials).map(|(s, cam)| {
+                let start = s.result.utc_t0 + s.result.offset_s;
+                rides::Span { id: &s.result.id, start, end: start + s.result.duration as f64, camera: cam.as_deref() }
+            }).collect();
+            let groups = rides::group(&spans);
+            let list: Vec<Value> = sessions.iter().zip(&groups).map(|((sid, s), (ride, angles))| {
                 let r = &s.result;
+                let pos = position::resolve(&store, sid, s.session.camera.as_ref().map(|c| c.serial.as_str()));
                 let clips = app.get_selections(sid);
                 let clips_s: f64 = clips.iter().map(|c| float_of(c.get("end"), 0.0) - float_of(c.get("start"), 0.0)).sum();
                 json!({"id": r.id, "date": r.date, "time": r.time, "duration": r.duration,
                        "gps_coverage": r.gps_coverage, "candidates": r.candidates.len(), "clips": clips.len(),
                        "clips_s": bike360_core::numeric::round_nd(clips_s, 1),
                        "folder": r.extra.get("folder").cloned().unwrap_or(Value::Null),
-                       "parts": r.extra.get("parts").cloned().unwrap_or(json!(1))})
+                       "parts": r.extra.get("parts").cloned().unwrap_or(json!(1)),
+                       "camera": s.session.camera, "gps_source": r.gps_source,
+                       "position": pos, "front_yaw": position::front_yaw(pos), "ride": ride, "angles": angles})
             }).collect();
             return Ok(ok(Value::Array(list)));
         }
@@ -440,7 +480,30 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                 Err(e) => err(502, format!("catalogue indisponible : {e}")),
             });
         }
+        "/api/pitstops" => {
+            let qs = parse_qs(full);
+            let num = |k: &str| qs.get(k).and_then(Value::as_str).and_then(|s| s.parse::<f64>().ok());
+            let (Some(lat), Some(lon)) = (num("lat"), num("lon")) else { return Ok(err(400, "lat et lon requis")) };
+            let settings = pitstop::Settings {
+                fill_size_l: num("fill").unwrap_or(10.0).max(0.0),
+                consumption_l100: num("consumption").unwrap_or(5.0).max(0.1),
+                exclude_distance: qs.get("exclude_distance").and_then(Value::as_str) == Some("1"),
+            };
+            let fuel = pitstop::Fuel::parse(qs.get("fuel").and_then(Value::as_str).unwrap_or("gazole"));
+            let radius = num("radius").unwrap_or(20.0);
+            let results = pitstop::stations_around(lat, lon, radius, fuel, &settings);
+            return Ok(match serde_json::to_value(&results) {
+                Ok(v) => ok(json!({"results": v})),
+                Err(_) => err(500, "erreur interne"),
+            });
+        }
+        "/api/georide/trips" => {
+            return Ok(ok(read_json(&georide_trips_path()).unwrap_or(json!({"last_sync": null, "trips": []}))));
+        }
+        "/api/sources/detect" if paths::cloud() => return Ok(ok(json!([]))),
         "/api/sources/detect" => return Ok(ok(Value::Array(sources::detect(app)))),
+        // le disque du serveur ne s'explore pas en mode hébergé
+        "/api/fs" | "/api/fs/preview" if paths::cloud() => return Ok(Reply::Error(404)),
         "/api/fs" => {
             let dir = unquote(raw_query(full).get("path").and_then(Value::as_str).unwrap_or(""), false);
             return Ok(match sources::browse(&dir) {
@@ -459,10 +522,21 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
             let sessions = app.sessions.read().unwrap();
             let folders: Vec<Value> = app.source_folders().into_iter().map(|f| {
                 let n = sessions.values().filter(|s| s.result.extra.get("folder").and_then(Value::as_str) == Some(&f)).count();
-                json!({"path": f, "present": Path::new(&f).is_dir(), "removable": f != app.dcim, "sessions": n})
+                // en mode hébergé, le chemin du serveur ne regarde pas le client
+                let shown = if paths::cloud() { "Mes rushs".to_string() } else { f.clone() };
+                json!({"path": shown, "present": Path::new(&f).is_dir(), "removable": f != app.dcim, "sessions": n})
             }).collect();
-            return Ok(ok(json!({"scan": app.scan.lock().unwrap().clone(), "folders": folders})));
+            // service hébergé : adresse de la Bibliothèque du client, d'où il a ouvert cet atelier
+            let library = std::env::var("BIKE360_LIBRARY_URL").ok().filter(|u| paths::cloud() && !u.is_empty());
+            return Ok(ok(json!({"scan": app.scan.lock().unwrap().clone(), "folders": folders, "cloud": paths::cloud(), "library": library})));
         }
+        "/api/activite" => {
+            let busy = app.jobs.lock().unwrap().values().any(|j| j.running())
+                || app.scan.lock().unwrap().get("state").and_then(Value::as_str) == Some("running");
+            return Ok(ok(json!({"idle_s": crate::auth::idle_s(), "busy": busy})));
+        }
+        "/api/gps" => return Ok(ok(Value::Array(gps_files()))),
+        "/api/positions" => return Ok(ok(position::list())),
         "/api/settings" => return Ok(ok(app.get_settings())),
         _ => {}
     }
@@ -476,7 +550,8 @@ fn get(app: &Arc<App>, full: &str) -> Result<Reply, ()> {
                     None => Some(d),
                 }
             };
-            let vals = (num("t", s.result.duration as f64 / 3.0), num("yaw", 0.0), num("pitch", -10.0), num("fov", 100.0));
+            let front = position::front_yaw(&session_position(&s));
+            let vals = (num("t", s.result.duration as f64 / 3.0), num("yaw", front), num("pitch", -10.0), num("fov", 100.0));
             let (Some(t), Some(yaw), Some(pitch), Some(fov)) = vals else { return Ok(Reply::Error(500)) };
             // largeur facultative (w=…, 160 à 1280 px) pour les illustrations ; 320 px par défaut
             let width = num("w", 320.0).unwrap_or(320.0).clamp(160.0, 1280.0) as u32;
@@ -562,6 +637,98 @@ fn privacy_overview(app: &App) -> Vec<Value> {
         json!({"sid": sid, "clip": clip.get("id"), "start": clip.get("start"), "end": clip.get("end"),
                "analyzed": analyzed, "stale": stale, "tracks": tr})
     }).collect()
+}
+
+fn georide_trips_path() -> PathBuf {
+    paths::data().join("georide-trips.json")
+}
+
+/// Synchronise les trajets GeoRide depuis la dernière synchro (30 jours si jamais lancée) dans
+/// data/georide-trips.json : utile pour une balade sans caméra, ou pour recouper une session
+/// vidéo avec le trajet déjà vu par le tracker (distance, durée, tracé).
+fn georide_sync() -> Reply {
+    let cache = read_json(&georide_trips_path()).unwrap_or(json!({"last_sync": null, "trips": []}));
+    let mut trips: Vec<Value> = cache["trips"].as_array().cloned().unwrap_or_default();
+    let now = chrono::Utc::now();
+    let last_sync = cache["last_sync"].as_str().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    let mut start = last_sync
+        .map(|d| d.with_timezone(&chrono::Utc) - chrono::Duration::hours(24))
+        .unwrap_or_else(|| now - chrono::Duration::days(30));
+    // Trajets déjà en cache sans tracé (appel /positions raté la dernière fois, débit limité) :
+    // élargit la fenêtre jusqu'au plus ancien d'entre eux pour les retenter aujourd'hui.
+    let oldest_doubtful = trips.iter()
+        .filter(|t| t["path"].as_array().is_some_and(|p| p.is_empty()))
+        .filter_map(|t| t["started_at"].as_str())
+        .filter_map(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .min();
+    if let Some(oldest) = oldest_doubtful {
+        start = start.min(oldest - chrono::Duration::hours(2));
+    }
+    let (start_s, end_s) = (start.to_rfc3339(), now.to_rfc3339());
+    let fetched = match georide::fetch_trips(&start_s, &end_s) {
+        Ok(v) => v,
+        Err(e) => return err(502, format!("GeoRide : {e:#}")),
+    };
+    let Some(list) = fetched.as_array() else { return err(502, "réponse GeoRide inattendue") };
+    let mut synced = 0usize;
+    for trip in list {
+        let id = trip.get("id").map(|v| v.to_string()).unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        let existing_idx = trips.iter().position(|t| t["id"].as_str() == Some(id.as_str()));
+        if let Some(i) = existing_idx {
+            // Déjà en cache : rien à refaire, sauf si le tracé n'avait pas pu être récupéré
+            // la dernière fois (limite de débit GeoRide) — on retente alors pour ce trajet.
+            if !trips[i]["path"].as_array().is_some_and(|p| p.is_empty()) {
+                continue;
+            }
+        }
+        let t_start = trip.get("startTime").or_else(|| trip.get("startedAt")).and_then(Value::as_str).unwrap_or_default().to_string();
+        let t_end = trip.get("endTime").or_else(|| trip.get("endedAt")).and_then(Value::as_str).unwrap_or_default().to_string();
+        // Pause courte entre chaque trajet : l'API GeoRide limite le débit (429) si on
+        // enchaîne les appels /positions sans respirer, perdant le tracé de ce trajet.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut path: Vec<Value> = match georide::fetch_positions(&t_start, &t_end) {
+            Ok(Value::Array(pts)) => pts.iter().filter_map(|p| {
+                let lat = p.get("latitude").and_then(Value::as_f64)?;
+                let lon = p.get("longitude").and_then(Value::as_f64)?;
+                Some(json!([lat, lon]))
+            }).collect(),
+            _ => vec![],
+        };
+        if path.is_empty() {
+            // Nouvel essai après une pause plus longue (débit limité ou appel en erreur).
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Ok(Value::Array(pts)) = georide::fetch_positions(&t_start, &t_end) {
+                path = pts.iter().filter_map(|p| {
+                    let lat = p.get("latitude").and_then(Value::as_f64)?;
+                    let lon = p.get("longitude").and_then(Value::as_f64)?;
+                    Some(json!([lat, lon]))
+                }).collect();
+            }
+        }
+        let entry = json!({
+            "id": id,
+            "started_at": t_start,
+            "ended_at": t_end,
+            "distance_km": trip.get("distance").and_then(Value::as_f64).map(|d| d / 1000.0),
+            "duration_min": trip.get("duration").and_then(Value::as_f64).map(|d| d / 60000.0),
+            "path": path,
+        });
+        match existing_idx {
+            Some(i) => trips[i] = entry,
+            None => trips.push(entry),
+        }
+        synced += 1;
+    }
+    trips.sort_by(|a, b| b["started_at"].as_str().unwrap_or("").cmp(a["started_at"].as_str().unwrap_or("")));
+    let out = json!({"last_sync": end_s, "trips": trips});
+    if let Err(e) = write_json_indent(&georide_trips_path(), &out) {
+        return err(500, format!("écriture impossible : {e:#}"));
+    }
+    ok(json!({"ok": true, "synced": synced, "total": trips.len()}))
 }
 
 fn put(app: &Arc<App>, full: &str, body: &Bytes) -> Result<Reply, ()> {
@@ -721,6 +888,9 @@ fn post(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Result
     if p == ["api", "sources"] {
         return sources(app, &body_obj(body)?);
     }
+    if p == ["api", "georide", "sync"] {
+        return Ok(georide_sync());
+    }
     if p == ["api", "music", "library"] {
         let b = body_obj(body)?;
         return Ok(match musiclib::download(&pyjson::py_str(b.get("filename").unwrap_or(&json!("")))) {
@@ -730,6 +900,29 @@ fn post(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Result
     }
     if p == ["api", "music"] {
         return Ok(music_upload(full, headers, body));
+    }
+    if p == ["api", "gps"] {
+        return Ok(gps_upload(app, full, headers, body));
+    }
+    if p == ["api", "ouverture"] {
+        return Ok(match crate::auth::mint_open_token() {
+            Some(tok) => ok(json!({"jeton": tok})),
+            None => Reply::Error(500),
+        });
+    }
+    if p == ["api", "position"] {
+        // position de la caméra pour une session ; devient aussi le réglage par défaut de cette caméra
+        let b = body_obj(body)?;
+        let (Some(sid), Some(key)) = (b.get("sid").and_then(Value::as_str), b.get("position").and_then(Value::as_str)) else { return Ok(Reply::Error(400)) };
+        let Some(s) = app.sess(sid) else { return Ok(Reply::Error(404)) };
+        if !position::is_known(key) {
+            return Ok(err(400, "position inconnue"));
+        }
+        let _g = app.lock.lock().unwrap();
+        let mut store = read_json(&position::path()).unwrap_or(Value::Null);
+        position::assign(&mut store, sid, s.session.camera.as_ref().map(|c| c.serial.as_str()), key);
+        write_json_indent(&position::path(), &store).map_err(|_| ())?;
+        return Ok(ok(json!({"ok": true})));
     }
     if p == ["api", "montage"] {
         let b = body_obj(body)?;
@@ -940,6 +1133,9 @@ fn sources(app: &Arc<App>, b: &Value) -> Result<Reply, ()> {
         spawn(move || app2.rescan());
         return Ok(ok(json!({"ok": true})));
     }
+    if paths::cloud() {
+        return Ok(err(403, "les dossiers ne se choisissent pas en mode hébergé"));
+    }
     let mut extra: Vec<String> = read_json(&sources_path()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     if truthy(b.get("add")) {
         let raw = pyjson::py_str(&b["add"]);
@@ -988,6 +1184,54 @@ fn music_upload(full: &str, headers: &HeaderMap, body: &Bytes) -> Reply {
     ok(json!({"ok": true, "name": name}))
 }
 
+/// Traces GPX déposées : [{name, points, from, to}] (dates UTC, absentes d'un fichier sans point horodaté).
+fn gps_files() -> Vec<Value> {
+    let iso = |t: f64| chrono::DateTime::from_timestamp(t as i64, 0).map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    gpx::files().iter().map(|f| {
+        let (points, span) = gpx::summary(f);
+        json!({"name": f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), "points": points,
+               "from": span.and_then(|s| iso(s.0)), "to": span.and_then(|s| iso(s.1))})
+    }).collect()
+}
+
+/// Reçoit une trace GPS (corps brut) : POST /api/gps?name=trace.gpx, ou la retire : POST /api/gps?remove=trace.gpx.
+/// Les sessions du jour sont ensuite analysées de nouveau avec cette source.
+fn gps_upload(app: &Arc<App>, full: &str, headers: &HeaderMap, body: &Bytes) -> Reply {
+    let qs = raw_query(full);
+    let file_name = |key: &str| {
+        let raw = unquote(qs.get(key).and_then(Value::as_str).unwrap_or(""), false);
+        Path::new(&raw).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    };
+    let is_gpx = |name: &str| Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case("gpx")) && !name.starts_with('.');
+    if app.scan.lock().unwrap().get("state").and_then(Value::as_str) == Some("running") {
+        return err(409, "analyse déjà en cours");
+    }
+    let removed = file_name("remove");
+    let name = file_name("name");
+    if !removed.is_empty() {
+        if !is_gpx(&removed) || std::fs::remove_file(gpx::dir().join(&removed)).is_err() {
+            return err(404, "trace introuvable");
+        }
+    } else {
+        let n: usize = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
+        if !is_gpx(&name) {
+            return err(400, "format non pris en charge (fichier .gpx attendu)");
+        }
+        if !(0 < n && n <= GPX_MAX_BYTES) {
+            return err(400, "fichier vide ou trop gros (60 Mo max)");
+        }
+        if gpx::parse(&String::from_utf8_lossy(body)).len() < 2 {
+            return err(400, "aucun point horodaté dans ce fichier GPX");
+        }
+        if std::fs::create_dir_all(gpx::dir()).and_then(|_| std::fs::write(gpx::dir().join(&name), body)).is_err() {
+            return Reply::Error(500);
+        }
+    }
+    let app2 = app.clone();
+    spawn(move || app2.rescan());
+    ok(json!({"ok": true, "files": gps_files()}))
+}
+
 /// Montage automatique : remplace les clips auto des sessions par un nouveau plan.
 fn automontage_route(app: &Arc<App>, b: &Value) -> Result<Reply, ()> {
     let src: Vec<Value> = match b.get("sids") {
@@ -1023,13 +1267,14 @@ fn automontage_route(app: &Arc<App>, b: &Value) -> Result<Reply, ()> {
     let mut added = vec![];
     for (sid, clips) in &plan {
         let mut all = existing[sid].clone();
+        let front = app.sess(sid).map_or(0.0, |s| position::front_yaw(&session_position(&s)));
         for c in clips {
             // même ordre de clés que la version Python
             let mut m = Map::new();
             m.insert("id".into(), json!(c.id));
             m.insert("start".into(), json!(c.start));
             m.insert("end".into(), json!(c.end));
-            m.insert("yaw".into(), json!(c.yaw));
+            m.insert("yaw".into(), json!(c.yaw + front));
             m.insert("pitch".into(), json!(c.pitch));
             m.insert("fov".into(), json!(c.fov));
             m.insert("roll".into(), json!(c.roll));

@@ -9,6 +9,9 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="/ui/style.css">
 <link rel="stylesheet" href="/ui/mobile.css">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/ui/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/ui/icons/icon-192.png">
 </head>
 <!-- Interface téléphone. Mêmes éléments (id) que index.html, disposés pour le doigt :
      une colonne qui défile, vidéo collée en haut, étapes en onglets en bas de l'écran,
@@ -16,6 +19,7 @@
 <body data-step="cut">
 <header class="m-top">
   <span class="brand">◉</span>
+  <a id="library-link" class="button" hidden title="Revenir à la liste de mes rushs">←</a>
   <strong class="m-title" data-step-title></strong>
   <div class="spacer"></div>
   <button id="job-pill" class="job-pill" hidden></button>
@@ -313,6 +317,11 @@
     <div class="row"><button id="help-open">? Aide</button>
       <a href="/" data-ui-switch="desktop" class="button">🖥 Version ordinateur</a>
       <a href="/logout" class="button">⎋ Se déconnecter</a></div>
+  </section>
+  <section data-section="route">
+    <h3>Route</h3>
+    <div class="row"><a href="/ui/pitstop.html" class="button">⛽ Pit-stop</a>
+      <a href="/ui/trips.html" class="button">🗺 Trajets GeoRide</a></div>
   </section>
 </dialog>
 

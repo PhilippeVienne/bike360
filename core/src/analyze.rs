@@ -1,4 +1,4 @@
-//! Analyse des sessions : profil seconde par seconde (IMU + GPS GeoRide), synchronisation
+//! Analyse des sessions : profil seconde par seconde (IMU + GPS : trace GPX ou GeoRide), synchronisation
 //! automatique, score d'intérêt, moments candidats et statistiques. Résultats (même format que
 //! la version Python) dans data/cache/<session>.json.
 
@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::geometry::Tilt;
-use crate::insta360::{self, Session};
+use crate::insta360::{self, Camera, Session};
 use crate::numeric::*;
-use crate::{georide, paths};
+use crate::{georide, gpx, paths};
 
 pub const CACHE_VERSION: u32 = 5; // à incrémenter quand le calcul change (invalide le cache)
 const SYNC_SEARCH_S: f64 = 120.0; // plage de recherche du décalage horloge caméra ↔ GPS
@@ -66,6 +66,12 @@ pub struct Analysis {
     pub version: u32,
     pub tilt: Tilt,
     pub stats: Map<String, Value>,
+    /// Caméra d'origine (absente des analyses plus anciennes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<Camera>,
+    /// Source des positions : « gpx » ou « georide » (absente sans GPS et des analyses plus anciennes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gps_source: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -177,8 +183,16 @@ pub struct Gps {
     pub heading: Vec<f64>,
 }
 
+/// Positions d'un jour UTC et leur source : trace GPX déposée dans data/gps/ en priorité, sinon GeoRide.
+pub fn load_positions(day: NaiveDate) -> Result<Option<(Gps, &'static str)>> {
+    if let Some(g) = gpx::load_day(day) {
+        return Ok(Some((g, "gpx")));
+    }
+    Ok(load_georide(day)?.map(|g| (g, "georide")))
+}
+
 /// Positions GeoRide d'un jour UTC, en cache dans data/.
-pub fn load_positions(day: NaiveDate) -> Result<Option<Gps>> {
+fn load_georide(day: NaiveDate) -> Result<Option<Gps>> {
     let path = paths::data().join(format!("georide_pos_{}.json", day.format("%Y%m%d")));
     if !path.exists() {
         let pos = georide::fetch_positions(&day.format("%Y-%m-%d").to_string(),
@@ -368,8 +382,11 @@ pub fn analyze(session: &mut Session, overrides: &Map<String, Value>, refs: &[(f
     let override_s = overrides.get(&session.id).and_then(Value::as_f64);
     if out_path.exists() && !force {
         if let Ok(cached) = serde_json::from_str::<Analysis>(&std::fs::read_to_string(&out_path)?) {
-            if cached.key == key && cached.override_s == override_s && cached.version == CACHE_VERSION {
-                return Ok(cached);
+            // une trace GPX ajoutée ou retirée depuis l'analyse change la source des positions
+            let day = Utc.timestamp_opt(cached.utc_t0 as i64, 0).unwrap().date_naive();
+            let gpx_same = (cached.gps_source.as_deref() == Some("gpx")) == gpx::load_day(day).is_some();
+            if cached.key == key && cached.override_s == override_s && cached.version == CACHE_VERSION && gpx_same {
+                return Ok(Analysis { camera: session.camera.clone(), ..cached });
             }
         }
     }
@@ -378,11 +395,11 @@ pub fn analyze(session: &mut Session, overrides: &Map<String, Value>, refs: &[(f
     let first_lrv = session.segments[0].lrv.clone().context("segment sans .lrv")?;
     let t0 = creation_utc(&first_lrv)?;
     let day = Utc.timestamp_opt(t0 as i64, 0).unwrap().date_naive();
-    let gps = match load_positions(day) {
-        Ok(g) => g,
+    let (gps, gps_source) = match load_positions(day) {
+        Ok(g) => g.unzip(),
         Err(e) => {   // pas de réseau / identifiants : on continue sans GPS
             eprintln!("  GeoRide indisponible : {e}");
-            None
+            (None, None)
         }
     };
 
@@ -451,6 +468,8 @@ pub fn analyze(session: &mut Session, overrides: &Map<String, Value>, refs: &[(f
         version: CACHE_VERSION,
         tilt: mount_tilt(gravity),
         stats: ride_stats(n, &g, &valid),
+        camera: session.camera.clone(),
+        gps_source: gps_source.map(String::from),
         extra: Map::new(),
     };
     std::fs::write(&out_path, serde_json::to_string(&result)?)?;

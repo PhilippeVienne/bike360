@@ -33,13 +33,17 @@ positions GPS et vos exports ne quittent pas votre machine.
 Un navigateur de dossiers à trois panneaux : les cartes SD détectées, vos emplacements et, à
 droite, un **aperçu des sessions trouvées** (date, durée, taille) avant d'ajouter quoi que ce soit.
 Le bouton « Rescanner » relance l'analyse à la demande, avec progression et temps restant, et le
-serveur repère seul les nouveaux fichiers dès que la copie est terminée.
+serveur repère seul les nouveaux fichiers dès que la copie est terminée. Les sessions sont regroupées
+par balade ; sur chaque carte, on indique où la caméra est fixée (guidon, casque, arrière…).
+
+Au même endroit, on dépose une **trace GPS** `.gpx` (téléphone, GPS de guidon, traceur) : elle sert
+de source de positions pour les sessions de ce jour-là.
 
 ![Navigateur de dossiers et cartes SD](docs/img/fichiers-dossiers.jpg)
 
 ### ② Repérer & couper
 
-Le profil de la balade seconde par seconde (IMU, GPS GeoRide si vous en avez un) fait ressortir les
+Le profil de la balade seconde par seconde (IMU, GPS d'une trace `.gpx` ou de GeoRide) fait ressortir les
 moments forts. On pose des clips en un geste (⟦ Début, Fin ⟧ ou ＋15 s), on cadre la vue, on
 règle un horizon mesuré **dans l'image** et on accélère les passages calmes.
 
@@ -67,6 +71,11 @@ cinq fois plus rapide que ffmpeg seul.
 
 - **Analyse des sessions** : moments forts, statistiques, horizon mesuré dans l'image (Viterbi),
   angle d'inclinaison de la moto, synchronisation caméra ↔ GPS.
+- **GPS au choix** : trace `.gpx` déposée dans l'interface, ou compte GeoRide. Vitesse et cap sont
+  déduits des positions quand le fichier ne les donne pas.
+- **Plusieurs caméras** : chaque session garde le modèle et le numéro de série de sa caméra ; la
+  position choisie pour une caméra (guidon, casque, poitrine, arrière, perche) fixe sa direction
+  « avant » ; deux caméras qui filment le même moment sont signalées comme deux angles.
 - **Confidentialité** : floutage des visages et des plaques (détection, suivi dans le temps,
   zones tracées à la main), mesure des fuites.
 - **Hyperlapse** : toute une balade en quelques minutes, plus lente sur les moments forts.
@@ -108,6 +117,22 @@ GPU n'est compilé que si `nvcc` (kit CUDA) est présent. Les réglages sont dan
 Sans service : `cargo build --release`, puis
 `BIKE360_PASSWORD=… target/release/bike360-server "/chemin/vers/DCIM" --host 127.0.0.1 --port 8360`.
 
+### Mise à jour depuis une version antérieure
+
+L'identifiant d'une session contient désormais la caméra (`VID_<date>_<heure>_<caméra>`). Les données
+d'une version antérieure se migrent une fois, serveur arrêté :
+
+```sh
+systemctl --user stop bike360
+cp -a data data.avant-migration                    # sauvegarde
+target/release/bike360-tool migrate-ids            # essai à blanc : affiche ce qui serait renommé
+target/release/bike360-tool migrate-ids --apply
+sh packaging/install.sh
+```
+
+Brancher la carte SD avant de migrer permet de lire la caméra de chaque session ; sinon l'outil
+suppose la seule caméra qu'il connaît, et ne devine rien s'il en connaît plusieurs.
+
 ### Floutage : modèles
 
 Les modèles ne sont pas dans ce dépôt. Il faut `onnxruntime` (`pip install onnxruntime-gpu`) ; les
@@ -124,6 +149,16 @@ suivi, placez `face_detection_yunet_2023mar.onnx` et `object_tracking_vittrack_2
 - Vos données personnelles (positions GPS, sélections, exports) restent dans `data/` et `exports/`,
   ignorés par git.
 
+## Service hébergé (en préparation)
+
+Le dossier `cloud/` prépare une version hébergée : envoi des rushs depuis le navigateur vers un
+stockage S3, bibliothèque de tri et de nettoyage, et serveur en mode hébergé. Rien n'est en service ;
+tout s'essaie en local sur un émulateur d'AWS, voir [`cloud/README.md`](cloud/README.md).
+
+Le serveur accepte pour cela des dossiers séparés (`BIKE360_DATA`, `BIKE360_CACHE`,
+`BIKE360_EXPORTS`) et un mode hébergé (`BIKE360_CLOUD=1`) où il ne lit que le dossier de rushs
+qu'on lui donne, sans explorer le disque ni les cartes SD de sa machine.
+
 ## Organisation du code
 
 | Dossier | Rôle |
@@ -133,6 +168,7 @@ suivi, placez `face_detection_yunet_2023mar.onnx` et `object_tracking_vittrack_2
 | `render/` | moteur GPU (NVDEC, noyaux CUDA, NVENC) — compilé seulement avec CUDA |
 | `ui/` | interface web en modules ES, sans étape de build |
 | `packaging/` | service systemd et script d'installation |
+| `cloud/` | service hébergé en préparation : infrastructure Terraform, service d'envoi et de bibliothèque, essais locaux |
 | `*.py` | version Python d'origine, gardée comme référence des tests de non-régression |
 
 Tests : `cargo test`.

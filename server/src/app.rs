@@ -25,7 +25,7 @@ pub fn selections_dir() -> PathBuf {
     paths::data().join("selections")
 }
 pub fn exports_dir() -> PathBuf {
-    paths::root().join("exports")
+    paths::exports()
 }
 pub fn settings_path() -> PathBuf {
     paths::data().join("settings.json")
@@ -275,11 +275,12 @@ impl App {
 
     // ------------------------------------------------------------ dossiers et sessions
 
-    /// Dossier de la ligne de commande (carte SD) puis dossiers ajoutés depuis l'interface.
+    /// Dossier de la ligne de commande (carte SD) puis dossiers ajoutés depuis l'interface
+    /// (aucun en mode hébergé : seul le dossier de rushs du client est lu).
     pub fn source_folders(&self) -> Vec<String> {
-        let extra: Vec<String> = read_json(&sources_path())
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
+        let extra: Vec<String> = if paths::cloud() { vec![] } else {
+            read_json(&sources_path()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+        };
         let mut out: Vec<String> = vec![];
         for f in std::iter::once(self.dcim.clone()).chain(extra) {
             if !out.contains(&f) {

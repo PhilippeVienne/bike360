@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDateTime;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const MAGIC: &[u8] = b"8db42d694ccc418790edff439fe026bf";
 const ACC_LSB_PER_G: f64 = 1024.0; // acc_range = 32 g (métadonnées)
@@ -25,29 +25,43 @@ pub const MAX_CHAIN_GAP_S: f64 = 2.5;
 
 /// Enregistrements du trailer {identifiant: contenu} (0x03 et 0x0101), vide s'il est absent.
 pub fn read_records(path: &Path) -> Result<HashMap<u16, Vec<u8>>> {
+    read_records_of(path, &[0x03, 0x0101])
+}
+
+/// Fin de fichier à lire pour connaître les enregistrements : l'index (310 octets) puis le pied (78 octets).
+pub const TRAILER_TAIL: usize = 310 + 78;
+
+/// Enregistrements annoncés par la fin d'un fichier (ses `TRAILER_TAIL` derniers octets) :
+/// (identifiant, position dans le fichier, longueur). Vide sans trailer Insta360.
+/// Sert aussi à lire un fichier distant par lectures partielles, sans le télécharger.
+pub fn trailer_index(tail: &[u8], file_size: u64) -> Vec<(u16, u64, usize)> {
+    if tail.len() != TRAILER_TAIL || file_size < TRAILER_TAIL as u64 || &tail[TRAILER_TAIL - 32..] != MAGIC {
+        return vec![];
+    }
+    let (index, foot) = tail.split_at(310);
+    let u32_at = |b: &[u8], i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    let start = file_size.saturating_sub(u32_at(foot, 38) as u64);
+    (10..310).step_by(10)
+        .map(|i| (u16::from_le_bytes([index[i], index[i + 1]]), start + u32_at(index, i + 6) as u64, u32_at(index, i + 2) as usize))
+        .filter(|(_, _, length)| *length > 0)
+        .collect()
+}
+
+/// Enregistrements demandés du trailer {identifiant: contenu}, vide s'il est absent.
+fn read_records_of(path: &Path, wanted: &[u16]) -> Result<HashMap<u16, Vec<u8>>> {
     let mut f = File::open(path).with_context(|| format!("ouverture de {path:?}"))?;
     let size = f.seek(SeekFrom::End(0))?;
     let mut out = HashMap::new();
-    if size < 78 + 310 {
+    if size < TRAILER_TAIL as u64 {
         return Ok(out);
     }
-    let mut tail = [0u8; 78];
-    f.seek(SeekFrom::Start(size - 78))?;
+    let mut tail = [0u8; TRAILER_TAIL];
+    f.seek(SeekFrom::Start(size - TRAILER_TAIL as u64))?;
     f.read_exact(&mut tail)?;
-    if &tail[78 - 32..] != MAGIC {
-        return Ok(out);
-    }
-    let start = size - u32::from_le_bytes(tail[38..42].try_into()?) as u64;
-    let mut index = [0u8; 310];
-    f.seek(SeekFrom::Start(size - 78 - 310))?;
-    f.read_exact(&mut index)?;
-    for i in (10..310).step_by(10) {
-        let rid = u16::from_le_bytes(index[i..i + 2].try_into()?);
-        let length = u32::from_le_bytes(index[i + 2..i + 6].try_into()?) as usize;
-        let offset = u32::from_le_bytes(index[i + 6..i + 10].try_into()?) as u64;
-        if length > 0 && (rid == 0x03 || rid == 0x0101) {
+    for (rid, offset, length) in trailer_index(&tail, size) {
+        if wanted.contains(&rid) {
             let mut buf = vec![0u8; length];
-            f.seek(SeekFrom::Start(start + offset))?;
+            f.seek(SeekFrom::Start(offset))?;
             f.read_exact(&mut buf)?;
             out.insert(rid, buf);
         }
@@ -112,6 +126,32 @@ pub fn protobuf_fields(b: &[u8]) -> HashMap<u64, Vec<Field>> {
     out
 }
 
+/// Caméra qui a produit un fichier (métadonnées 0x0101 : champs 1, 2 et 3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Camera {
+    pub serial: String,
+    /// ex. « Insta360 X5 »
+    pub model: String,
+    pub firmware: String,
+}
+
+/// Caméra d'origine d'un fichier, None sans trailer ou sans numéro de série.
+pub fn read_camera(path: &Path) -> Option<Camera> {
+    let rec = read_records_of(path, &[0x0101]).ok()?;
+    camera_of_meta(rec.get(&0x0101)?)
+}
+
+/// Caméra décrite par l'enregistrement de métadonnées 0x0101.
+pub fn camera_of_meta(meta: &[u8]) -> Option<Camera> {
+    let meta = protobuf_fields(meta);
+    let text = |tag: u64| match meta.get(&tag).and_then(|v| v.first()) {
+        Some(Field::Bytes(b)) => String::from_utf8_lossy(b).trim().to_string(),
+        _ => String::new(),
+    };
+    let serial = text(1);
+    (!serial.is_empty()).then(|| Camera { serial, model: text(2), firmware: text(3) })
+}
+
 /// Mesures IMU d'un fichier : temps vidéo (s), accélération (g), gyroscope brut centré.
 pub struct Imu {
     pub t: Vec<f64>,
@@ -154,9 +194,39 @@ pub struct Segment {
     pub duration: f64,
 }
 
+/// Longueur de la partie `VID_<date>_<heure>` d'un identifiant de session.
+const BARE_ID_LEN: usize = 19;
+/// Caractères du numéro de série repris dans l'identifiant.
+const CAMERA_SUFFIX_LEN: usize = 4;
+
+/// Suffixe de caméra d'un identifiant : les derniers caractères alphanumériques du numéro de série.
+pub fn camera_suffix(serial: &str) -> String {
+    let alnum: Vec<char> = serial.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_uppercase()).collect();
+    alnum[alnum.len().saturating_sub(CAMERA_SUFFIX_LEN)..].iter().collect()
+}
+
+/// `token` a-t-il la forme d'un suffixe de caméra ?
+pub fn is_camera_suffix(token: &str) -> bool {
+    token.len() == CAMERA_SUFFIX_LEN && token.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
+/// Identifiant d'une session : `VID_<date>_<heure>`, suivi de la caméra quand elle est connue
+/// (deux caméras lancées à la même seconde ne se confondent pas).
+pub fn session_id(date: &str, time: &str, camera: Option<&Camera>) -> String {
+    match camera.map(|c| camera_suffix(&c.serial)).filter(|s| is_camera_suffix(s)) {
+        Some(suffix) => format!("VID_{date}_{time}_{suffix}"),
+        None => format!("VID_{date}_{time}"),
+    }
+}
+
+/// Partie `VID_<date>_<heure>` d'un identifiant (l'identifiant d'avant les suffixes de caméra).
+pub fn bare_id(id: &str) -> &str {
+    id.get(..BARE_ID_LEN).unwrap_or(id)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
-    /// ex. VID_20260829_112347
+    /// ex. VID_20260829_112347_K7Q2
     pub id: String,
     /// YYYYMMDD et HHMMSS (heure locale caméra)
     pub date: String,
@@ -164,6 +234,8 @@ pub struct Session {
     pub segments: Vec<Segment>,
     /// Sessions d'origine fusionnées (enregistrement en boucle).
     pub parts: Vec<String>,
+    /// Caméra d'origine, lue dans le premier fichier.
+    pub camera: Option<Camera>,
 }
 
 impl Session {
@@ -199,7 +271,7 @@ pub fn scan(dcim: &Path) -> Vec<Session> {
         let s = match sessions.iter_mut().position(|s| s.id == sid) {
             Some(i) => &mut sessions[i],
             None => {
-                sessions.push(Session { id: sid, date: date.into(), time: time.into(), segments: vec![], parts: vec![] });
+                sessions.push(Session { id: sid, date: date.into(), time: time.into(), segments: vec![], parts: vec![], camera: None });
                 sessions.last_mut().unwrap()
             }
         };
@@ -220,6 +292,10 @@ pub fn scan(dcim: &Path) -> Vec<Session> {
         s.segments.sort_by_key(|x| x.index);
     }
     sessions.retain(|s| s.segments.iter().all(|seg| seg.lrv.is_some()));
+    for s in &mut sessions {
+        s.camera = s.segments.first().and_then(|seg| seg.lrv.as_deref()).and_then(read_camera);
+        s.id = session_id(&s.date, &s.time, s.camera.as_ref());
+    }
     sessions
 }
 
@@ -237,7 +313,7 @@ pub fn merge_continuous(mut sessions: Vec<Session>, duration_of: impl Fn(&Sessio
         let dur = duration_of(&s);
         if let Some((block, prev_start, prev_dur)) = out.last_mut() {
             let gap = (start - *prev_start).num_milliseconds() as f64 / 1000.0 - *prev_dur;
-            if gap.abs() <= MAX_CHAIN_GAP_S {
+            if gap.abs() <= MAX_CHAIN_GAP_S && block.camera == s.camera {   // jamais deux caméras dans un bloc
                 if block.parts.is_empty() {
                     block.parts.push(block.id.clone());
                 }

@@ -1,0 +1,10 @@
+# Émulateur AWS local (floci) pour essayer l'infrastructure de Bike360 Cloud sans compte AWS.
+#   docker compose -f cloud/compose.yml up -d     puis  sh cloud/essai.sh
+# Écoute seulement sur cette machine. Le socket Docker n'est pas partagé : S3, DynamoDB et SQS
+# n'en ont pas besoin (il le faudrait pour émuler Lambda, ECS ou Batch).
+services:
+  floci:
+    image: floci/floci:latest
+    container_name: bike360-floci
+    ports:
+      - "127.0.0.1:4566:4566"
